@@ -1,4 +1,7 @@
-"""Schema parity: models == migration == the DDL in docs/SPEC.md section 5."""
+"""Schema parity: models == migration == the DDL in docs/SPEC.md section 5.
+
+One recorded deviation: ``postings.version_marker`` (migration ``0002``, ADR 0013).
+"""
 
 from __future__ import annotations
 
@@ -19,7 +22,7 @@ from tests.conftest import alembic_config
 
 pytestmark = pytest.mark.db
 
-HEAD_REVISION = "0001"
+HEAD_REVISION = "0002"
 
 # --- the spec, hardcoded -----------------------------------------------------------------
 
@@ -67,6 +70,7 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
         "repost_of",
         "url",
         "content_hash",
+        "version_marker",  # ADR 0013, migration 0002
     ],
     "posting_observations": ["posting_id", "observed_at", "run_id"],
     "events": [
@@ -187,6 +191,7 @@ EXPECTED_NULLABLE: dict[str, set[str]] = {
         "closed_at",
         "repost_of",
         "content_hash",
+        "version_marker",
     },
     "posting_observations": set(),
     "events": {"company_id", "raw_ref"},
@@ -221,6 +226,7 @@ EXPECTED_TYPES: dict[tuple[str, str], str] = {
     ("companies", "created_at"): "TIMESTAMP WITH TIME ZONE",
     ("ats_boards", "confidence"): "NUMERIC(3, 2)",
     ("postings", "remote"): "BOOLEAN",
+    ("postings", "version_marker"): "TEXT",
     ("events", "magnitude"): "NUMERIC",
     ("events", "payload"): "JSONB",
     ("signals", "half_life_days"): "INTEGER",

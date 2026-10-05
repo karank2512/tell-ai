@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
@@ -131,16 +132,36 @@ def test_5xx_without_retry_after_uses_exponential_backoff(
     assert clock.sleeps == [1.0, 2.0, 4.0]
 
 
-def test_503_four_times_exhausts_after_four_attempts(
+def test_four_failures_then_success_uses_the_whole_schedule(
+    mocked: respx.MockRouter, clock: FakeClock
+) -> None:
+    route = mocked.get(URL).mock(
+        side_effect=[
+            httpx.Response(500),
+            httpx.Response(502),
+            httpx.Response(503),
+            httpx.Response(429),
+            httpx.Response(200),
+        ]
+    )
+    with make_client() as client:
+        response = fetch(URL, client=client, sleep=clock.sleep, now=clock.wall)
+    assert response.status_code == 200
+    assert route.call_count == 5
+    assert clock.sleeps == [1.0, 2.0, 4.0, 8.0]
+
+
+def test_503_five_times_exhausts_after_five_attempts(
     mocked: respx.MockRouter, clock: FakeClock
 ) -> None:
     route = mocked.get(URL).mock(return_value=httpx.Response(503))
     with make_client() as client, pytest.raises(RetryExhausted) as excinfo:
         fetch(URL, client=client, sleep=clock.sleep, now=clock.wall)
-    assert route.call_count == 4
-    assert clock.sleeps == [1.0, 2.0, 4.0]  # no sleep after the final attempt
+    assert tell_http.MAX_ATTEMPTS == 5
+    assert route.call_count == 5
+    assert clock.sleeps == [1.0, 2.0, 4.0, 8.0]  # no sleep after the final attempt
     err = excinfo.value
-    assert err.attempts == 4
+    assert err.attempts == 5
     assert err.response is not None
     assert err.response.status_code == 503
     assert err.request.url == URL
@@ -190,6 +211,41 @@ def test_transport_errors_exhaust(mocked: respx.MockRouter, clock: FakeClock) ->
     assert clock.sleeps == [1.0]
 
 
+@pytest.mark.parametrize("method", ["HEAD", "OPTIONS", "get"])
+def test_transport_errors_retried_for_idempotent_methods(
+    mocked: respx.MockRouter, clock: FakeClock, method: str
+) -> None:
+    route = mocked.route(method=method.upper(), url=URL).mock(
+        side_effect=[httpx.ReadTimeout("slow"), httpx.Response(200)]
+    )
+    with make_client() as client:
+        assert fetch(URL, client=client, method=method, sleep=clock.sleep).status_code == 200
+    assert route.call_count == 2
+    assert clock.sleeps == [1.0]
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
+def test_transport_errors_propagate_for_non_idempotent_methods(
+    mocked: respx.MockRouter, clock: FakeClock, method: str
+) -> None:
+    route = mocked.route(method=method, url=URL).mock(
+        side_effect=[httpx.ReadTimeout("slow"), httpx.Response(200)]
+    )
+    with make_client() as client, pytest.raises(httpx.ReadTimeout):
+        fetch(URL, client=client, method=method, json={"a": 1}, sleep=clock.sleep)
+    assert route.call_count == 1  # the request is never repeated
+    assert clock.sleeps == []
+
+
+def test_post_still_retries_retryable_statuses(mocked: respx.MockRouter, clock: FakeClock) -> None:
+    # A 503 means the server answered, so repeating a POST is the server's own advice.
+    route = mocked.post(URL).mock(side_effect=[httpx.Response(503), httpx.Response(201)])
+    with make_client() as client:
+        assert fetch(URL, client=client, method="POST", sleep=clock.sleep).status_code == 201
+    assert route.call_count == 2
+    assert clock.sleeps == [1.0]
+
+
 def test_fetch_without_client_builds_and_closes_one(
     mocked: respx.MockRouter, clock: FakeClock
 ) -> None:
@@ -231,10 +287,31 @@ def test_parse_retry_after_variants(clock: FakeClock) -> None:
     assert parse_retry_after(past, now=clock.wall) == 0.0
 
 
+@pytest.mark.parametrize("value", ["nan", "NaN", "inf", "-inf", "Infinity", "+inf"])
+def test_parse_retry_after_rejects_non_finite_numbers(value: str) -> None:
+    assert parse_retry_after(value) is None
+
+
+def test_non_finite_retry_after_falls_back_to_backoff(
+    mocked: respx.MockRouter, clock: FakeClock
+) -> None:
+    mocked.get(URL).mock(
+        side_effect=[
+            httpx.Response(429, headers={"Retry-After": "nan"}),
+            httpx.Response(429, headers={"Retry-After": "inf"}),
+            httpx.Response(200),
+        ]
+    )
+    with make_client() as client:
+        fetch(URL, client=client, sleep=clock.sleep, now=clock.wall)
+    assert clock.sleeps == [1.0, 2.0]
+
+
 def test_backoff_schedule() -> None:
     assert [backoff_delay(i) for i in (1, 2, 3, 4)] == [1.0, 2.0, 4.0, 8.0]
     assert backoff_delay(0) == 1.0
     assert backoff_delay(9) == 8.0
+    assert len(tell_http.BACKOFF_SCHEDULE_S) + 1 == tell_http.MAX_ATTEMPTS
 
 
 # --- RateBudget ---------------------------------------------------------------
@@ -272,6 +349,77 @@ def test_rate_budget_validates_arguments() -> None:
         RateBudget(rps=0)
     with pytest.raises(ValueError, match="burst"):
         RateBudget(rps=1, burst=0)
+
+
+class FrozenClock:
+    """A clock that never moves and a sleeper that only records, safe to share across threads.
+
+    With time frozen every caller sees the same bucket state, so the waits a bucket
+    hands out are exactly the schedule it reserved: no two callers may receive the
+    same slot.
+    """
+
+    def __init__(self) -> None:
+        self.now = 1_000.0
+        self.sleeps: list[float] = []
+        self._lock = threading.Lock()
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        with self._lock:
+            self.sleeps.append(seconds)
+
+
+def test_rate_budget_is_thread_safe_and_never_over_admits() -> None:
+    frozen = FrozenClock()
+    budget = RateBudget(rps=2.0, burst=1, clock=frozen, sleep=frozen.sleep)
+    workers = 16
+    barrier = threading.Barrier(workers)
+    waits: list[float] = []
+    waits_lock = threading.Lock()
+
+    def worker() -> None:
+        barrier.wait()
+        waited = budget.acquire()
+        with waits_lock:
+            waits.append(waited)
+
+    threads = [threading.Thread(target=worker) for _ in range(workers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # One slot every 0.5 s, each handed out exactly once: 0, 0.5, 1.0, ... 7.5.
+    assert sorted(waits) == pytest.approx([i * 0.5 for i in range(workers)])
+    assert len(set(waits)) == workers
+    assert sorted(frozen.sleeps) == pytest.approx([i * 0.5 for i in range(1, workers)])
+    # The bucket owes exactly the slots it promised.
+    assert budget.wait_time() == pytest.approx(workers * 0.5)
+
+
+def test_host_rate_budgets_create_one_bucket_per_host_under_contention(
+    clock: FakeClock,
+) -> None:
+    budgets = HostRateBudgets(rps=1.0, burst=1, clock=clock, sleep=lambda _s: None)
+    seen: list[RateBudget] = []
+    seen_lock = threading.Lock()
+    barrier = threading.Barrier(8)
+
+    def worker() -> None:
+        barrier.wait()
+        bucket = budgets.for_host("boards.example.test")
+        with seen_lock:
+            seen.append(bucket)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len({id(b) for b in seen}) == 1
 
 
 def test_rate_budget_is_applied_per_attempt(mocked: respx.MockRouter, clock: FakeClock) -> None:

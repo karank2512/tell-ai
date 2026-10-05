@@ -21,7 +21,7 @@ from typing import Any
 
 import pydantic
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from tell.collectors import base
@@ -598,7 +598,67 @@ def test_sync_requires_aware_clock_and_persists_unsaved_board(db_session: Sessio
     events = sync_board_postings(db_session, board, [obs("j1")], run_id="r", now=T0)
     assert board.id is not None
     assert types_of(events) == ["job_opened"]
-    assert events[0].payload["board_id"] == board.id
+    # The board is named, never numbered: the database-internal id stays out of payloads.
+    assert "board_id" not in events[0].payload
+    assert (events[0].payload["vendor"], events[0].payload["board_identifier"]) == (
+        "synthetic",
+        "fresh",
+    )
+
+
+def test_version_marker_is_stored_and_refreshed_on_every_poll(
+    db_session: Session, board: AtsBoard
+) -> None:
+    poll(db_session, board, [obs("j1", version="v1")], now=T0)
+    assert posting(db_session, board).version_marker == "v1"
+    poll(db_session, board, [obs("j1", version="v2")], now=T0 + 6 * H)
+    assert posting(db_session, board).version_marker == "v2"
+    # Reverting to an earlier marker is a change like any other and is recorded as such.
+    events, _ = poll(db_session, board, [obs("j1", version="v1")], now=T0 + 12 * H)
+    assert types_of(events) == ["job_updated"]
+    assert posting(db_session, board).version_marker == "v1"
+
+
+def test_pruned_events_never_cause_a_spurious_job_updated(
+    db_session: Session, board: AtsBoard
+) -> None:
+    """ADR 0013: the marker lives on the posting, so deleting events changes nothing."""
+    poll(db_session, board, [obs("j1", version="v1"), obs("j2", version="v7")], now=T0)
+    poll(db_session, board, [obs("j1", version="v2"), obs("j2", version="v7")], now=T0 + 6 * H)
+    assert stored_types(db_session) == ["job_opened", "job_opened", "job_updated"]
+
+    # Phase 9's prune: every event of this board is gone (archived to JSONL).
+    db_session.execute(delete(EventRow))
+    db_session.flush()
+    assert count(db_session, EventRow) == 0
+
+    # Same markers again: nothing is reported, and in particular no job_updated.
+    events, stats = poll(
+        db_session, board, [obs("j1", version="v2"), obs("j2", version="v7")], now=T0 + 12 * H
+    )
+    assert events == []
+    assert stats == WriteStats(inserted=0, skipped=0)
+    assert count(db_session, EventRow) == 0
+
+    # A real change after the prune still fires exactly once.
+    events, _ = poll(
+        db_session, board, [obs("j1", version="v3"), obs("j2", version="v7")], now=T0 + 18 * H
+    )
+    assert types_of(events) == ["job_updated"]
+    assert events[0].payload["posting_external_id"] == "j1"
+
+
+def test_row_without_marker_records_it_silently(db_session: Session, board: AtsBoard) -> None:
+    """A posting written before migration 0002 has no previous marker to compare against."""
+    poll(db_session, board, [obs("j1", version="v1")], now=T0)
+    p = posting(db_session, board)
+    p.version_marker = None
+    db_session.flush()
+    events, _ = poll(db_session, board, [obs("j1", version="v2")], now=T0 + 6 * H)
+    assert events == []
+    assert posting(db_session, board).version_marker == "v2"
+    events, _ = poll(db_session, board, [obs("j1", version="v3")], now=T0 + 12 * H)
+    assert types_of(events) == ["job_updated"]
 
 
 def test_events_carry_board_company(db_session: Session) -> None:
@@ -806,3 +866,45 @@ def test_discover_collectors_rejects_duplicate_sources(
     )
     with pytest.raises(ValueError, match="two collector modules"):
         discover_collectors()
+
+
+def _spec_named(fixture_dir: Path, source: str) -> CollectorSpec:
+    return CollectorSpec(
+        source=source,
+        kind="ats",
+        response_model=SyntheticBoardResponse,
+        fixture_dir=fixture_dir,
+        drift_missing_field="updated_at",
+        run_fixture=synthetic_run_fixture,
+    )
+
+
+def test_discover_collectors_honours_tell_collectors_only(
+    monkeypatch: pytest.MonkeyPatch, fixture_dir: Path
+) -> None:
+    imported: list[str] = []
+    modules = {
+        "alpha": SimpleNamespace(COLLECTOR=_spec_named(fixture_dir, "alpha")),
+        "beta": SimpleNamespace(COLLECTOR=_spec_named(fixture_dir, "beta")),
+        "gamma": SimpleNamespace(COLLECTOR=_spec_named(fixture_dir, "gamma")),
+    }
+    fake_import = _fake_modules(monkeypatch, modules)
+
+    def recording_import(name: str) -> Any:
+        imported.append(name.rsplit(".", 1)[1])
+        return fake_import(name)
+
+    monkeypatch.setattr(importlib, "import_module", recording_import)
+
+    # Unset (the conftest fixture strips TELL_*) and blank both mean "everything".
+    assert [s.source for s in discover_collectors()] == ["alpha", "beta", "gamma"]
+    monkeypatch.setenv(base.COLLECTORS_ONLY_ENV, " , ")
+    assert [s.source for s in discover_collectors()] == ["alpha", "beta", "gamma"]
+
+    imported.clear()
+    monkeypatch.setenv(base.COLLECTORS_ONLY_ENV, "gamma, alpha")
+    assert [s.source for s in discover_collectors()] == ["alpha", "gamma"]
+    assert "beta" not in imported  # the excluded module is never imported at all
+
+    monkeypatch.setenv(base.COLLECTORS_ONLY_ENV, "nope")
+    assert discover_collectors() == []

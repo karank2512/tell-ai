@@ -10,10 +10,10 @@ body:
   - type: input
     id: handle
     attributes:
-      label: Your name or handle
-      description: How we should refer to this watchlist.
+      label: GitHub handle (optional)
+      description: How we should refer to this watchlist. Leave blank to use the issue author.
     validations:
-      required: true
+      required: false
   - type: textarea
     id: domains
     attributes:

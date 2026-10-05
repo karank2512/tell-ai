@@ -30,8 +30,14 @@ dev:
 dev-down:
 	docker compose down
 
+# Coverage data and the JSON report are per invocation (suffixed with this make's PID) so
+# concurrent `make test` runs in one checkout never collide; both are removed afterwards.
 test:
-	uv run pytest --cov=tell --cov-report=json --cov-report=term-missing -q && uv run python scripts/check_coverage.py
+	@id=$$$$; status=0; \
+	COVERAGE_FILE=.coverage.$$id uv run pytest --cov=tell --cov-report=json:coverage.$$id.json --cov-report=term-missing -q \
+	  && uv run python scripts/check_coverage.py coverage.$$id.json || status=$$?; \
+	rm -f .coverage.$$id coverage.$$id.json; \
+	exit $$status
 
 lint:
 	uv run ruff check .

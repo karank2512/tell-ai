@@ -3,7 +3,9 @@
 Every environment variable the project reads is declared here with a default, so
 ``tell/config.py`` is the single source of truth for ``.env.example``. Values come
 from the process environment first, then from a ``.env`` file in the working
-directory. Secrets are never defaulted; they are ``None`` until provided.
+directory. An empty value (``DATABASE_URL=`` as ``.env.example`` ships it) counts as
+unset, so ``cp .env.example .env`` yields the defaults. Secrets are never defaulted;
+they are ``None`` until provided.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        env_ignore_empty=True,
         extra="ignore",
         case_sensitive=False,
     )

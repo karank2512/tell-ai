@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import tokenize
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -18,8 +19,11 @@ FORBIDDEN_SUFFIXES = ("_email", "_phone")
 
 # A URL ends at whitespace or at a quote / JSON delimiter, so in compact (single-line)
 # JSON the token never swallows the fields that follow it. Cutting a real URL short at a
-# comma only ever errs toward flagging, never toward hiding an ``@``.
-URL_TOKEN = re.compile(r"""https?://[^\s"'<>,}\]]+""")
+# comma only ever errs toward flagging, never toward hiding an ``@``. The authority
+# (everything between ``://`` and the first ``/``, ``?`` or ``#``) is captured so an
+# ``@`` there (``https://user@host/``: userinfo, i.e. an address or a login) is kept
+# for flagging, while ``@`` in the path (``/@handle``) is stripped with the URL.
+URL_TOKEN = re.compile(r"""https?://(?P<authority>[^\s"'<>,}\]/?#]*)[^\s"'<>,}\]]*""")
 
 # The Form D XML element that lists officers and directors by name. Spelled out only
 # here (as data, not as a stored field) so the guard can grep for it.
@@ -44,8 +48,13 @@ def _fixture_files() -> list[Path]:
     return sorted(p for p in FIXTURES_DIR.rglob("*") if p.is_file())
 
 
+def _strip_url(match: re.Match[str]) -> str:
+    """Remove a URL unless its authority carries userinfo, in which case leave it to be flagged."""
+    return match.group(0) if "@" in match.group("authority") else ""
+
+
 def _at_signs_outside_urls(text: str) -> list[str]:
-    stripped = URL_TOKEN.sub("", text)
+    stripped = URL_TOKEN.sub(_strip_url, text)
     return [line for line in stripped.splitlines() if "@" in line]
 
 
@@ -109,6 +118,24 @@ def test_at_sign_detector_strips_urls_only() -> None:
     assert _at_signs_outside_urls("a=https://a.test/@h,b=x@y.z") == ["a=,b=x@y.z"]
 
 
+def test_at_sign_in_url_userinfo_is_flagged() -> None:
+    # Userinfo in the authority is an address or a login: it stays and is reported.
+    assert _at_signs_outside_urls("https://bob@example.com/jobs") == [
+        "https://bob@example.com/jobs"
+    ]
+    assert _at_signs_outside_urls("https://bob:secret@example.com/") == [
+        "https://bob:secret@example.com/"
+    ]
+    assert _at_signs_outside_urls('{"u":"https://bob@mail.test/x?y=1"}') == [
+        '{"u":"https://bob@mail.test/x?y=1"}'
+    ]
+    # An ``@`` after the authority (path, query, fragment) is still part of a clean URL.
+    assert _at_signs_outside_urls("https://example.com/@handle") == []
+    assert _at_signs_outside_urls("https://example.com/x?who=@handle") == []
+    assert _at_signs_outside_urls("https://example.com/x#@top") == []
+    assert _at_signs_outside_urls("https://example.com:8443/@handle") == []
+
+
 def test_offending_strings_walks_compact_json(tmp_path: Path) -> None:
     bad = tmp_path / "bad.json"
     bad.write_text(
@@ -134,11 +161,17 @@ def test_offending_strings_walks_compact_json(tmp_path: Path) -> None:
 
 
 def _non_comment_source(path: Path) -> str:
-    lines = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        code = line.split("#", 1)[0]
-        lines.append(code)
-    return "\n".join(lines)
+    """The module's tokens with only ``COMMENT`` tokens removed, space-separated.
+
+    Tokenizing (rather than cutting each line at ``#``) means a ``#`` inside a string
+    literal does not hide the rest of that line, and a docstring or any other string
+    is scanned like code: the element name may appear in a ``#`` comment and nowhere
+    else. Tokens are joined with a space so two adjacent names never fuse into the
+    forbidden spelling by accident.
+    """
+    with path.open("rb") as fh:
+        tokens = tokenize.tokenize(fh.readline)
+        return " ".join(tok.string for tok in tokens if tok.type != tokenize.COMMENT)
 
 
 def _guarded_sources() -> list[Path]:
@@ -154,3 +187,25 @@ def test_related_persons_list_is_never_a_stored_field() -> None:
         if FORBIDDEN_FIELD in _non_comment_source(path)
     ]
     assert offenders == []
+
+
+def test_source_scan_skips_only_comments(tmp_path: Path) -> None:
+    hidden = tmp_path / "hidden.py"
+    hidden.write_text(f"X = 1  # {FORBIDDEN_FIELD} is fine in a comment\n")
+    assert FORBIDDEN_FIELD not in _non_comment_source(hidden)
+
+    in_string = tmp_path / "in_string.py"
+    in_string.write_text(f'FIELDS = ["issuer#", "{FORBIDDEN_FIELD}"]  # a # in a string\n')
+    assert FORBIDDEN_FIELD in _non_comment_source(in_string)
+
+    in_docstring = tmp_path / "in_docstring.py"
+    in_docstring.write_text(f'"""Never store {FORBIDDEN_FIELD}."""\n')
+    assert FORBIDDEN_FIELD in _non_comment_source(in_docstring)
+
+    as_name = tmp_path / "as_name.py"
+    as_name.write_text(f"{FORBIDDEN_FIELD} = None\n")
+    assert FORBIDDEN_FIELD in _non_comment_source(as_name)
+
+    split_names = tmp_path / "split.py"
+    split_names.write_text("related = 1\nPersonsList = 2\n")
+    assert FORBIDDEN_FIELD not in _non_comment_source(split_names)

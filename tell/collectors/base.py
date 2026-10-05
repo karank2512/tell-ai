@@ -43,7 +43,8 @@ Every collector module under ``tell/collectors/`` exposes a module-level
 
 :func:`discover_collectors` finds these objects with ``pkgutil`` so
 ``tests/test_contracts.py`` and ``tests/test_idempotency.py`` never change when a
-source is added.
+source is added. ``TELL_COLLECTORS_ONLY=greenhouse,lever`` narrows discovery to the
+named modules (a local aid for parallel agents; see the function docstring).
 
 Conventions every collector follows
 -----------------------------------
@@ -61,6 +62,11 @@ Conventions every collector follows
 * Posting descriptions are hashed into ``content_hash`` and discarded.
   ``ObservedPosting.extra`` rejects description-like keys and long strings so raw
   text cannot be smuggled into event payloads through it.
+* ``postings.version_marker`` holds the provider marker last seen for each posting
+  (set on insert and refreshed on every poll); ``job_updated`` fires when the
+  incoming marker differs from it, never by looking earlier events up
+  (``docs/decisions/0013-postings-version-marker.md``). Event payloads name the
+  board by ``vendor`` + ``board_identifier``, never by the database-internal id.
 * Form D amendments (``D/A``) call :func:`update_event_payload` on the original
   ``form_d_filed`` event and never write a second funding event.
 * One run = ``start_run`` ... ``finish_run``; ``finish_run`` emits exactly one JSON
@@ -73,6 +79,7 @@ import hashlib
 import importlib
 import json
 import logging
+import os
 import pkgutil
 import re
 import secrets
@@ -96,6 +103,7 @@ from tell.signals.taxonomy import normalize_title, role_family
 
 __all__ = [
     "CLOSE_GAP",
+    "COLLECTORS_ONLY_ENV",
     "COLLECTOR_KINDS",
     "EXTRA_MAX_CHARS",
     "EXTRA_TEXT_KEYS",
@@ -147,6 +155,9 @@ EXTRA_MAX_CHARS = 500
 JOB_OPENED = "job_opened"
 JOB_UPDATED = "job_updated"
 JOB_CLOSED = "job_closed"
+
+COLLECTORS_ONLY_ENV = "TELL_COLLECTORS_ONLY"
+"""Comma-separated collector module names that :func:`discover_collectors` limits itself to."""
 
 _WHITESPACE = re.compile(r"\s+")
 _run_logger = logging.getLogger("tell.runs")
@@ -517,19 +528,6 @@ def _opened_version(posting: Posting) -> str:
     return iso_utc(posting.posted_at or posting.first_seen_at)
 
 
-def _opened_candidates(source: str, key: str, posting: Posting) -> set[str]:
-    """Event ids the posting's ``job_opened`` may carry.
-
-    A posting that opened without ``posted_at`` was keyed on ``first_seen_at``; if
-    the provider supplies ``posted_at`` later, the column is filled but the original
-    key stands, so both ids are candidates.
-    """
-    ids = {_event_id(source, key, iso_utc(posting.first_seen_at))}
-    if posting.posted_at is not None:
-        ids.add(_event_id(source, key, iso_utc(posting.posted_at)))
-    return ids
-
-
 def _optional_iso(value: datetime | None) -> str | None:
     return None if value is None else iso_utc(value)
 
@@ -546,8 +544,9 @@ def _job_event(
     marker: str | None,
     extra: Mapping[str, Any],
 ) -> Event:
+    # The board is named by vendor + identifier, never by its database-internal id,
+    # so payloads stay meaningful in the JSONL archive and across database rebuilds.
     payload: dict[str, Any] = {
-        "board_id": board.id,
         "vendor": board.vendor,
         "board_identifier": board.identifier,
         "posting_external_id": posting.external_id,
@@ -594,6 +593,7 @@ def _apply_observation(posting: Posting, obs: ObservedPosting, now: datetime) ->
         posting.posted_at = obs.posted_at
     posting.url = obs.url
     posting.content_hash = obs.content_hash
+    posting.version_marker = obs.version
     posting.last_seen_at = now
     posting.closed_at = None
 
@@ -607,13 +607,20 @@ def _ensure_persistent(session: Session, board: AtsBoard) -> None:
 def _reconcile_postings(
     session: Session, board: AtsBoard, seen: Mapping[str, ObservedPosting], now: datetime
 ) -> tuple[dict[str, Posting], list[_Pair], list[_Pair]]:
-    """Upsert ``postings`` for one poll; return (all postings, newly opened, revisited)."""
+    """Upsert ``postings`` for one poll; return (all postings, newly opened, changed).
+
+    ``changed`` holds the revisited postings whose incoming provider marker differs
+    from the ``version_marker`` stored by the previous poll, decided *before* the row
+    is overwritten. A stored marker of ``NULL`` (a row written before migration
+    ``0002``) has no previous value to compare against: the marker is recorded and
+    nothing is reported as changed.
+    """
     existing: dict[str, Posting] = {
         posting.external_id: posting
         for posting in session.scalars(select(Posting).where(Posting.board_id == board.id))
     }
     opened: list[_Pair] = []
-    revisited: list[_Pair] = []
+    changed: list[_Pair] = []
     for external_id, obs in seen.items():
         posting = existing.get(external_id)
         if posting is None:
@@ -633,10 +640,12 @@ def _reconcile_postings(
             existing[external_id] = posting
             opened.append((posting, obs))
         else:
+            previous_marker = posting.version_marker
             _apply_observation(posting, obs, now)
-            revisited.append((posting, obs))
+            if previous_marker is not None and previous_marker != obs.version:
+                changed.append((posting, obs))
     session.flush()
-    return existing, opened, revisited
+    return existing, opened, changed
 
 
 def _record_observations(
@@ -672,67 +681,32 @@ def _opened_events(
 
 
 def _updated_events(
-    session: Session, board: AtsBoard, revisited: Sequence[_Pair], *, run_id: str, now: datetime
+    board: AtsBoard, changed: Sequence[_Pair], *, run_id: str, now: datetime
 ) -> list[Event]:
-    """``job_updated`` for each revisited posting whose provider marker is new.
+    """``job_updated`` for each posting whose provider marker changed since the last poll.
 
-    A marker is known when an event already carries it (a previous ``job_updated``,
-    or a ``job_opened`` whose version happens to equal it) or when the posting's
-    ``job_opened`` payload recorded it at open time. One primary-key ``IN`` query.
-
-    Because the spec's ``postings`` table has no version column, the known markers
-    live only in ``events``. Two consequences the rest of the pipeline must respect:
-
-    * The caller writes each poll's events before polling the same board again;
-      otherwise the next poll cannot see the markers and re-emits them.
-    * Phase 9's ``prune`` (events older than 180 days to the JSONL archive) must keep
-      the latest ``job_opened`` / ``job_updated`` row of every posting that is still
-      open, or every long-open posting emits one spurious ``job_updated`` on the
-      first poll after the prune. Alternatively a later migration adds a
-      ``postings.version_marker`` column and this function reads that instead.
-    * A marker that reverts to a value recorded earlier (v1 -> v2 -> v1) is treated
-      as known and emits nothing; the posting row itself is still overwritten.
+    The previous marker is ``postings.version_marker`` (ADR 0013), compared by
+    :func:`_reconcile_postings` before the row is refreshed, so the decision never
+    depends on which events still exist: pruning ``events`` cannot cause a spurious
+    ``job_updated``, and the caller need not have written the previous poll's events
+    for the next poll to behave. A marker that reverts to an earlier value (v1 -> v2
+    -> v1) is a change like any other; if that exact ``job_updated`` was written once
+    before, ``write_events`` skips it on conflict.
     """
-    if not revisited:
-        return []
-    source = board.vendor
-    wanted: set[str] = set()
-    for posting, obs in revisited:
-        key = _posting_key(board, posting.external_id)
-        wanted.add(_event_id(source, key, obs.version))
-        wanted |= _opened_candidates(source, key, posting)
-    known: dict[str, dict[str, Any]] = {
-        row.event_id: row.payload
-        for row in session.execute(
-            select(EventRow.event_id, EventRow.payload).where(EventRow.event_id.in_(wanted))
+    return [
+        _job_event(
+            board,
+            posting,
+            type_=JOB_UPDATED,
+            version=obs.version,
+            occurred_at=now,
+            now=now,
+            run_id=run_id,
+            marker=obs.version,
+            extra=obs.extra,
         )
-    }
-    events: list[Event] = []
-    for posting, obs in revisited:
-        key = _posting_key(board, posting.external_id)
-        if _event_id(source, key, obs.version) in known:
-            continue  # this marker already produced an event
-        opened_markers = {
-            known[candidate].get("version_marker")
-            for candidate in _opened_candidates(source, key, posting)
-            if candidate in known
-        }
-        if obs.version in opened_markers:
-            continue  # unchanged since the posting opened
-        events.append(
-            _job_event(
-                board,
-                posting,
-                type_=JOB_UPDATED,
-                version=obs.version,
-                occurred_at=now,
-                now=now,
-                run_id=run_id,
-                marker=obs.version,
-                extra=obs.extra,
-            )
-        )
-    return events
+        for posting, obs in changed
+    ]
 
 
 def _closed_events(
@@ -781,19 +755,21 @@ def sync_board_postings(
     """Reconcile one poll of ``board`` against ``postings`` and return the events to write.
 
     * Upserts ``postings`` on ``(board_id, external_id)``: ``first_seen_at`` on insert,
-      ``last_seen_at = now`` always, ``closed_at = NULL`` when a posting reappears,
-      ``posted_at`` kept from the first sighting that carried one.
+      ``last_seen_at = now`` and ``version_marker = <provider marker>`` always,
+      ``closed_at = NULL`` when a posting reappears, ``posted_at`` kept from the first
+      sighting that carried one.
     * Appends one ``posting_observations`` row per observed posting (idempotent on
       ``(posting_id, observed_at)``).
     * Emits ``job_opened`` once per posting (version = first ``posted_at`` seen, else
-      ``first_seen_at``); ``job_updated`` when the provider marker changes for an
-      existing posting (version = the new marker), never a second ``job_opened``;
-      ``job_closed`` only when a posting is absent now, was absent at the previous
-      poll too, and ``now - previous poll >= 12h`` (no closes on a first poll).
+      ``first_seen_at``); ``job_updated`` when the provider marker differs from the
+      ``version_marker`` stored by the previous poll (version = the new marker), never
+      a second ``job_opened``; ``job_closed`` only when a posting is absent now, was
+      absent at the previous poll too, and ``now - previous poll >= 12h`` (no closes
+      on a first poll).
     * Reads ``board.last_polled_at`` as the previous poll time, then sets it to ``now``.
 
     The caller writes the returned events with :func:`write_events` in the same
-    transaction; the ``job_updated`` check reads earlier events back from ``events``.
+    transaction. Nothing here reads ``events`` back.
     """
     _require_aware(now, "now")
     _ensure_persistent(session, board)
@@ -803,13 +779,13 @@ def sync_board_postings(
     for obs in observed:
         seen.setdefault(obs.external_id, obs)
 
-    existing, opened, revisited = _reconcile_postings(session, board, seen, now)
+    existing, opened, changed = _reconcile_postings(session, board, seen, now)
     _record_observations(
         session, [existing[external_id] for external_id in seen], run_id=run_id, now=now
     )
 
     events = _opened_events(board, opened, run_id=run_id, now=now)
-    events += _updated_events(session, board, revisited, run_id=run_id, now=now)
+    events += _updated_events(board, changed, run_id=run_id, now=now)
     events += _closed_events(
         board, existing, seen, previous_poll=previous_poll, run_id=run_id, now=now
     )
@@ -863,16 +839,33 @@ class CollectorSpec:
             raise ValueError(msg)
 
 
+def _collectors_only() -> frozenset[str] | None:
+    """The module names ``TELL_COLLECTORS_ONLY`` selects, or ``None`` when it is unset/blank."""
+    raw = os.environ.get(COLLECTORS_ONLY_ENV, "")
+    names = frozenset(part.strip() for part in raw.split(",") if part.strip())
+    return names or None
+
+
 def discover_collectors() -> list[CollectorSpec]:
     """Import every module under ``tell.collectors`` and return their ``COLLECTOR`` specs.
 
     Modules without a ``COLLECTOR`` (this one, private helpers) are skipped. Two
     modules claiming the same ``source`` is an error. Sorted by ``source``.
+
+    Local-development aid: when ``TELL_COLLECTORS_ONLY`` is set to a comma-separated
+    list of module names (``greenhouse,lever``), only those modules are imported, so
+    an agent working on one collector in a shared checkout can run the generic
+    contract and idempotency tests without importing a sibling's half-written module.
+    Unset or blank means everything, which is what CI runs; the variable is never read
+    anywhere else.
     """
+    only = _collectors_only()
     package = importlib.import_module("tell.collectors")
     specs: dict[str, CollectorSpec] = {}
     for info in pkgutil.iter_modules(package.__path__):
         if info.name == "base" or info.name.startswith("_"):
+            continue
+        if only is not None and info.name not in only:
             continue
         module = importlib.import_module(f"{package.__name__}.{info.name}")
         spec = getattr(module, "COLLECTOR", None)

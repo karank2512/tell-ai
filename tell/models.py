@@ -10,8 +10,12 @@ Constraint and index names follow PostgreSQL's own defaults (``<table>_pkey``,
 hand-written DDL in the spec and the migration name the same objects.
 
 Nothing here goes beyond the DDL except the allowed-value constants below (the
-spec documents them as comments next to the columns) and a generic ``__repr__``.
-``api_keys`` / ``api_usage`` arrive with Phase 9 in their own migration.
+spec documents them as comments next to the columns), a generic ``__repr__`` and
+one recorded deviation: ``postings.version_marker`` (migration ``0002``,
+``docs/decisions/0013-postings-version-marker.md``) holds the provider change
+marker last seen for a posting so ``job_updated`` does not depend on events that
+the 180-day prune removes. ``api_keys`` / ``api_usage`` arrive with Phase 9 in
+their own migration.
 """
 
 from __future__ import annotations
@@ -210,6 +214,8 @@ class Posting(Base):
     repost_of: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("postings.id"))
     url: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str | None] = mapped_column(Text)
+    version_marker: Mapped[str | None] = mapped_column(Text)
+    """Provider change marker last seen (ADR 0013); ``NULL`` only for rows older than 0002."""
 
 
 class PostingObservation(Base):

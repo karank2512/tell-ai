@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import os
+import shutil
 from pathlib import Path
 
 import pytest
 
 from tell import __version__
 from tell.config import Settings, get_settings
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 EXPECTED_ENV_VARS = {
     "DATABASE_URL",
@@ -32,12 +36,20 @@ EXPECTED_ENV_VARS = {
 }
 
 
+SECRETS = {
+    "slack_webhook_url",
+    "github_token",
+    "tell_data_push_token",
+    "tell_api_key",
+    "tell_review_password",
+}
+
+
 @pytest.fixture
 def clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    for name in EXPECTED_ENV_VARS:
-        monkeypatch.delenv(name, raising=False)
+    """On top of the autouse hermetic fixture: no ``DATABASE_URL`` either, and a bare cwd."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.chdir(tmp_path)  # no .env in cwd
-    get_settings.cache_clear()
 
 
 @pytest.mark.usefixtures("clean_env")
@@ -88,8 +100,29 @@ def test_get_settings_is_cached() -> None:
 
 @pytest.mark.usefixtures("clean_env")
 def test_env_file_is_read(tmp_path: Path) -> None:
-    (tmp_path / ".env").write_text("TELL_SLACK_DIGEST_HOUR=17\n")
-    assert Settings().tell_slack_digest_hour == 17
+    env_file = tmp_path / ".env"
+    env_file.write_text("TELL_SLACK_DIGEST_HOUR=17\n")
+    assert Settings(_env_file=env_file).tell_slack_digest_hour == 17
+
+
+@pytest.mark.usefixtures("clean_env")
+def test_copied_env_example_yields_defaults(tmp_path: Path) -> None:
+    """``cp .env.example .env`` is a valid, all-defaults configuration (empty means unset)."""
+    env_file = tmp_path / ".env"
+    shutil.copy(REPO_ROOT / ".env.example", env_file)
+    from_example = Settings(_env_file=env_file)
+    assert from_example == Settings(_env_file=None)
+    for name in SECRETS:
+        assert getattr(from_example, name) is None, name
+    assert from_example.slack_webhook_url is None
+    assert from_example.github_token is None
+
+
+def test_hermetic_fixture_strips_ambient_configuration() -> None:
+    """The autouse conftest fixture hides TELL_* and friends, keeps the database locator."""
+    assert not any(n.startswith("TELL_") and n != "TELL_TEST_ADMIN_URL" for n in os.environ)
+    assert "SEC_USER_AGENT" not in os.environ
+    assert Settings.model_config.get("env_file") is None
 
 
 def test_env_example_lists_every_variable_with_a_comment_and_no_values() -> None:

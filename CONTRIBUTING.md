@@ -10,11 +10,31 @@ make dev      # local Postgres via docker compose, if you have no local server
 make test
 ```
 
-macOS note: if the checkout lives under `~/Desktop` or `~/Documents` with iCloud Drive
-sync on, iCloud marks every file under `.venv` hidden and Python 3.12 then ignores the
-`.pth` files that make `tell` and `tell_mcp` importable. The `Makefile` detects that
-location and keeps the environment at `~/.venvs/tell` instead (`make env` prints the path
-in use). To get the same behaviour outside `make`, export
+### Database URL
+
+Every database access goes through `DATABASE_URL` (environment variable or a `.env` file
+in the checkout; `cp .env.example .env` is a valid starting point because empty values
+mean "use the default").
+
+- Local PostgreSQL server (the default, ADR 0005): nothing to set. The default is
+  `postgresql+psycopg://karankapur@localhost:5432/tell_dev`; point it at your own
+  server and user if they differ, e.g. `DATABASE_URL=postgresql+psycopg://$USER@localhost:5432/tell_dev`.
+- `docker-compose.yml` users (`make dev`): the container listens on port **5433** with user,
+  password and database all `tell`, so set
+  `DATABASE_URL=postgresql+psycopg://tell:tell@localhost:5433/tell_dev`.
+
+Tests create and drop their own `tell_test_<hex>` database on the same server, using
+`DATABASE_URL` with the database name swapped for `postgres` (or `TELL_TEST_ADMIN_URL` when
+you need a different maintenance connection). The test suite is hermetic otherwise: every
+other `TELL_*` variable and the `.env` file are ignored while tests run.
+
+### iCloud-synced checkouts (macOS)
+
+If the checkout lives under `~/Desktop` or `~/Documents` with iCloud Drive sync on, iCloud
+marks every file under `.venv` hidden and Python 3.12 then ignores the `.pth` files that
+make `tell` and `tell_mcp` importable. The `Makefile` detects that location and keeps the
+environment at `~/.venvs/tell` instead (`make env` prints the path in use). To get the
+same behaviour when calling `uv run ...` directly, export
 `UV_PROJECT_ENVIRONMENT=$HOME/.venvs/tell` in your shell, or clone somewhere that iCloud
 does not sync. See `docs/decisions/0011-venv-outside-icloud.md`.
 

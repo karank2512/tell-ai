@@ -186,3 +186,9 @@ exclude_also = [
 
 [tool.coverage.json]
 pretty_print = false
+
+# Coverage floors enforced by scripts/check_coverage.py (CLAUDE.md "Hard constraints").
+# A package floor is skipped while that package has no measured statements yet.
+[tool.tell.coverage]
+overall = 80
+packages = { "tell/collectors" = 90, "tell/resolve" = 90, "tell/signals" = 90 }

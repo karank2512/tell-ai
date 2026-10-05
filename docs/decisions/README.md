@@ -15,3 +15,5 @@ Template: [0000-template.md](0000-template.md). Each record covers one locked de
 | [0009](0009-yc-directory-only-seed.md) | Seed domains come from the YC directory only |
 | [0010](0010-pypi-tell-mcp-only.md) | Publish only tell-mcp to PyPI |
 | [0011](0011-venv-outside-icloud.md) | Keep the uv environment outside iCloud-synced folders |
+| [0012](0012-tell-mcp-as-workspace-package.md) | tell-mcp is a uv workspace package, not `tell/mcp/server.py` |
+| [0013](0013-postings-version-marker.md) | `postings.version_marker` holds the provider change marker |

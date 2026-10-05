@@ -38,6 +38,7 @@ Standing checks on every PR: CI green; no new paid service; `CHANGELOG.md` line 
 ## Running tests
 
 - `make test` runs the full suite (pytest with coverage). Also: `make dev`, `make migrate`, `make refresh-fixtures` (the only target allowed to touch the network).
+- `export UV_PROJECT_ENVIRONMENT=$HOME/.venvs/tell` when calling `uv run` directly from this checkout (it lives under iCloud-synced `~/Desktop`; `make` sets it for you, see ADR 0011).
 - Gates before finishing: `ruff check`, `ruff format --check`, `mypy --strict tell/`, `make test`.
 
 ## Fixtures
