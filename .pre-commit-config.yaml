@@ -1,0 +1,30 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.4.0
+    hooks:
+      - id: mypy
+        args: [--strict, --config-file=pyproject.toml]
+        files: ^tell/
+        additional_dependencies:
+          - pydantic>=2.10
+          - pydantic-settings>=2.7
+          - sqlalchemy>=2.0.36
+          - httpx>=0.28
+          - typer>=0.15
+          - types-PyYAML
+          - types-python-dateutil
+          - types-jsonschema
+          - lxml-stubs
+          - types-Markdown
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks

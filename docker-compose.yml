@@ -1,0 +1,22 @@
+services:
+  db:
+    image: postgres:16
+    container_name: tell-postgres
+    environment:
+      POSTGRES_DB: tell_dev
+      POSTGRES_USER: tell
+      POSTGRES_PASSWORD: tell
+    ports:
+      # 5433 on the host so an existing local Postgres on 5432 keeps working.
+      # DATABASE_URL=postgresql+psycopg://tell:tell@localhost:5433/tell_dev
+      - "5433:5432"
+    volumes:
+      - tell-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tell -d tell_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  tell-pgdata:

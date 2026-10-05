@@ -1,0 +1,99 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly dependency audit (Mondays 06:00 UTC); only the audit job runs on this trigger.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_FROZEN: "1"
+
+jobs:
+  test:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: tell
+          POSTGRES_PASSWORD: tell
+          POSTGRES_DB: tell_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tell -d tell_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://tell:tell@localhost:5432/tell_test
+      TELL_TEST_ADMIN_URL: postgresql+psycopg://tell:tell@localhost:5432/postgres
+      TELL_ENV: ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # gitleaks scans history
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install
+        run: uv sync --frozen
+
+      - name: Ruff check
+        run: uv run ruff check .
+
+      - name: Ruff format
+        run: uv run ruff format --check .
+
+      - name: Mypy (strict)
+        run: uv run mypy --strict tell
+
+      - name: Migrate (alembic upgrade head)
+        # Phase 1 adds alembic.ini; until then there is no schema to apply.
+        run: |
+          if [ -f alembic.ini ]; then
+            uv run alembic upgrade head
+          else
+            echo "alembic.ini not present yet; skipping migrations"
+          fi
+
+      - name: Tests with coverage
+        run: uv run pytest --cov=tell --cov-report=json --cov-report=term-missing -q
+
+      - name: Coverage floors
+        run: uv run python scripts/check_coverage.py
+
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  audit:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Install
+        run: uv sync --frozen
+      - name: pip-audit
+        run: uv run pip-audit

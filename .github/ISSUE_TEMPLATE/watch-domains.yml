@@ -1,0 +1,45 @@
+name: Watch these domains
+description: Ask for up to 50 company domains to be watched for buying signals.
+title: "Watch these domains: "
+labels: ["watchlist"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Issues are public. Only submit company domains you are happy to have visible. Do not include email addresses or other personal data.
+  - type: input
+    id: handle
+    attributes:
+      label: Your name or handle
+      description: How we should refer to this watchlist.
+    validations:
+      required: true
+  - type: textarea
+    id: domains
+    attributes:
+      label: Domains
+      description: Up to 50 company domains, one per line (for example, acme.com).
+      placeholder: |
+        acme.com
+        example.io
+    validations:
+      required: true
+  - type: dropdown
+    id: icp_profile
+    attributes:
+      label: Who you sell to
+      description: Picks the ICP profile used for scoring.
+      options:
+        - default
+        - job-seeker
+        - sells-to-sales-teams
+      default: 0
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Optional context.
+    validations:
+      required: false

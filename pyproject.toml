@@ -1,0 +1,188 @@
+[project]
+name = "tell"
+version = "0.1.0"
+description = "Open-source buying-signals pipeline: public hiring, filing and news signals with receipts."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [{ name = "Karan Kapur" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Office/Business",
+  "Typing :: Typed",
+]
+dependencies = [
+  "httpx>=0.28",
+  "pydantic>=2.10",
+  "pydantic-settings>=2.7",
+  "sqlalchemy>=2.0.36",
+  "alembic>=1.14",
+  "psycopg[binary]>=3.2",
+  "rapidfuzz>=3.10",
+  "tldextract>=5.1",
+  "feedparser>=6.0.11",
+  "lxml>=5.3",
+  "jinja2>=3.1",
+  "pyyaml>=6.0.2",
+  "typer>=0.15",
+  "jsonschema>=4.23",
+  "python-dateutil>=2.9",
+  "fastapi>=0.115",
+  "uvicorn>=0.34",
+  "mcp>=1.2",
+  "streamlit>=1.41",
+  "markdown>=3.7",
+  "tell-mcp",
+]
+
+[project.scripts]
+tell = "tell.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/karankapur/tell"
+Repository = "https://github.com/karankapur/tell"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+  "pytest-cov>=6.0",
+  "respx>=0.22",
+  "freezegun>=1.5",
+  "ruff>=0.9",
+  "mypy>=1.14",
+  "pre-commit>=4.0",
+  "pip-audit>=2.7",
+  "types-PyYAML>=6.0.12",
+  "types-python-dateutil>=2.9",
+  "types-jsonschema>=4.23",
+  "lxml-stubs>=0.5",
+  "types-Markdown>=3.7",
+]
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tell"]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.uv.workspace]
+members = ["packages/tell-mcp"]
+
+[tool.uv.sources]
+tell-mcp = { workspace = true }
+
+# --- ruff -------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["tell", "tests", "packages/tell-mcp", "scripts"]
+extend-exclude = [".venv", "alembic/versions"]
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort
+  "UP",  # pyupgrade
+  "B",   # bugbear
+  "SIM", # simplify
+  "C4",  # comprehensions
+  "N",   # pep8-naming
+  "RUF", # ruff-specific
+  "PT",  # pytest style
+  "T20", # no stray print()
+  "ARG", # unused arguments
+  "PL",  # pylint subset
+  "DTZ", # naive datetimes
+  "S",   # bandit (security)
+  "ISC", # implicit string concat
+  "PIE",
+  "RET",
+  "PERF",
+]
+ignore = [
+  "E501",    # handled by the formatter
+  "PLR0913", # many-arguments is fine for typed helper signatures
+  "PLR2004", # magic-value comparisons in tests and HTTP status checks
+  "S101",    # assert is the pytest idiom
+  "ISC001",  # conflicts with the formatter
+  "PT012",   # multi-statement pytest.raises blocks are fine when the second statement is the raise
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "PLR", "ARG", "DTZ", "T20"]
+"scripts/**" = ["T20"]
+"packages/tell-mcp/**" = ["T20"]
+"tell/cli.py" = ["T20"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tell", "tell_mcp"]
+
+[tool.ruff.format]
+quote-style = "double"
+docstring-code-format = true
+
+# --- mypy -------------------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+files = ["tell", "tests", "scripts", "packages/tell-mcp/tell_mcp"]
+warn_unreachable = true
+warn_unused_ignores = true
+show_error_codes = true
+pretty = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+# Third-party modules that ship no type information and have no types-* stubs.
+# Each one is listed on its own so the exemption is explicit; rapidfuzz, tldextract,
+# streamlit, jinja2, mcp, fastapi, alembic, psycopg and typer ship py.typed, and
+# yaml/dateutil/jsonschema/lxml/markdown are covered by the dev stub packages.
+[[tool.mypy.overrides]]
+module = ["feedparser", "feedparser.*"]
+ignore_missing_imports = true
+
+# --- pytest / coverage -------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -ra --strict-markers"
+markers = [
+  "db: tests that need the temporary Postgres database",
+]
+filterwarnings = ["error::DeprecationWarning:tell.*"]
+
+[tool.coverage.run]
+source = ["tell"]
+branch = true
+# tell_mcp is a separate distribution (packages/tell-mcp) and has its own tests.
+omit = ["tell/mcp/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+precision = 1
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "@overload",
+]
+
+[tool.coverage.json]
+pretty_print = false
