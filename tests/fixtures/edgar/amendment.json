@@ -1,0 +1,51 @@
+[
+  {
+    "accessionNumber": "0009990001-26-000002",
+    "cik": "9990001",
+    "formType": "D/A",
+    "dateFiled": "2026-10-01",
+    "fileNumber": "021-555001",
+    "primaryIssuer": {
+      "cik": "0009990001",
+      "entityName": "Example Robotics, Inc.",
+      "issuerAddress": {
+        "city": "SAN FRANCISCO",
+        "stateOrCountry": "CA",
+        "zipCode": "94107"
+      },
+      "jurisdictionOfInc": "DELAWARE",
+      "yearOfInc": 2022,
+      "entityType": "Corporation",
+      "issuerPreviousNameList": [
+        "Example Automation Inc."
+      ]
+    },
+    "offeringData": {
+      "industryGroup": {
+        "industryGroupType": "Other Technology"
+      },
+      "federalExemptionsExclusions": [
+        "06b",
+        "3C",
+        "3C.1"
+      ],
+      "typeOfFiling": {
+        "newOrAmendment": {
+          "isAmendment": true,
+          "previousAccessionNumber": "0009990001-26-000001"
+        },
+        "dateOfFirstSale": "2026-09-15"
+      },
+      "offeringSalesAmounts": {
+        "totalOfferingAmount": 18000000,
+        "totalOfferingAmountIndefinite": false,
+        "totalAmountSold": 16000000,
+        "totalRemaining": 2000000,
+        "totalRemainingIndefinite": false
+      },
+      "investors": {
+        "totalNumberAlreadyInvested": 19
+      }
+    }
+  }
+]

@@ -1,0 +1,50 @@
+{
+  "origin": "google_news",
+  "feed_url": "https://news.google.com/rss/search?q=%22Quillstone+Analytics%22+when%3A7d&hl=en-US&gl=US&ceid=US:en",
+  "company": {
+    "name": "Quillstone Analytics",
+    "domain": "quillstone.example"
+  },
+  "items": [
+    {
+      "title": "Quillstone Analytics raises $24M Series A to expand forecasting platform - Ledger Daily",
+      "link": "https://news.google.com/rss/articles/CBMiQUFVX3lxTFBxdWlsbHN0b25lLXNlcmllcy1hLWxlZGdlci1kYWlseS0wMDE?oc=5",
+      "source": "Ledger Daily"
+    },
+    {
+      "title": "Quillstone Analytics appoints new chief revenue officer - Northwind Business Journal",
+      "link": "https://news.google.com/rss/articles/CBMiQUFVX3lxTFBxdWlsbHN0b25lLWNoaWVmLXJldmVudWUtb2ZmaWNlci0wMDI?oc=5",
+      "source": "Northwind Business Journal"
+    },
+    {
+      "title": "Quillstone Analytics launches real-time anomaly alerts for retail teams - Retail Tech Wire",
+      "link": "https://news.google.com/rss/articles/CBMiQUFVX3lxTFBxdWlsbHN0b25lLWFub21hbHktYWxlcnRzLTAwMw?oc=5",
+      "source": "Retail Tech Wire"
+    },
+    {
+      "title": "Quillstone Analytics opens London office to serve European customers - Metro Business Review",
+      "link": "https://news.google.com/rss/articles/CBMiQUFVX3lxTFBxdWlsbHN0b25lLWxvbmRvbi1vZmZpY2UtMDA0?oc=5",
+      "source": "Metro Business Review"
+    },
+    {
+      "title": "Quillstone Analytics names former payments executive as chief financial officer - Fintech Briefing",
+      "link": "https://news.google.com/rss/articles/CBMiQUFVX3lxTFBxdWlsbHN0b25lLWNoaWVmLWZpbmFuY2lhbC1vZmZpY2VyLTAwNQ?oc=5",
+      "source": "Fintech Briefing"
+    },
+    {
+      "title": "Quillstone Analytics unveils natural-language query assistant - The Data Desk",
+      "link": "https://news.google.com/rss/articles/CBMiQUFVX3lxTFBxdWlsbHN0b25lLXF1ZXJ5LWFzc2lzdGFudC0wMDY?oc=5",
+      "source": "The Data Desk"
+    },
+    {
+      "title": "How Quillstone Analytics thinks about data quality at scale - Analytics Weekly",
+      "link": "https://news.google.com/rss/articles/CBMiQUFVX3lxTFBxdWlsbHN0b25lLWRhdGEtcXVhbGl0eS0wMDc?oc=5",
+      "source": "Analytics Weekly"
+    },
+    {
+      "title": "Quillstone Ridge outfitter opens new office near the trailhead - Valley Gazette",
+      "link": "https://news.google.com/rss/articles/CBMiQUFVX3lxTFBxdWlsbHN0b25lLXJpZGdlLXRyYWlsLTAwOA?oc=5",
+      "source": "Valley Gazette"
+    }
+  ]
+}

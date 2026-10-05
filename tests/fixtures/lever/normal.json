@@ -1,0 +1,129 @@
+[
+  {
+    "additionalPlain": "The United States base range for this position is $151,942–$189,927 USD, plus equity.",
+    "additional": "<div>The United States base range for this position is $151,942–$189,927 USD, plus equity.</div>",
+    "categories": {
+      "commitment": "Permanent",
+      "department": "Engineering",
+      "location": "New York, NY",
+      "team": "Music",
+      "allLocations": [
+        "New York, NY",
+        "Boston, MA",
+        "Miami, FL"
+      ]
+    },
+    "createdAt": 1790688235240,
+    "descriptionPlain": "The Music Mission team owns Spotify's end to end proposition for music creators and the experiences they create for fans.",
+    "description": "<div>The Music Mission team owns Spotify's end to end proposition for music creators and the experiences they create for fans.</div>",
+    "id": "65d6caca-6d7c-4049-8256-a128e0e7249e",
+    "lists": [
+      {
+        "text": "What You'll Do",
+        "content": "<li>Build and run production backend systems that improve how listeners discover and enjoy music videos.</li>"
+      }
+    ],
+    "text": "Backend Engineer - Music",
+    "country": "US",
+    "workplaceType": "remote",
+    "opening": "",
+    "openingPlain": "",
+    "descriptionBody": "<div>The Music Mission team owns Spotify's end to end proposition for music creators and the experiences they create for fans.</div>",
+    "descriptionBodyPlain": "The Music Mission team owns Spotify's end to end proposition for music creators and the experiences they create for fans.",
+    "hostedUrl": "https://jobs.lever.co/spotify/65d6caca-6d7c-4049-8256-a128e0e7249e",
+    "applyUrl": "https://jobs.lever.co/spotify/65d6caca-6d7c-4049-8256-a128e0e7249e/apply"
+  },
+  {
+    "additionalPlain": "Spotify is an equal opportunity employer.",
+    "additional": "<div>Spotify is an equal opportunity employer.</div>",
+    "categories": {
+      "commitment": "Full Time Contractor",
+      "department": "Markets and Subscriber Growth",
+      "location": "London",
+      "team": "Operations and Strategy",
+      "allLocations": [
+        "London"
+      ]
+    },
+    "createdAt": 1785337697614,
+    "descriptionPlain": "Are you passionate about combating fraud, safeguarding revenue, and protecting users from sophisticated threats?",
+    "description": "<div>Are you passionate about combating fraud, safeguarding revenue, and protecting users from sophisticated threats?</div>",
+    "id": "5992c673-e493-48b1-bb63-9b82a4c31876",
+    "lists": [
+      {
+        "text": "What You’ll Do",
+        "content": "<li>Detection &amp; Mitigation: Review suspicious activity flagged by our fraud systems and take swift mitigating and preventative action to protect our genuine users, secure our growth, and minimize revenue leakage.</li>"
+      }
+    ],
+    "text": "Fraud Analyst (Revenue Protection) - 12-Month Fixed-Term",
+    "country": "GB",
+    "workplaceType": "onsite",
+    "opening": "",
+    "openingPlain": "",
+    "descriptionBody": "<div>Are you passionate about combating fraud, safeguarding revenue, and protecting users from sophisticated threats?</div>",
+    "descriptionBodyPlain": "Are you passionate about combating fraud, safeguarding revenue, and protecting users from sophisticated threats?",
+    "hostedUrl": "https://jobs.lever.co/spotify/5992c673-e493-48b1-bb63-9b82a4c31876",
+    "applyUrl": "https://jobs.lever.co/spotify/5992c673-e493-48b1-bb63-9b82a4c31876/apply"
+  },
+  {
+    "additionalPlain": "Spotify is an equal opportunity employer.",
+    "additional": "<div>Spotify is an equal opportunity employer.</div>",
+    "categories": {
+      "commitment": "Internship",
+      "department": "Engineering",
+      "location": "New York, NY",
+      "team": "Personalization",
+      "allLocations": [
+        "New York, NY",
+        "London",
+        "Stockholm"
+      ]
+    },
+    "createdAt": 1790268243188,
+    "descriptionPlain": "PLEASE READ BEFORE APPLYING\nThis posting is intended specifically for candidates who are participating in RecSys and is not a general application for open roles at Spotify.",
+    "description": "<div>PLEASE READ BEFORE APPLYING\nThis posting is intended specifically for candidates who are participating in RecSys and is not a general application for open roles at Spotify.</div>",
+    "id": "e7f6e680-bf86-4da6-8711-afe44b84fa41",
+    "lists": [],
+    "text": "RecSys 2026 — Intern",
+    "country": "US",
+    "workplaceType": "remote",
+    "opening": "",
+    "openingPlain": "",
+    "descriptionBody": "<div>PLEASE READ BEFORE APPLYING\nThis posting is intended specifically for candidates who are participating in RecSys and is not a general application for open roles at Spotify.</div>",
+    "descriptionBodyPlain": "PLEASE READ BEFORE APPLYING\nThis posting is intended specifically for candidates who are participating in RecSys and is not a general application for open roles at Spotify.",
+    "hostedUrl": "https://jobs.lever.co/spotify/e7f6e680-bf86-4da6-8711-afe44b84fa41",
+    "applyUrl": "https://jobs.lever.co/spotify/e7f6e680-bf86-4da6-8711-afe44b84fa41/apply"
+  },
+  {
+    "additionalPlain": "Spotify is an equal opportunity employer.",
+    "additional": "<div>Spotify is an equal opportunity employer.</div>",
+    "categories": {
+      "department": "Engineering",
+      "location": "London",
+      "team": "Experience",
+      "allLocations": [
+        "London",
+        "Stockholm"
+      ]
+    },
+    "createdAt": 1789545941933,
+    "descriptionPlain": "Content Platform is responsible for ingesting, processing, storing, and delivering every piece of content on Spotify — from music and podcasts to audiobooks.",
+    "description": "<div>Content Platform is responsible for ingesting, processing, storing, and delivering every piece of content on Spotify — from music and podcasts to audiobooks.</div>",
+    "id": "be2d7d1e-939e-47f9-8db7-278caa101a60",
+    "lists": [
+      {
+        "text": "What You'll Do",
+        "content": "<li>Define and drive the long-term architectural direction for Spotify's media pipeline across Content Platform.</li>"
+      }
+    ],
+    "text": "Staff Engineer - Content Platform",
+    "country": "GB",
+    "workplaceType": "hybrid",
+    "opening": "",
+    "openingPlain": "",
+    "descriptionBody": "<div>Content Platform is responsible for ingesting, processing, storing, and delivering every piece of content on Spotify &mdash; from music and podcasts to audiobooks.</div>",
+    "descriptionBodyPlain": "Content Platform is responsible for ingesting, processing, storing, and delivering every piece of content on Spotify — from music and podcasts to audiobooks.",
+    "hostedUrl": "https://jobs.lever.co/spotify/be2d7d1e-939e-47f9-8db7-278caa101a60",
+    "applyUrl": "https://jobs.lever.co/spotify/be2d7d1e-939e-47f9-8db7-278caa101a60/apply"
+  }
+]

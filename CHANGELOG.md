@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `postings.version_marker` (migration `0002`, ADR 0013): the provider change marker last seen per posting, set on insert and every poll; `job_updated` now compares against it instead of looking earlier events up, so the 180-day event prune can never cause a spurious `job_updated`. Event payloads no longer carry the database-internal `board_id` (vendor and board identifier remain).
 - `TELL_COLLECTORS_ONLY` (comma-separated module names) narrows `discover_collectors()` for parallel local work; unset means everything.
 - Coverage floors live in `pyproject.toml` under `[tool.tell.coverage]`; `scripts/check_coverage.py` reads them (defaults otherwise) and `make test` writes per-invocation coverage files so concurrent runs do not collide.
+- Phase 2 ATS collectors: Greenhouse, Lever, Ashby, SmartRecruiters with fixtures, contract tests, idempotency tests, and source documentation.
+- Phase 3 ATS discovery and YC seed: domain-to-board discovery, board verification, confidence scoring, and YC company directory seeder.
+- Phase 4 collectors: SEC EDGAR (Form D, 8-K, S-1), news (Google News RSS + company feeds), and GitHub organization collectors; `company_feeds` table for feed discovery.
 
 ### Changed
 

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Quillstone Analytics Blog</title>
+  <link href="https://quillstone.example/blog/atom.xml" rel="self"/>
+  <link href="https://quillstone.example/blog"/>
+  <id>https://quillstone.example/blog</id>
+  <updated>2026-10-04T16:00:00Z</updated>
+  <entry>
+    <title>Introducing Quillstone Forecast 2.0</title>
+    <link href="https://quillstone.example/blog/introducing-forecast-2"/>
+    <id>https://quillstone.example/blog/introducing-forecast-2</id>
+    <published>2026-10-04T16:00:00Z</published>
+    <updated>2026-10-04T16:00:00Z</updated>
+    <summary>Forecast 2.0 adds scenario planning and faster refreshes.</summary>
+  </entry>
+  <entry>
+    <title>We are opening a new office in Austin</title>
+    <link href="https://quillstone.example/blog/austin"/>
+    <id>https://quillstone.example/blog/austin</id>
+    <published>2026-09-30T14:00:00-07:00</published>
+    <updated>2026-09-30T14:00:00-07:00</updated>
+    <summary>Our second US hub opens next month.</summary>
+  </entry>
+  <entry>
+    <title>Our engineering principles</title>
+    <link href="https://quillstone.example/blog/engineering-principles"/>
+    <id>https://quillstone.example/blog/engineering-principles</id>
+    <published>2026-09-22T12:00:00Z</published>
+    <updated>2026-09-22T12:00:00Z</updated>
+    <summary>Six ideas we keep coming back to.</summary>
+  </entry>
+  <entry>
+    <title>Quillstone Analytics raises $24M Series A</title>
+    <link href="https://quillstone.example/blog/series-a"/>
+    <id>https://quillstone.example/blog/series-a</id>
+    <published>2026-10-01T13:00:00Z</published>
+    <updated>2026-10-01T13:00:00Z</updated>
+    <summary>What the new funding means for customers.</summary>
+  </entry>
+  <entry>
+    <title>Draft: release notes template</title>
+    <link href="https://quillstone.example/blog/release-notes-template"/>
+    <id>https://quillstone.example/blog/release-notes-template</id>
+    <summary>An entry with no date: dropped and counted as skipped.</summary>
+  </entry>
+</feed>

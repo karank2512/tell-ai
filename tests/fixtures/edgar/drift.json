@@ -1,0 +1,95 @@
+[
+  {
+    "accessionNumber": "0009990001-26-000001",
+    "cik": "9990001",
+    "formType": "D",
+    "dateFiled": "2026-10-01",
+    "fileNumber": "021-555001",
+    "primaryIssuer": {
+      "cik": "0009990001",
+      "entityName": "Example Robotics, Inc.",
+      "issuerAddress": {
+        "city": "SAN FRANCISCO",
+        "stateOrCountry": "CA",
+        "zipCode": "94107"
+      },
+      "jurisdictionOfInc": "DELAWARE",
+      "yearOfInc": 2022,
+      "entityType": "Corporation",
+      "issuerPreviousNameList": [
+        "Example Automation Inc."
+      ]
+    },
+    "offeringData": {
+      "industryGroup": {
+        "industryGroupType": "Other Technology"
+      },
+      "federalExemptionsExclusions": [
+        "06b",
+        "3C",
+        "3C.1"
+      ],
+      "typeOfFiling": {
+        "newOrAmendment": {
+          "isAmendment": false,
+          "previousAccessionNumber": null
+        },
+        "dateOfFirstSale": "2026-09-15"
+      },
+      "offeringSalesAmounts": {
+        "totalOfferingAmountIndefinite": false,
+        "totalAmountSold": 12500000,
+        "totalRemaining": 5500000,
+        "totalRemainingIndefinite": false
+      },
+      "investors": {
+        "totalNumberAlreadyInvested": 14
+      }
+    }
+  },
+  {
+    "accessionNumber": "0009990002-26-000001",
+    "cik": "9990002",
+    "formType": "D",
+    "dateFiled": "2026-10-01",
+    "fileNumber": "021-555002",
+    "primaryIssuer": {
+      "cik": "0009990002",
+      "entityName": "Bluefin Data Systems Inc",
+      "issuerAddress": {
+        "city": "AUSTIN",
+        "stateOrCountry": "TX",
+        "zipCode": "78701"
+      },
+      "jurisdictionOfInc": "DELAWARE",
+      "yearOfInc": null,
+      "entityType": "Corporation",
+      "issuerPreviousNameList": []
+    },
+    "offeringData": {
+      "industryGroup": {
+        "industryGroupType": "Biotechnology"
+      },
+      "federalExemptionsExclusions": [
+        "06b"
+      ],
+      "typeOfFiling": {
+        "newOrAmendment": {
+          "isAmendment": false,
+          "previousAccessionNumber": null
+        },
+        "dateOfFirstSale": "2026-08-20"
+      },
+      "offeringSalesAmounts": {
+        "totalOfferingAmount": null,
+        "totalOfferingAmountIndefinite": true,
+        "totalAmountSold": 2750000,
+        "totalRemaining": null,
+        "totalRemainingIndefinite": true
+      },
+      "investors": {
+        "totalNumberAlreadyInvested": 6
+      }
+    }
+  }
+]

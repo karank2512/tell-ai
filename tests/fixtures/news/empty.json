@@ -1,0 +1,9 @@
+{
+  "origin": "google_news",
+  "feed_url": "https://news.google.com/rss/search?q=%22Quillstone+Analytics%22+when%3A7d&hl=en-US&gl=US&ceid=US:en",
+  "company": {
+    "name": "Quillstone Analytics",
+    "domain": "quillstone.example"
+  },
+  "items": []
+}

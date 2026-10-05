@@ -1,0 +1,21 @@
+Description:           Daily Index of EDGAR Dissemination Feed by Form Type
+Last Data Received:    October 1, 2026
+Comments:              webmaster at sec.gov
+Anonymous FTP:         ftp://ftp.sec.gov/edgar/
+ 
+ 
+ 
+ 
+Form Type   Company Name                                                  CIK         Date Filed  File Name
+---------------------------------------------------------------------------------------------------------------------------------------------
+10-K        Example Holdings Corp                                         9990010     20261001    edgar/data/9990010/0009990010-26-000004.txt
+424B2       Example Bank Notes Trust                                      9990011     20261001    edgar/data/9990011/0009990011-26-000101.txt
+8-K         Monitored Software Inc                                        9990020     20261001    edgar/data/9990020/0009990020-26-000012.txt
+8-K         Unmonitored Industries Inc                                    9990030     20261001    edgar/data/9990030/0009990030-26-000007.txt
+8-K/A       Monitored Software Inc                                        9990020     20261001    edgar/data/9990020/0009990020-26-000013.txt
+D           Example Robotics, Inc.                                        9990001     20261001    edgar/data/9990001/0009990001-26-000001.txt
+D           Bluefin Data Systems Inc                                      9990002     20261001    edgar/data/9990002/0009990002-26-000001.txt
+D/A         Example Robotics, Inc.                                        9990001     20261001    edgar/data/9990001/0009990001-26-000002.txt
+S-1         Example Cloud Holdings Inc                                    9990040     20261001    edgar/data/9990040/0009990040-26-000003.txt
+S-1/A       Example Cloud Holdings Inc                                    9990040     20261001    edgar/data/9990040/0009990040-26-000002.txt
+SC 13G      Example Capital Partners LP                                   9990050     20261001    edgar/data/9990050/0009990050-26-000009.txt

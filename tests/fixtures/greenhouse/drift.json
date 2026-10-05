@@ -1,0 +1,262 @@
+{
+  "jobs": [
+    {
+      "absolute_url": "https://stripe.com/jobs/search?gh_jid=8172510",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false,
+          "requires_processing_consent": false,
+          "requires_retention_consent": false,
+          "retention_period": null,
+          "demographic_data_consent_applies": false
+        }
+      ],
+      "education": "education_required",
+      "internal_job_id": 3537063,
+      "location": {
+        "name": "Seattle, San Francisco, New York City"
+      },
+      "metadata": null,
+      "id": 8172510,
+      "requisition_id": "See Opening ID",
+      "title": "Abuse Investigator",
+      "company_name": "Stripe",
+      "first_published": "2026-09-09T10:50:29-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;h2&gt;&lt;strong&gt;Who we are&lt;/strong&gt;&lt;/h2&gt;\n&lt;p&gt;&lt;span style=&quot;font-weight: 400;&quot;&gt;Stripe is a financial infrastructure platform for businesses.&lt;/span&gt;&lt;/p&gt;\n&lt;h3&gt;&lt;strong&gt;About the team&lt;/strong&gt;&lt;/h3&gt;\n&lt;p&gt;Abuse Operations &amp;amp; Investigations is the front-line incident response team.&lt;/p&gt;",
+      "departments": [
+        {
+          "id": 81946,
+          "name": "8611 Security Analytics",
+          "child_ids": [],
+          "parent_id": 78876
+        }
+      ],
+      "offices": [
+        {
+          "id": 65234,
+          "name": "US",
+          "location": null,
+          "child_ids": [
+            89623,
+            249942,
+            249943
+          ],
+          "parent_id": 673
+        }
+      ],
+      "ai_disclaimer": null,
+      "include_ai_disclaimer": false,
+      "ai_opt_out_request_url": "http://app.greenhouse.io/ai_opt_out_request/job_post/8172510/ai_opt_out"
+    },
+    {
+      "absolute_url": "https://stripe.com/jobs/search?gh_jid=7844214",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false,
+          "requires_processing_consent": false,
+          "requires_retention_consent": false,
+          "retention_period": null,
+          "demographic_data_consent_applies": false
+        }
+      ],
+      "education": "education_required",
+      "internal_job_id": 3419738,
+      "location": {
+        "name": "Remote in the US"
+      },
+      "metadata": null,
+      "id": 7844214,
+      "requisition_id": "See Opening ID",
+      "title": "AEO and GEO Marketing Manager",
+      "company_name": "Stripe",
+      "first_published": "2026-04-23T14:21:56-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;h2&gt;&lt;strong&gt;Who we are&lt;/strong&gt;&lt;/h2&gt;\n&lt;p&gt;Stripe is a financial infrastructure platform for businesses.&lt;/p&gt;\n&lt;h3&gt;&lt;strong&gt;About the team&lt;/strong&gt;&lt;/h3&gt;\n&lt;p&gt;Growth Marketing is a team of performance-driven marketers.&lt;/p&gt;",
+      "departments": [
+        {
+          "id": 79919,
+          "name": "2314 Performance Marketing",
+          "child_ids": [],
+          "parent_id": 78697
+        }
+      ],
+      "offices": [
+        {
+          "id": 65234,
+          "name": "US",
+          "location": null,
+          "child_ids": [
+            89623,
+            249942,
+            249943
+          ],
+          "parent_id": 673
+        }
+      ],
+      "ai_disclaimer": null,
+      "include_ai_disclaimer": false,
+      "ai_opt_out_request_url": "http://app.greenhouse.io/ai_opt_out_request/job_post/7844214/ai_opt_out"
+    },
+    {
+      "absolute_url": "https://stripe.com/jobs/search?gh_jid=6042172",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false,
+          "requires_processing_consent": false,
+          "requires_retention_consent": false,
+          "retention_period": null,
+          "demographic_data_consent_applies": false
+        }
+      ],
+      "education": "education_required",
+      "internal_job_id": 2900860,
+      "location": {
+        "name": "US-Remote, Chicago, Seattle, San Francisco"
+      },
+      "metadata": null,
+      "id": 6042172,
+      "requisition_id": "See Opening ID",
+      "title": "Backend Engineer, Core Technology",
+      "company_name": "Stripe",
+      "first_published": "2024-06-14T18:04:50-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;h2&gt;&lt;strong&gt;Who we are&lt;/strong&gt;&lt;/h2&gt;\n&lt;p&gt;Stripe is a financial infrastructure platform for businesses.&lt;/p&gt;\n&lt;h3&gt;&lt;strong&gt;About the team&lt;/strong&gt;&lt;/h3&gt;\n&lt;p&gt;Stripe Infrastructure is responsible for the reliability and scale of the platform.&lt;/p&gt;",
+      "departments": [
+        {
+          "id": 80659,
+          "name": "8127 Core Infrastructure",
+          "child_ids": [],
+          "parent_id": 86133
+        }
+      ],
+      "offices": [
+        {
+          "id": 65234,
+          "name": "US",
+          "location": null,
+          "child_ids": [
+            89623,
+            249942,
+            249943
+          ],
+          "parent_id": 673
+        }
+      ],
+      "ai_disclaimer": null,
+      "include_ai_disclaimer": false,
+      "ai_opt_out_request_url": "http://app.greenhouse.io/ai_opt_out_request/job_post/6042172/ai_opt_out"
+    },
+    {
+      "absolute_url": "https://stripe.com/jobs/search?gh_jid=8197886",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false,
+          "requires_processing_consent": false,
+          "requires_retention_consent": false,
+          "retention_period": null,
+          "demographic_data_consent_applies": false
+        }
+      ],
+      "education": "education_required",
+      "internal_job_id": 3547859,
+      "location": {
+        "name": "New York City "
+      },
+      "metadata": null,
+      "id": 8197886,
+      "requisition_id": "See Opening ID",
+      "title": "Machine Learning Engineer, Link",
+      "company_name": "Stripe",
+      "first_published": "2026-09-21T12:52:34-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;h2&gt;&lt;strong&gt;Who we are&lt;/strong&gt;&lt;/h2&gt;\n&lt;p&gt;Stripe is a financial infrastructure platform for businesses.&lt;/p&gt;\n&lt;h3&gt;&lt;strong&gt;About the team&lt;/strong&gt;&lt;/h3&gt;\n&lt;p&gt;Link is a digital wallet designed for fast and secure online payments.&lt;/p&gt;",
+      "departments": [
+        {
+          "id": 76682,
+          "name": "8570 Consumer Network - Eng",
+          "child_ids": [],
+          "parent_id": 88186
+        }
+      ],
+      "offices": [
+        {
+          "id": 65234,
+          "name": "US",
+          "location": null,
+          "child_ids": [
+            89623,
+            249942,
+            249943
+          ],
+          "parent_id": 673
+        }
+      ],
+      "ai_disclaimer": null,
+      "include_ai_disclaimer": false,
+      "ai_opt_out_request_url": "http://app.greenhouse.io/ai_opt_out_request/job_post/8197886/ai_opt_out"
+    },
+    {
+      "absolute_url": "https://stripe.com/jobs/search?gh_jid=8237366",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false,
+          "requires_processing_consent": false,
+          "requires_retention_consent": false,
+          "retention_period": null,
+          "demographic_data_consent_applies": false
+        }
+      ],
+      "education": "education_required",
+      "internal_job_id": 3564516,
+      "location": {
+        "name": "Chicago"
+      },
+      "metadata": null,
+      "id": 8237366,
+      "requisition_id": "See Opening ID",
+      "title": "Customer Success Manager, Revenue Suite",
+      "company_name": "Stripe",
+      "first_published": "2026-10-05T05:44:45-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;h2&gt;&lt;strong&gt;Who we are&lt;/strong&gt;&lt;/h2&gt;\n&lt;p&gt;Stripe is a financial infrastructure platform for businesses.&lt;/p&gt;\n&lt;h3&gt;&lt;strong&gt;About the team&lt;/strong&gt;&lt;/h3&gt;\n&lt;p&gt;Customer Success Managers own the post-sale relationship&amp;nbsp;with users.&lt;/p&gt;",
+      "departments": [
+        {
+          "id": 76999,
+          "name": "1340 Customer Success Management",
+          "child_ids": [],
+          "parent_id": 81964
+        }
+      ],
+      "offices": [
+        {
+          "id": 65234,
+          "name": "US",
+          "location": null,
+          "child_ids": [
+            89623,
+            249942,
+            249943
+          ],
+          "parent_id": 673
+        }
+      ],
+      "ai_disclaimer": null,
+      "include_ai_disclaimer": false,
+      "ai_opt_out_request_url": "http://app.greenhouse.io/ai_opt_out_request/job_post/8237366/ai_opt_out"
+    }
+  ],
+  "meta": {
+    "total": 5
+  }
+}

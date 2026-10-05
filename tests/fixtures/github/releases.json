@@ -1,0 +1,53 @@
+[
+  {
+    "url": "https://api.github.com/repos/astral-sh/uv/releases/402618784",
+    "html_url": "https://github.com/astral-sh/uv/releases/tag/0.12.23",
+    "id": 402618784,
+    "node_id": "RE_kwDOKbIFZc4X_3mg",
+    "tag_name": "0.12.23",
+    "target_commitish": "46b84fd0bfec23b72f29e8e2185ba68a65052f48",
+    "name": "0.12.23",
+    "draft": false,
+    "immutable": true,
+    "prerelease": false,
+    "created_at": "2026-10-03T16:52:41Z",
+    "updated_at": "2026-10-03T17:34:11Z",
+    "published_at": "2026-10-03T17:34:11Z",
+    "tarball_url": "https://api.github.com/repos/astral-sh/uv/tarball/0.12.23",
+    "zipball_url": "https://api.github.com/repos/astral-sh/uv/zipball/0.12.23"
+  },
+  {
+    "url": "https://api.github.com/repos/astral-sh/uv/releases/401449793",
+    "html_url": "https://github.com/astral-sh/uv/releases/tag/0.12.22",
+    "id": 401449793,
+    "node_id": "RE_kwDOKbIFZc4X7aNB",
+    "tag_name": "0.12.22",
+    "target_commitish": "70fe1196a546e49148a73b1c592b2f74c33af80e",
+    "name": "0.12.22",
+    "draft": false,
+    "immutable": true,
+    "prerelease": false,
+    "created_at": "2026-10-01T23:31:44Z",
+    "updated_at": "2026-10-02T00:20:42Z",
+    "published_at": "2026-10-02T00:20:42Z",
+    "tarball_url": "https://api.github.com/repos/astral-sh/uv/tarball/0.12.22",
+    "zipball_url": "https://api.github.com/repos/astral-sh/uv/zipball/0.12.22"
+  },
+  {
+    "url": "https://api.github.com/repos/astral-sh/uv/releases/399533040",
+    "html_url": "https://github.com/astral-sh/uv/releases/tag/0.12.21",
+    "id": 399533040,
+    "node_id": "RE_kwDOKbIFZc4X0GPw",
+    "tag_name": "0.12.21",
+    "target_commitish": "7af826859382eb191e47467540850caa8f493e5b",
+    "name": "0.12.21",
+    "draft": false,
+    "immutable": true,
+    "prerelease": false,
+    "created_at": "2026-09-29T18:33:48Z",
+    "updated_at": "2026-09-29T21:14:06Z",
+    "published_at": "2026-09-29T21:14:06Z",
+    "tarball_url": "https://api.github.com/repos/astral-sh/uv/tarball/0.12.21",
+    "zipball_url": "https://api.github.com/repos/astral-sh/uv/zipball/0.12.21"
+  }
+]

@@ -1,9 +1,10 @@
 """SQLAlchemy 2.0 models: the DDL in ``docs/SPEC.md`` section 5, field for field.
 
-Thirteen tables, one class each, in the order the spec lists them. Column names,
-types, nullability, server defaults, primary keys, unique constraints, foreign keys
-and the four secondary indexes mirror the DDL exactly; ``tests/test_schema.py``
-proves parity against the applied alembic migration with ``compare_metadata``.
+Thirteen tables, one class each, in the order the spec lists them, plus one table
+the spec lacks (``company_feeds``, below). Column names, types, nullability, server
+defaults, primary keys, unique constraints, foreign keys and the four secondary
+indexes mirror the DDL exactly; ``tests/test_schema.py`` proves parity against the
+applied alembic migration with ``compare_metadata``.
 
 Constraint and index names follow PostgreSQL's own defaults (``<table>_pkey``,
 ``<table>_<cols>_key``, ``<table>_<col>_fkey``, ``<table>_<cols>_idx``) so the
@@ -11,11 +12,14 @@ hand-written DDL in the spec and the migration name the same objects.
 
 Nothing here goes beyond the DDL except the allowed-value constants below (the
 spec documents them as comments next to the columns), a generic ``__repr__`` and
-one recorded deviation: ``postings.version_marker`` (migration ``0002``,
+two recorded deviations. ``postings.version_marker`` (migration ``0002``,
 ``docs/decisions/0013-postings-version-marker.md``) holds the provider change
 marker last seen for a posting so ``job_updated`` does not depend on events that
-the 180-day prune removes. ``api_keys`` / ``api_usage`` arrive with Phase 9 in
-their own migration.
+the 180-day prune removes. The ``company_feeds`` table (migration ``0003``,
+``docs/decisions/0014-company-feeds-table.md``) keeps the company blog feeds the
+news collector discovers (spec section 3.7) and their conditional-request
+validators, which section 5 has nowhere to keep.
+``api_keys`` / ``api_usage`` arrive with Phase 9 in their own migration.
 """
 
 from __future__ import annotations
@@ -100,6 +104,10 @@ RUN_STATUSES: tuple[str, ...] = ("running", "ok", "failed")
 ReviewQueueKind = Literal["entity_match", "board_verify", "news_classify"]
 REVIEW_QUEUE_KINDS: tuple[str, ...] = ("entity_match", "board_verify", "news_classify")
 """``review_queue.kind``."""
+
+CompanyFeedStatus = Literal["active", "dead", "paused"]
+COMPANY_FEED_STATUSES: tuple[str, ...] = ("active", "dead", "paused")
+"""``company_feeds.status`` (ADR 0014)."""
 
 ReviewQueueStatus = Literal["open", "resolved", "rejected"]
 REVIEW_QUEUE_STATUSES: tuple[str, ...] = ("open", "resolved", "rejected")
@@ -354,6 +362,29 @@ class ReviewQueueItem(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(_timestamptz())
 
 
+class CompanyFeed(Base):
+    """An RSS/Atom feed discovered on a company's own site (ADR 0014, migration 0003).
+
+    The news collector (spec section 3.7) discovers the feed once, then polls it with
+    ``If-None-Match`` / ``If-Modified-Since`` built from ``etag`` / ``last_modified``
+    and skips it while ``last_polled_at`` is younger than 6 hours.
+    """
+
+    __tablename__ = "company_feeds"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    company_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("companies.id"), nullable=False)
+    feed_url: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    discovered_from: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'active'"))
+    last_polled_at: Mapped[datetime | None] = mapped_column(_timestamptz())
+    etag: Mapped[str | None] = mapped_column(Text)
+    last_modified: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        _timestamptz(), nullable=False, server_default=text("now()")
+    )
+
+
 ALL_MODELS: tuple[type[Base], ...] = (
     Company,
     CompanyAlias,
@@ -368,5 +399,6 @@ ALL_MODELS: tuple[type[Base], ...] = (
     Feedback,
     Run,
     ReviewQueueItem,
+    CompanyFeed,
 )
-"""Every mapped class, in DDL order (handy for tests and TRUNCATE lists)."""
+"""Every mapped class, in DDL order then the recorded additions (tests, TRUNCATE lists)."""

@@ -1,0 +1,84 @@
+<?xml version="1.0"?>
+<!-- Hand-crafted to the EDGAR Form D primary_doc.xml shape (schema X0708). Fictional issuer.
+     Street lines, phone, the officers-and-directors element, sales compensation and the
+     signature block are removed; the address keeps city, state and zip only. -->
+<edgarSubmission>
+  <schemaVersion>X0708</schemaVersion>
+  <submissionType>D</submissionType>
+  <testOrLive>LIVE</testOrLive>
+  <primaryIssuer>
+    <cik>0009990001</cik>
+    <entityName>Example Robotics, Inc.</entityName>
+    <issuerAddress>
+      <city>SAN FRANCISCO</city>
+      <stateOrCountry>CA</stateOrCountry>
+      <stateOrCountryDescription>CALIFORNIA</stateOrCountryDescription>
+      <zipCode>94107</zipCode>
+    </issuerAddress>
+    <jurisdictionOfInc>DELAWARE</jurisdictionOfInc>
+    <issuerPreviousNameList>
+      <previousName>Example Automation Inc.</previousName>
+    </issuerPreviousNameList>
+    <edgarPreviousNameList>
+      <value>None</value>
+    </edgarPreviousNameList>
+    <entityType>Corporation</entityType>
+    <yearOfInc>
+      <withinFiveYears>true</withinFiveYears>
+      <value>2022</value>
+    </yearOfInc>
+  </primaryIssuer>
+  <offeringData>
+    <industryGroup>
+      <industryGroupType>Other Technology</industryGroupType>
+    </industryGroup>
+    <issuerSize>
+      <revenueRange>Decline to Disclose</revenueRange>
+    </issuerSize>
+    <federalExemptionsExclusions>
+      <item>06b</item>
+      <item>3C</item>
+      <item>3C.1</item>
+    </federalExemptionsExclusions>
+    <typeOfFiling>
+      <newOrAmendment>
+        <isAmendment>false</isAmendment>
+      </newOrAmendment>
+      <dateOfFirstSale>
+        <value>2026-09-15</value>
+      </dateOfFirstSale>
+    </typeOfFiling>
+    <durationOfOffering>
+      <moreThanOneYear>false</moreThanOneYear>
+    </durationOfOffering>
+    <typesOfSecuritiesOffered>
+      <isEquityType>true</isEquityType>
+    </typesOfSecuritiesOffered>
+    <businessCombinationTransaction>
+      <isBusinessCombinationTransaction>false</isBusinessCombinationTransaction>
+    </businessCombinationTransaction>
+    <minimumInvestmentAccepted>0</minimumInvestmentAccepted>
+    <offeringSalesAmounts>
+      <totalOfferingAmount>18000000</totalOfferingAmount>
+      <totalAmountSold>12500000</totalAmountSold>
+      <totalRemaining>5500000</totalRemaining>
+    </offeringSalesAmounts>
+    <investors>
+      <hasNonAccreditedInvestors>false</hasNonAccreditedInvestors>
+      <totalNumberAlreadyInvested>14</totalNumberAlreadyInvested>
+    </investors>
+    <salesCommissionsFindersFees>
+      <salesCommissions>
+        <dollarAmount>0</dollarAmount>
+      </salesCommissions>
+      <findersFees>
+        <dollarAmount>0</dollarAmount>
+      </findersFees>
+    </salesCommissionsFindersFees>
+    <useOfProceeds>
+      <grossProceedsUsed>
+        <dollarAmount>0</dollarAmount>
+      </grossProceedsUsed>
+    </useOfProceeds>
+  </offeringData>
+</edgarSubmission>

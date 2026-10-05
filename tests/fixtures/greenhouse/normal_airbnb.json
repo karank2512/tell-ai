@@ -1,0 +1,191 @@
+{
+  "jobs": [
+    {
+      "absolute_url": "https://careers.airbnb.com/positions/7995153?gh_jid=7995153",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false,
+          "requires_processing_consent": false,
+          "requires_retention_consent": false,
+          "retention_period": null,
+          "demographic_data_consent_applies": false
+        }
+      ],
+      "internal_job_id": 3468206,
+      "location": {
+        "name": "Berlin, Germany "
+      },
+      "metadata": [
+        {
+          "id": 9245691,
+          "name": "Is this job part of ACC?",
+          "value": false,
+          "value_type": "yes_no"
+        },
+        {
+          "id": 10216612,
+          "name": "Workplace Type",
+          "value": "Hybrid",
+          "value_type": "single_select"
+        }
+      ],
+      "id": 7995153,
+      "updated_at": "2026-09-29T20:00:54-04:00",
+      "requisition_id": "ONE",
+      "title": "Business Development Manager",
+      "company_name": "Airbnb",
+      "first_published": "2026-06-10T08:50:56-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;div class=&quot;content-intro&quot;&gt;&lt;p&gt;Airbnb was born in 2007 and now hosts guests worldwide.&lt;/p&gt;&lt;/div&gt;\n&lt;p&gt;&lt;strong&gt;The Community You Will Join:&lt;/strong&gt;&lt;/p&gt;\n&lt;p&gt;The Sales team grows supply in Germany.&lt;/p&gt;",
+      "departments": [
+        {
+          "id": 57796,
+          "name": "Sales",
+          "child_ids": [],
+          "parent_id": 73691
+        }
+      ],
+      "offices": [
+        {
+          "id": 153,
+          "name": "Berlin, Germany",
+          "location": "Berlin, Germany",
+          "child_ids": [],
+          "parent_id": 64286
+        }
+      ],
+      "ai_disclaimer": null,
+      "include_ai_disclaimer": null,
+      "ai_opt_out_request_url": null
+    },
+    {
+      "absolute_url": "https://careers.airbnb.com/positions/8214444?gh_jid=8214444",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false,
+          "requires_processing_consent": false,
+          "requires_retention_consent": false,
+          "retention_period": null,
+          "demographic_data_consent_applies": false
+        }
+      ],
+      "internal_job_id": 3554999,
+      "location": {
+        "name": "San Francisco, CA"
+      },
+      "metadata": [
+        {
+          "id": 9245691,
+          "name": "Is this job part of ACC?",
+          "value": false,
+          "value_type": "yes_no"
+        },
+        {
+          "id": 10216612,
+          "name": "Workplace Type",
+          "value": "Remote",
+          "value_type": "single_select"
+        }
+      ],
+      "id": 8214444,
+      "updated_at": "2026-09-29T20:00:54-04:00",
+      "requisition_id": "ONE",
+      "title": "Business Systems Engineer, Tech Foundations",
+      "company_name": "Airbnb",
+      "first_published": "2026-09-18T16:54:20-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;div class=&quot;content-intro&quot;&gt;&lt;p&gt;Airbnb was born in 2007 and now hosts guests worldwide.&lt;/p&gt;&lt;/div&gt;\n&lt;p&gt;&lt;strong&gt;The Community You Will Join:&lt;/strong&gt;&lt;/p&gt;\n&lt;p&gt;Tech Foundations runs the internal business systems.&lt;/p&gt;",
+      "departments": [
+        {
+          "id": 252,
+          "name": "Information Technology",
+          "child_ids": [],
+          "parent_id": 73703
+        }
+      ],
+      "offices": [
+        {
+          "id": 63868,
+          "name": "United States",
+          "location": null,
+          "child_ids": [
+            246412,
+            258081,
+            258082
+          ],
+          "parent_id": 17515
+        }
+      ],
+      "ai_disclaimer": null,
+      "include_ai_disclaimer": null,
+      "ai_opt_out_request_url": null
+    },
+    {
+      "absolute_url": "https://careers.airbnb.com/positions/8214375?gh_jid=8214375",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false,
+          "requires_processing_consent": false,
+          "requires_retention_consent": false,
+          "retention_period": null,
+          "demographic_data_consent_applies": false
+        }
+      ],
+      "internal_job_id": 3554976,
+      "location": {
+        "name": "San Francisco, CA"
+      },
+      "metadata": [
+        {
+          "id": 9245691,
+          "name": "Is this job part of ACC?",
+          "value": false,
+          "value_type": "yes_no"
+        },
+        {
+          "id": 10216612,
+          "name": "Workplace Type",
+          "value": "Onsite",
+          "value_type": "single_select"
+        }
+      ],
+      "id": 8214375,
+      "updated_at": "2026-09-29T20:00:54-04:00",
+      "requisition_id": "ONE",
+      "title": "Senior Executive IT Support Engineer, Tech Foundations",
+      "company_name": "Airbnb",
+      "first_published": "2026-09-18T15:37:40-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;div class=&quot;content-intro&quot;&gt;&lt;p&gt;Airbnb was born in 2007 and now hosts guests worldwide.&lt;/p&gt;&lt;/div&gt;\n&lt;p&gt;&lt;strong&gt;The Community You Will Join:&lt;/strong&gt;&lt;/p&gt;\n&lt;p&gt;Tech Foundations supports employees on site in San Francisco.&lt;/p&gt;",
+      "departments": [
+        {
+          "id": 73674,
+          "name": "Non-Software Engineering",
+          "child_ids": [],
+          "parent_id": 73703
+        }
+      ],
+      "offices": [
+        {
+          "id": 55,
+          "name": "San Francisco, United States",
+          "location": "San Francisco, CA",
+          "child_ids": [],
+          "parent_id": 63868
+        }
+      ],
+      "ai_disclaimer": null,
+      "include_ai_disclaimer": null,
+      "ai_opt_out_request_url": null
+    }
+  ],
+  "meta": {
+    "total": 3
+  }
+}

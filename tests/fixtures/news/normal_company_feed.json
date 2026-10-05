@@ -1,0 +1,34 @@
+{
+  "origin": "company_feed",
+  "feed_url": "https://quillstone.example/blog/atom.xml",
+  "company": {
+    "name": "Quillstone Analytics",
+    "domain": "quillstone.example"
+  },
+  "items": [
+    {
+      "title": "Introducing Quillstone Forecast 2.0",
+      "link": "https://quillstone.example/blog/introducing-forecast-2",
+      "pub_date": "2026-10-04T16:00:00Z",
+      "source": "Quillstone Analytics Blog"
+    },
+    {
+      "title": "We are opening a new office in Austin",
+      "link": "https://quillstone.example/blog/austin",
+      "pub_date": "2026-09-30T21:00:00Z",
+      "source": "Quillstone Analytics Blog"
+    },
+    {
+      "title": "Our engineering principles",
+      "link": "https://quillstone.example/blog/engineering-principles",
+      "pub_date": "2026-09-22T12:00:00Z",
+      "source": "Quillstone Analytics Blog"
+    },
+    {
+      "title": "Quillstone Analytics raises $24M Series A",
+      "link": "https://quillstone.example/blog/series-a",
+      "pub_date": "2026-10-01T13:00:00Z",
+      "source": "Quillstone Analytics Blog"
+    }
+  ]
+}

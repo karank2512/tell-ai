@@ -1,0 +1,6 @@
+# Hand-crafted robots.txt for discovery tests.
+User-agent: *
+Disallow: /careers
+Disallow: /admin/
+
+Sitemap: https://acme.com/sitemap.xml

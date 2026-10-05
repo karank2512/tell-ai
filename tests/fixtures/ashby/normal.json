@@ -1,0 +1,309 @@
+{
+  "apiVersion": "1",
+  "jobs": [
+    {
+      "id": "34413f8d-26bf-4bbc-8ade-eb309a0e2245",
+      "title": " Security Engineer, Cloud",
+      "department": "Engineering",
+      "team": "Backend",
+      "employmentType": "FullTime",
+      "location": "New York, NY (HQ)",
+      "shouldDisplayCompensationOnJobPostings": true,
+      "secondaryLocations": [
+        {
+          "location": "Remote (Canada)",
+          "address": {
+            "postalAddress": {
+              "addressCountry": "Canada"
+            }
+          }
+        },
+        {
+          "location": "Remote (US)",
+          "address": {
+            "postalAddress": {
+              "addressCountry": "United States"
+            }
+          }
+        },
+        {
+          "location": "Miami, FL",
+          "address": {
+            "postalAddress": {
+              "addressRegion": "Florida",
+              "addressCountry": "USA",
+              "addressLocality": "Miami"
+            }
+          }
+        }
+      ],
+      "publishedAt": "2026-04-07T17:12:35.753+00:00",
+      "isListed": true,
+      "isRemote": true,
+      "workplaceType": "Hybrid",
+      "address": {
+        "postalAddress": {
+          "addressRegion": "NY",
+          "addressCountry": "USA",
+          "addressLocality": "New York City"
+        }
+      },
+      "jobUrl": "https://jobs.ashbyhq.com/ramp/34413f8d-26bf-4bbc-8ade-eb309a0e2245",
+      "applyUrl": "https://jobs.ashbyhq.com/ramp/34413f8d-26bf-4bbc-8ade-eb309a0e2245/application",
+      "descriptionHtml": "<h1><strong>About the Role</strong></h1><p>The Security Engineering team helps make Ramp the most secure place for our customers to collect, manage, and put to work their business’ financial information</p>",
+      "descriptionPlain": "ABOUT THE ROLE\n\nThe Security Engineering team helps make Ramp the most secure place for our customers to collect, manage, and put to work their business’ financial information",
+      "compensation": {
+        "compensationTierSummary": "$211.4K – $290.6K • Offers Equity",
+        "scrapeableCompensationSalarySummary": "$211.4K - $290.6K",
+        "compensationTiers": [
+          {
+            "id": "5f7a903e-36e4-492c-ac09-f2745d717daa",
+            "tierSummary": "$211.4K – $290.6K • Offers Equity",
+            "title": null,
+            "additionalInformation": null,
+            "components": [
+              {
+                "id": "feaef96f-559f-4df8-a38c-3eee072a8d74",
+                "summary": "Offers Equity",
+                "compensationType": "EquityPercentage",
+                "interval": "NONE",
+                "currencyCode": null,
+                "minValue": null,
+                "maxValue": null
+              },
+              {
+                "id": "3481c194-45fd-4b89-8592-e8f4d4b51f20",
+                "summary": "$211.4K – $290.6K",
+                "compensationType": "Salary",
+                "interval": "1 YEAR",
+                "currencyCode": "USD",
+                "minValue": 211400,
+                "maxValue": 290600
+              }
+            ]
+          }
+        ],
+        "summaryComponents": [
+          {
+            "compensationType": "EquityPercentage",
+            "interval": "NONE",
+            "currencyCode": null,
+            "minValue": null,
+            "maxValue": null
+          },
+          {
+            "compensationType": "Salary",
+            "interval": "1 YEAR",
+            "currencyCode": "USD",
+            "minValue": 211400,
+            "maxValue": 290600
+          }
+        ]
+      }
+    },
+    {
+      "id": "4c24a55a-ea3b-4cea-a5b5-7862938616bf",
+      "title": "Procurement Solutions Architect",
+      "department": "Sales",
+      "team": "Solutions Consulting",
+      "employmentType": "FullTime",
+      "location": "Remote (US)",
+      "shouldDisplayCompensationOnJobPostings": true,
+      "secondaryLocations": [
+        {
+          "location": "San Francisco, CA",
+          "address": {
+            "postalAddress": {
+              "addressRegion": "California ",
+              "addressCountry": "USA",
+              "addressLocality": "San Fransisco"
+            }
+          }
+        },
+        {
+          "location": "New York, NY (HQ)",
+          "address": {
+            "postalAddress": {
+              "addressRegion": "NY",
+              "addressCountry": "USA",
+              "addressLocality": "New York City"
+            }
+          }
+        }
+      ],
+      "publishedAt": "2026-09-21T20:33:59.665+00:00",
+      "isListed": true,
+      "isRemote": true,
+      "workplaceType": "Remote",
+      "address": {
+        "postalAddress": {
+          "addressCountry": "United States"
+        }
+      },
+      "jobUrl": "https://jobs.ashbyhq.com/ramp/4c24a55a-ea3b-4cea-a5b5-7862938616bf",
+      "applyUrl": "https://jobs.ashbyhq.com/ramp/4c24a55a-ea3b-4cea-a5b5-7862938616bf/application",
+      "descriptionHtml": "<h1><strong>About the Role</strong></h1><p>Ramp is looking for an experienced Solutions Architect, Procurement (Pre-Sales, Enterprise) to serve as the technical and functional expert for Procurement and Procure-to-Pay (P2P) within our Solutions organization.</p>",
+      "descriptionPlain": "ABOUT THE ROLE\n\nRamp is looking for an experienced Solutions Architect, Procurement (Pre-Sales, Enterprise) to serve as the technical and functional expert for Procurement and Procure-to-Pay (P2P) within our Solutions organization.",
+      "compensation": {
+        "compensationTierSummary": "$182,260 – $278,300 • Offers Equity • Multiple Ranges",
+        "scrapeableCompensationSalarySummary": "$182,260 - $278,300",
+        "compensationTiers": [
+          {
+            "id": "ddf5411d-9532-4665-8f1e-8982ddbb6047",
+            "tierSummary": "OTE $202,400 – $278,300 • Offers Equity • 75/25 split",
+            "title": "SF/NY",
+            "additionalInformation": "75/25 split",
+            "components": [
+              {
+                "id": "034f7d96-c32f-4a96-b8f8-eb5f99a75697",
+                "summary": "Offers Equity",
+                "compensationType": "EquityCashValue",
+                "interval": "1 YEAR",
+                "currencyCode": "USD",
+                "minValue": null,
+                "maxValue": null
+              },
+              {
+                "id": "1b8575ba-925b-4e1b-8019-ff38c573f939",
+                "summary": "OTE $202,400 – $278,300",
+                "compensationType": "Salary",
+                "interval": "1 YEAR",
+                "currencyCode": "USD",
+                "minValue": 202400,
+                "maxValue": 278300
+              }
+            ]
+          },
+          {
+            "id": "dfc72668-1501-4deb-bf4f-ba8049985bfd",
+            "tierSummary": "OTE $182,260 – $250,470 • Offers Equity • 75/25 split",
+            "title": "Nationwide",
+            "additionalInformation": "75/25 split",
+            "components": [
+              {
+                "id": "041000ca-310c-4eff-827c-a24a9650aea1",
+                "summary": "OTE $182,260 – $250,470",
+                "compensationType": "Salary",
+                "interval": "1 YEAR",
+                "currencyCode": "USD",
+                "minValue": 182260,
+                "maxValue": 250470
+              },
+              {
+                "id": "2d643b52-3cce-4e1f-96e3-a1a80e503f0f",
+                "summary": "Offers Equity",
+                "compensationType": "EquityCashValue",
+                "interval": "1 YEAR",
+                "currencyCode": "USD",
+                "minValue": null,
+                "maxValue": null
+              }
+            ]
+          }
+        ],
+        "summaryComponents": [
+          {
+            "compensationType": "EquityCashValue",
+            "minValue": null,
+            "maxValue": null,
+            "interval": "1 YEAR"
+          },
+          {
+            "minValue": 182260,
+            "maxValue": 278300,
+            "currencyCode": "USD",
+            "interval": "1 YEAR",
+            "compensationType": "Salary"
+          }
+        ]
+      }
+    },
+    {
+      "id": "1515fe6d-1d8e-475b-a5ee-cefe43e78cb7",
+      "title": "Account Executive",
+      "department": "Sales",
+      "team": "AE - Mid-Market",
+      "employmentType": "FullTime",
+      "location": "London",
+      "shouldDisplayCompensationOnJobPostings": false,
+      "secondaryLocations": [],
+      "publishedAt": "2026-06-08T19:17:53.481+00:00",
+      "isListed": true,
+      "isRemote": false,
+      "workplaceType": "OnSite",
+      "address": {
+        "postalAddress": {
+          "addressCountry": "United Kingdom",
+          "addressLocality": "London"
+        }
+      },
+      "jobUrl": "https://jobs.ashbyhq.com/ramp/1515fe6d-1d8e-475b-a5ee-cefe43e78cb7",
+      "applyUrl": "https://jobs.ashbyhq.com/ramp/1515fe6d-1d8e-475b-a5ee-cefe43e78cb7/application",
+      "descriptionHtml": "<h1><strong>About the Role</strong></h1><p>As one of the first Account Executives based in the UK, you’ll be focused on driving Ramp’s expansion in the European market. This role is for sellers who thrive in ambiguity, move fast, and take ownership of outcomes without being handed a playbook.</p>",
+      "descriptionPlain": "ABOUT THE ROLE\n\nAs one of the first Account Executives based in the UK, you’ll be focused on driving Ramp’s expansion in the European market. This role is for sellers who thrive in ambiguity, move fast, and take ownership of outcomes without being handed a playbook.",
+      "compensation": {
+        "compensationTierSummary": null,
+        "scrapeableCompensationSalarySummary": null,
+        "compensationTiers": [],
+        "summaryComponents": []
+      }
+    },
+    {
+      "id": "4bc09b14-0389-40cd-9d5b-f5557f451d50",
+      "title": "IT Site Specialist",
+      "department": "IT",
+      "team": "IT",
+      "employmentType": "Temporary",
+      "location": "San Francisco, CA",
+      "shouldDisplayCompensationOnJobPostings": true,
+      "secondaryLocations": [],
+      "publishedAt": "2026-08-11T13:09:41.462+00:00",
+      "isListed": true,
+      "isRemote": false,
+      "workplaceType": "OnSite",
+      "address": {
+        "postalAddress": {
+          "addressRegion": "California ",
+          "addressCountry": "USA",
+          "addressLocality": "San Fransisco"
+        }
+      },
+      "jobUrl": "https://jobs.ashbyhq.com/ramp/4bc09b14-0389-40cd-9d5b-f5557f451d50",
+      "applyUrl": "https://jobs.ashbyhq.com/ramp/4bc09b14-0389-40cd-9d5b-f5557f451d50/application",
+      "descriptionHtml": "<h1><strong>About the Role</strong></h1><p>We’re looking for an IT Site Specialist to join our IT Team at Ramp based in our San Francisco office! This is a temporary full-time on-site role that blends hands-on, in-person site support with ownership of our core SaaS application stack, and we weigh both sides equally.</p>",
+      "descriptionPlain": "ABOUT THE ROLE\n\nWe’re looking for an IT Site Specialist to join our IT Team at Ramp based in our San Francisco office! This is a temporary full-time on-site role that blends hands-on, in-person site support with ownership of our core SaaS application stack, and we weigh both sides equally.",
+      "compensation": {
+        "compensationTierSummary": "$145,760 – $200,420",
+        "scrapeableCompensationSalarySummary": "$145,760 - $200,420",
+        "compensationTiers": [
+          {
+            "id": "d595d6e8-a0b4-4005-bc6a-4c310fcdf995",
+            "tierSummary": "$145,760 – $200,420",
+            "title": null,
+            "additionalInformation": null,
+            "components": [
+              {
+                "id": "359c21aa-1bbf-4ffc-9e0c-431bd01ba95c",
+                "summary": "$145,760 – $200,420",
+                "compensationType": "Salary",
+                "interval": "1 YEAR",
+                "currencyCode": "USD",
+                "minValue": 145760,
+                "maxValue": 200420
+              }
+            ]
+          }
+        ],
+        "summaryComponents": [
+          {
+            "compensationType": "Salary",
+            "interval": "1 YEAR",
+            "currencyCode": "USD",
+            "minValue": 145760,
+            "maxValue": 200420
+          }
+        ]
+      }
+    }
+  ]
+}

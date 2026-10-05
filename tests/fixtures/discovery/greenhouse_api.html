@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Careers</title>
+</head>
+<body>
+<div id="jobs"></div>
+<script>
+  fetch("https://boards-api.greenhouse.io/v1/boards/acme/jobs?content=true")
+    .then(function (r) { return r.json(); })
+    .then(function (data) { window.renderJobs(data.jobs); });
+</script>
+</body>
+</html>

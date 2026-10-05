@@ -1,6 +1,7 @@
 """Schema parity: models == migration == the DDL in docs/SPEC.md section 5.
 
-One recorded deviation: ``postings.version_marker`` (migration ``0002``, ADR 0013).
+Two recorded deviations: ``postings.version_marker`` (migration ``0002``, ADR 0013) and
+the ``company_feeds`` table (migration ``0003``, ADR 0014).
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from tests.conftest import alembic_config
 
 pytestmark = pytest.mark.db
 
-HEAD_REVISION = "0002"
+HEAD_REVISION = "0003"
 
 # --- the spec, hardcoded -----------------------------------------------------------------
 
@@ -114,6 +115,18 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
         "notes",
     ],
     "review_queue": ["id", "kind", "payload", "status", "created_at", "resolved_at"],
+    # ADR 0014, migration 0003
+    "company_feeds": [
+        "id",
+        "company_id",
+        "feed_url",
+        "discovered_from",
+        "status",
+        "last_polled_at",
+        "etag",
+        "last_modified",
+        "created_at",
+    ],
 }
 
 EXPECTED_PRIMARY_KEYS: dict[str, list[str]] = {
@@ -130,6 +143,7 @@ EXPECTED_PRIMARY_KEYS: dict[str, list[str]] = {
     "feedback": ["id"],
     "runs": ["run_id"],
     "review_queue": ["id"],
+    "company_feeds": ["id"],
 }
 
 EXPECTED_UNIQUES: dict[str, set[tuple[str, ...]]] = {
@@ -137,6 +151,7 @@ EXPECTED_UNIQUES: dict[str, set[tuple[str, ...]]] = {
     "ats_boards": {("vendor", "identifier")},
     "postings": {("board_id", "external_id")},
     "signals": {("event_id", "signal_type", "role_family")},
+    "company_feeds": {("feed_url",)},
 }
 
 # (constrained columns, referred table, referred columns)
@@ -162,6 +177,7 @@ EXPECTED_FOREIGN_KEYS: dict[str, set[tuple[tuple[str, ...], str, tuple[str, ...]
         (("watchlist_id",), "watchlists", ("id",)),
         (("signal_id",), "signals", ("id",)),
     },
+    "company_feeds": {(("company_id",), "companies", ("id",))},
 }
 
 # name -> (columns, {column: sort})
@@ -202,6 +218,7 @@ EXPECTED_NULLABLE: dict[str, set[str]] = {
     "feedback": {"note"},
     "runs": {"finished_at", "fetched", "inserted", "skipped", "errors", "notes"},
     "review_queue": {"resolved_at"},
+    "company_feeds": {"discovered_from", "last_polled_at", "etag", "last_modified"},
 }
 
 # Columns with a server default, with the default's leading token after cast stripping.
@@ -218,6 +235,8 @@ EXPECTED_SERVER_DEFAULTS: dict[tuple[str, str], str] = {
     ("runs", "errors"): "0",
     ("review_queue", "status"): "'open'",
     ("review_queue", "created_at"): "now()",
+    ("company_feeds", "status"): "'active'",
+    ("company_feeds", "created_at"): "now()",
 }
 
 EXPECTED_TYPES: dict[tuple[str, str], str] = {
@@ -232,6 +251,7 @@ EXPECTED_TYPES: dict[tuple[str, str], str] = {
     ("signals", "half_life_days"): "INTEGER",
     ("scores", "as_of"): "DATE",
     ("runs", "notes"): "JSONB",
+    ("company_feeds", "last_polled_at"): "TIMESTAMP WITH TIME ZONE",
 }
 
 SERIAL_PRIMARY_KEYS = {
@@ -242,6 +262,7 @@ SERIAL_PRIMARY_KEYS = {
     "watchlists",
     "feedback",
     "review_queue",
+    "company_feeds",
 }
 
 
@@ -425,6 +446,7 @@ def test_allowed_value_constants() -> None:
         "won",
     }
     assert models.ALIAS_SOURCES == ("ats_board", "edgar", "news", "manual")
+    assert models.COMPANY_FEED_STATUSES == ("active", "dead", "paused")
     assert len(models.SIGNAL_TYPES) == 6
 
 

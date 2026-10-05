@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Careers</title>
+</head>
+<body>
+<div id="roles" data-board="acme"></div>
+<script>
+  const url = "https://api.ashbyhq.com/posting-api/job-board/acme?includeCompensation=true";
+  fetch(url).then((r) => r.json()).then((data) => renderRoles(data.jobs));
+</script>
+</body>
+</html>

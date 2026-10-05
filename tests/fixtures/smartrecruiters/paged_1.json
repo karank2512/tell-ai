@@ -1,0 +1,184 @@
+{
+  "offset": 0,
+  "limit": 100,
+  "totalFound": 150,
+  "content": [
+    {
+      "id": "744000153539839",
+      "name": "Líder de Promotoría - Medellín (Licencia de Maternidad)",
+      "uuid": "f0dcdfcd-02e2-4b49-b317-01162abd0748",
+      "jobAdId": "3361cc10-c7a3-4948-83ca-9197f50a3a7a",
+      "defaultJobAd": true,
+      "refNumber": "REF297728L",
+      "company": {
+        "identifier": "BoschGroup",
+        "name": "Bosch Group"
+      },
+      "releasedDate": "2026-10-05T15:06:15.535Z",
+      "location": {
+        "city": "Medellin",
+        "region": "Antioquia",
+        "country": "co",
+        "remote": false,
+        "hybrid": false,
+        "fullLocation": "Medellin, Antioquia, Colombia"
+      },
+      "industry": {
+        "id": "mechanical_engineering",
+        "label": "Mechanical Or Industrial Engineering"
+      },
+      "department": {},
+      "function": {
+        "id": "sales",
+        "label": "Sales"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "associate",
+        "label": "Associate"
+      },
+      "customField": [
+        {
+          "fieldId": "5abe2a4ab60a5e486a2d9b1d",
+          "fieldLabel": "Contract type",
+          "valueId": "1e46492b-d24f-460c-b095-38cf08a778d8",
+          "valueLabel": "Unlimited"
+        },
+        {
+          "fieldId": "5abe29f9b60a5e486a2d9b1c",
+          "fieldLabel": "Working hours",
+          "valueId": "60756b3e-dbab-4353-ac3a-0064d2bb27d8",
+          "valueLabel": "Full-time"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/BoschGroup/postings/744000153539839",
+      "language": {
+        "code": "es-MX",
+        "label": "Spanish (LATAM)",
+        "labelNative": "español (LATAM)"
+      }
+    },
+    {
+      "id": "744000153538751",
+      "name": "ENGENHEIRO PLANEJAMENTO SEGURANÇA QUALIDADE JR - 35765",
+      "uuid": "c661220e-189a-4835-a587-ea5ae22313f9",
+      "jobAdId": "5c904e8c-e638-4f4e-b798-abffa306b0aa",
+      "defaultJobAd": true,
+      "refNumber": "REF297724G",
+      "company": {
+        "identifier": "BoschGroup",
+        "name": "Bosch Group"
+      },
+      "releasedDate": "2026-10-05T15:05:23.532Z",
+      "location": {
+        "city": "Campinas",
+        "region": "SP",
+        "country": "br",
+        "remote": false,
+        "hybrid": false,
+        "fullLocation": "Campinas, SP, Brazil"
+      },
+      "industry": {
+        "id": "mechanical_engineering",
+        "label": "Mechanical Or Industrial Engineering"
+      },
+      "department": {},
+      "function": {
+        "id": "engineering",
+        "label": "Engineering"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "not_applicable",
+        "label": "Not Applicable"
+      },
+      "customField": [
+        {
+          "fieldId": "5abe2a4ab60a5e486a2d9b1d",
+          "fieldLabel": "Contract type",
+          "valueId": "1e46492b-d24f-460c-b095-38cf08a778d8",
+          "valueLabel": "Unlimited"
+        },
+        {
+          "fieldId": "5abe29f9b60a5e486a2d9b1c",
+          "fieldLabel": "Working hours",
+          "valueId": "60756b3e-dbab-4353-ac3a-0064d2bb27d8",
+          "valueLabel": "Full-time"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/BoschGroup/postings/744000153538751",
+      "language": {
+        "code": "pt-BR",
+        "label": "Portuguese (Brazil)",
+        "labelNative": "português (Brasil)"
+      }
+    },
+    {
+      "id": "744000153538518",
+      "name": "Project purchasing buyer for special machinery",
+      "uuid": "70a9809a-b299-4226-b54e-fdd36856fe82",
+      "jobAdId": "ad07f249-1506-4404-b2c1-e2bba1b39653",
+      "defaultJobAd": true,
+      "refNumber": "REF297376Q",
+      "company": {
+        "identifier": "BoschGroup",
+        "name": "Bosch Group"
+      },
+      "releasedDate": "2026-10-05T15:03:06.178Z",
+      "location": {
+        "city": "Toluca de Lerdo",
+        "region": "Méx.",
+        "country": "mx",
+        "remote": false,
+        "hybrid": false,
+        "fullLocation": "Toluca de Lerdo, Méx., Mexico"
+      },
+      "industry": {
+        "id": "mechanical_engineering",
+        "label": "Mechanical Or Industrial Engineering"
+      },
+      "department": {},
+      "function": {
+        "id": "supply_chain",
+        "label": "Supply Chain"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "associate",
+        "label": "Associate"
+      },
+      "customField": [
+        {
+          "fieldId": "5abe2a4ab60a5e486a2d9b1d",
+          "fieldLabel": "Contract type",
+          "valueId": "1e46492b-d24f-460c-b095-38cf08a778d8",
+          "valueLabel": "Unlimited"
+        },
+        {
+          "fieldId": "5abe29f9b60a5e486a2d9b1c",
+          "fieldLabel": "Working hours",
+          "valueId": "60756b3e-dbab-4353-ac3a-0064d2bb27d8",
+          "valueLabel": "Full-time"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/BoschGroup/postings/744000153538518",
+      "language": {
+        "code": "es",
+        "label": "Spanish",
+        "labelNative": "español"
+      }
+    }
+  ]
+}

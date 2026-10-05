@@ -1,0 +1,68 @@
+<?xml version="1.0"?>
+<!-- Hand-crafted to the EDGAR Form D primary_doc.xml shape (schema X0708). Fictional issuer.
+     Exercises "Indefinite" amounts, overFiveYears (no year value) and no previous names. -->
+<edgarSubmission>
+  <schemaVersion>X0708</schemaVersion>
+  <submissionType>D</submissionType>
+  <testOrLive>LIVE</testOrLive>
+  <primaryIssuer>
+    <cik>0009990002</cik>
+    <entityName>Bluefin Data Systems Inc</entityName>
+    <issuerAddress>
+      <city>AUSTIN</city>
+      <stateOrCountry>TX</stateOrCountry>
+      <stateOrCountryDescription>TEXAS</stateOrCountryDescription>
+      <zipCode>78701</zipCode>
+    </issuerAddress>
+    <jurisdictionOfInc>DELAWARE</jurisdictionOfInc>
+    <issuerPreviousNameList>
+      <value>None</value>
+    </issuerPreviousNameList>
+    <edgarPreviousNameList>
+      <value>None</value>
+    </edgarPreviousNameList>
+    <entityType>Corporation</entityType>
+    <yearOfInc>
+      <overFiveYears>true</overFiveYears>
+    </yearOfInc>
+  </primaryIssuer>
+  <offeringData>
+    <industryGroup>
+      <industryGroupType>Biotechnology</industryGroupType>
+    </industryGroup>
+    <issuerSize>
+      <revenueRange>Decline to Disclose</revenueRange>
+    </issuerSize>
+    <federalExemptionsExclusions>
+      <item>06b</item>
+    </federalExemptionsExclusions>
+    <typeOfFiling>
+      <newOrAmendment>
+        <isAmendment>false</isAmendment>
+      </newOrAmendment>
+      <dateOfFirstSale>
+        <value>2026-08-20</value>
+      </dateOfFirstSale>
+    </typeOfFiling>
+    <durationOfOffering>
+      <moreThanOneYear>true</moreThanOneYear>
+    </durationOfOffering>
+    <typesOfSecuritiesOffered>
+      <isEquityType>true</isEquityType>
+      <isOptionToAcquireType>true</isOptionToAcquireType>
+    </typesOfSecuritiesOffered>
+    <businessCombinationTransaction>
+      <isBusinessCombinationTransaction>false</isBusinessCombinationTransaction>
+    </businessCombinationTransaction>
+    <minimumInvestmentAccepted>25000</minimumInvestmentAccepted>
+    <offeringSalesAmounts>
+      <totalOfferingAmount>Indefinite</totalOfferingAmount>
+      <totalAmountSold>2750000</totalAmountSold>
+      <totalRemaining>Indefinite</totalRemaining>
+    </offeringSalesAmounts>
+    <investors>
+      <hasNonAccreditedInvestors>false</hasNonAccreditedInvestors>
+      <totalNumberAlreadyInvested>6</totalNumberAlreadyInvested>
+    </investors>
+  </offeringData>
+</edgarSubmission>

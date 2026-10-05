@@ -1,0 +1,128 @@
+[
+  {
+    "name": "Gusto",
+    "website": "https://gusto.com",
+    "batch": "Winter 2012",
+    "all_locations": "San Francisco, CA, USA"
+  },
+  {
+    "name": "Stripe",
+    "website": "http://stripe.com",
+    "batch": "Summer 2009",
+    "all_locations": "San Francisco, CA, USA"
+  },
+  {
+    "name": "Airbnb",
+    "website": "http://airbnb.com",
+    "batch": "Winter 2009",
+    "all_locations": "San Francisco, CA, USA"
+  },
+  {
+    "name": "Dropbox",
+    "website": "http://dropbox.com",
+    "batch": "Summer 2007",
+    "all_locations": "San Francisco, CA, USA"
+  },
+  {
+    "name": "Flexport",
+    "website": "https://www.flexport.com/careers/jobs/",
+    "batch": "Winter 2014",
+    "all_locations": "San Francisco, CA, USA"
+  },
+  {
+    "name": "Algolia",
+    "website": "http://www.algolia.com",
+    "batch": "Winter 2014",
+    "all_locations": "San Francisco, CA, USA; Paris, Île-de-France, France"
+  },
+  {
+    "name": "Sendwave",
+    "website": "https://www.sendwave.com",
+    "batch": "Winter 2012",
+    "all_locations": "Boston, MA, USA; Remote"
+  },
+  {
+    "name": "Codecademy",
+    "website": "http://codecademy.com",
+    "batch": "Summer 2011",
+    "all_locations": "New York City, NY, USA; New York, NY, USA"
+  },
+  {
+    "name": "DrChrono",
+    "website": "https://www.drchrono.com",
+    "batch": "Winter 2011",
+    "all_locations": "San Francisco, CA, USA; CA, USA; Remote"
+  },
+  {
+    "name": "Coinbase",
+    "website": "https://www.coinbase.com",
+    "batch": "Summer 2012",
+    "all_locations": "Los Angeles, CA, USA; Remote"
+  },
+  {
+    "name": "GitLab",
+    "website": "http://gitlab.com/",
+    "batch": "Winter 2015",
+    "all_locations": "San Francisco, CA, USA; Remote"
+  },
+  {
+    "name": "Razorpay",
+    "website": "https://razorpay.com",
+    "batch": "Winter 2015",
+    "all_locations": "Bengaluru, KA, India"
+  },
+  {
+    "name": "Rappi",
+    "website": "http://www.rappi.com",
+    "batch": "Winter 2016",
+    "all_locations": "Bogotá, Bogota, Colombia"
+  },
+  {
+    "name": "Caper",
+    "website": "https://www.caper.ai/",
+    "batch": "Winter 2016",
+    "all_locations": ""
+  },
+  {
+    "name": "Brex",
+    "website": "https://www.brex.com",
+    "batch": "Winter 2017",
+    "all_locations": "San Francisco, CA, USA"
+  },
+  {
+    "name": "Scale AI",
+    "website": "http://scale.com",
+    "batch": "Summer 2016",
+    "all_locations": "San Francisco, CA, USA"
+  },
+  {
+    "name": "Heap",
+    "website": "https://heap.io/",
+    "batch": "Winter 2013",
+    "all_locations": "Seattle, WA, USA; San Francisco, CA, USA"
+  },
+  {
+    "name": "Groww",
+    "website": "https://groww.in",
+    "batch": "Winter 2018",
+    "all_locations": "Bengaluru, KA, India"
+  },
+  {
+    "name": "Zepto",
+    "website": "https://www.zeptonow.com/",
+    "batch": "Winter 2021",
+    "all_locations": "MH, India"
+  },
+  {
+    "name": "Deel",
+    "website": "https://www.deel.com/",
+    "batch": "Winter 2019",
+    "all_locations": "San Francisco, CA, USA; Remote"
+  },
+  {
+    "name": "Arcane",
+    "website": "",
+    "batch": "Winter 2024",
+    "all_locations": "New York City, NY, USA"
+  }
+]
