@@ -182,6 +182,15 @@ Settings -> Secrets and variables -> Actions -> New repository secret / variable
 
 `GITHUB_TOKEN` is provided by Actions; nothing to set.
 
+Until `DATABASE_URL` is set here, every scheduled and manual `ingest.yml` and `weekly.yml`
+run ends green after its `preflight` job, with the summary line `ingest skipped:
+DATABASE_URL secret not set; see docs/CUTOVER_CHECKLIST.md` (or `weekly skipped: ...`)
+and every other job skipped (the weekly keepalive still runs). That is expected, not a
+failure. Nothing needs re-enabling afterwards: the first run after the secrets exist goes
+live on its own. If `DATABASE_URL` is set but `TELL_DATA_PUSH_TOKEN` or `TELL_DATA_REPO` is
+not, the runs collect and score but skip every `tell-data` step with a warning, so set all
+three together ([preflight guard](deploy/github-actions.md#secrets-and-variables-code-repo)).
+
 ### 4b. `tell-ai` variables
 
 | Variable | Required | Value |

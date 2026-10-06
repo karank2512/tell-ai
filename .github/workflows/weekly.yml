@@ -35,35 +35,82 @@ env:
   WEEK: ${{ inputs.week || 'current' }}
 
 jobs:
+  # Runs first and decides whether there is anything to run (same guard as ingest.yml).
+  # Until cutover the DATABASE_URL secret does not exist, so the run skips cleanly and
+  # stays green instead of failing against the local default database
+  # (docs/CUTOVER_CHECKLIST.md). Secrets cannot appear in a job-level if:, so this step
+  # turns their presence (never their values) into true/false outputs. Once the secrets
+  # exist the next scheduled or manual run goes live with no edit here.
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+      publish_enabled: ${{ steps.check.outputs.publish_enabled }}
+    steps:
+      - name: Check required secrets
+        id: check
+        env:
+          HAS_DATABASE_URL: ${{ secrets.DATABASE_URL != '' }}
+          HAS_TELL_DATA_PUSH_TOKEN: ${{ secrets.TELL_DATA_PUSH_TOKEN != '' }}
+          HAS_TELL_DATA_REPO: ${{ vars.TELL_DATA_REPO != '' }}
+        run: |
+          enabled="$HAS_DATABASE_URL"
+          publish_enabled=false
+          if [ "$enabled" = true ] && [ "$HAS_TELL_DATA_PUSH_TOKEN" = true ] \
+            && [ "$HAS_TELL_DATA_REPO" = true ]; then
+            publish_enabled=true
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          echo "publish_enabled=$publish_enabled" >> "$GITHUB_OUTPUT"
+          msg=""
+          if [ "$enabled" != true ]; then
+            msg="weekly skipped: DATABASE_URL secret not set; see docs/CUTOVER_CHECKLIST.md"
+          elif [ "$publish_enabled" != true ]; then
+            msg="tell-data publish skipped: TELL_DATA_PUSH_TOKEN secret or TELL_DATA_REPO variable not set; see docs/CUTOVER_CHECKLIST.md"
+          fi
+          if [ -n "$msg" ]; then
+            echo "::notice::$msg"
+            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   weekly:
+    needs: [preflight]
+    if: needs.preflight.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
       SLACK_WEEKLY_WEBHOOK_URL: ${{ secrets.SLACK_WEEKLY_WEBHOOK_URL }}
+      PUBLISH_ENABLED: ${{ needs.preflight.outputs.publish_enabled }}
     steps:
       - name: Check configuration
+        # preflight already gates this job on DATABASE_URL. Without the tell-data token or
+        # variable only the operations line runs; every tell-data step is skipped.
         run: |
-          missing=""
-          [ -n "$DATABASE_URL" ] || missing="$missing DATABASE_URL"
-          [ -n "$TELL_DATA_REPO" ] || missing="$missing TELL_DATA_REPO(variable)"
-          if [ -n "$missing" ]; then
-            echo "::error::missing Actions configuration:$missing (docs/deploy/github-actions.md)"
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::missing Actions configuration: DATABASE_URL (docs/deploy/github-actions.md)"
             exit 1
           fi
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+          if [ "$PUBLISH_ENABLED" != true ]; then
+            echo "::warning::missing Actions configuration: TELL_DATA_PUSH_TOKEN or TELL_DATA_REPO(variable); tell-data steps skipped (docs/deploy/github-actions.md)"
+          fi
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        if: needs.preflight.outputs.publish_enabled == 'true'
         with:
           repository: ${{ vars.TELL_DATA_REPO }}
           path: tell-data
           token: ${{ secrets.TELL_DATA_PUSH_TOKEN }}
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen
       - name: Weekly page
+        if: needs.preflight.outputs.publish_enabled == 'true'
         run: uv run tell weekly --week "$WEEK" --out tell-data
       - name: Refresh methods reports into tell-data
+        if: needs.preflight.outputs.publish_enabled == 'true'
         # Dated reports land in tell-data/site/methods/ (rendered on github.com, served on
         # Pages), never in this repo's docs/methods/ (ADR 0025).
         run: uv run tell backtest refresh --out tell-data/site/methods
@@ -76,6 +123,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Commit and push tell-data
+        if: needs.preflight.outputs.publish_enabled == 'true'
         working-directory: tell-data
         run: |
           git config user.name tell-bot
@@ -84,8 +132,8 @@ jobs:
           git commit -m "weekly $(date -u +%FT%TZ)" || echo "nothing to commit"
           git push || { git pull --rebase origin HEAD && git push; }
       - name: Weekly summary to the private Slack channel
-        # Optional: skipped when SLACK_WEEKLY_WEBHOOK_URL is not set.
-        if: env.SLACK_WEEKLY_WEBHOOK_URL != ''
+        # Optional: skipped when SLACK_WEEKLY_WEBHOOK_URL is not set (and with tell-data).
+        if: env.SLACK_WEEKLY_WEBHOOK_URL != '' && needs.preflight.outputs.publish_enabled == 'true'
         run: |
           latest=tell-data/site/api/v0/weekly/latest.json
           owner="${TELL_DATA_REPO%%/*}"
@@ -111,7 +159,9 @@ jobs:
   # GitHub disables a public repo's scheduled workflows after 60 days without activity in
   # *this* repo; the tell-data commits do not count, because they land in another repo.
   # Re-enabling through the API resets that timer without a commit, so no bot ever becomes
-  # a contributor here (ADR 0026).
+  # a contributor here (ADR 0026). Deliberately not gated on preflight: it needs no
+  # secret, and it is what keeps the schedules enabled until cutover, so the cron goes live
+  # by itself once the secrets exist.
   keepalive:
     runs-on: ubuntu-latest
     timeout-minutes: 5

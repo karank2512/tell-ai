@@ -42,16 +42,16 @@ jobs:
             exit 1
           fi
       # This repo (tell-private): watchlists/ and profiles/ are read and watchlists/ is written.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: tell-private
       # The code. tell-ai is public after cutover (PLAN Phase 13 step 1), so no token is needed.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: karank2512/tell-ai
           ref: main
           path: tell
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
           cache-dependency-glob: "tell/uv.lock"

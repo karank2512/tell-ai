@@ -44,16 +44,58 @@ env:
   TELL_RUN_MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
 
 jobs:
+  # Runs first and decides whether there is anything to run. Until cutover the
+  # DATABASE_URL secret does not exist and every job would fail against the local default
+  # database, so the run skips cleanly and stays green instead (docs/CUTOVER_CHECKLIST.md).
+  # Secrets cannot appear in a job-level if:, so this step turns their presence (never
+  # their values) into true/false outputs that every other job tests. Once the secrets
+  # exist the next scheduled or manual run goes live with no edit here.
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+      publish_enabled: ${{ steps.check.outputs.publish_enabled }}
+    steps:
+      - name: Check required secrets
+        id: check
+        env:
+          HAS_DATABASE_URL: ${{ secrets.DATABASE_URL != '' }}
+          HAS_TELL_DATA_PUSH_TOKEN: ${{ secrets.TELL_DATA_PUSH_TOKEN != '' }}
+          HAS_TELL_DATA_REPO: ${{ vars.TELL_DATA_REPO != '' }}
+        run: |
+          enabled="$HAS_DATABASE_URL"
+          publish_enabled=false
+          if [ "$enabled" = true ] && [ "$HAS_TELL_DATA_PUSH_TOKEN" = true ] \
+            && [ "$HAS_TELL_DATA_REPO" = true ]; then
+            publish_enabled=true
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          echo "publish_enabled=$publish_enabled" >> "$GITHUB_OUTPUT"
+          msg=""
+          if [ "$enabled" != true ]; then
+            msg="ingest skipped: DATABASE_URL secret not set; see docs/CUTOVER_CHECKLIST.md"
+          elif [ "$publish_enabled" != true ]; then
+            msg="tell-data publish skipped: TELL_DATA_PUSH_TOKEN secret or TELL_DATA_REPO variable not set; see docs/CUTOVER_CHECKLIST.md"
+          fi
+          if [ -n "$msg" ]; then
+            echo "::notice::$msg"
+            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   # Discovery runs ahead of the ATS legs with its own budget (<= 300 new domains per run
   # at 4 requests per second; TELL_DISCOVERY_BUDGET / TELL_DISCOVERY_RPS). A failed or
   # timed-out discovery pass never blocks polling: `ats` needs it but runs unless the run was cancelled.
   discover:
-    if: ${{ !inputs.source || inputs.source == 'discover' }}
+    needs: [preflight]
+    if: >-
+      ${{ needs.preflight.outputs.enabled == 'true' &&
+      (!inputs.source || inputs.source == 'discover') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -62,9 +104,9 @@ jobs:
         run: uv run tell discover batch --limit 300 --rps 4
 
   ats:
-    needs: [discover]
+    needs: [preflight, discover]
     if: >-
-      ${{ !cancelled() && (!inputs.source ||
+      ${{ !cancelled() && needs.preflight.outputs.enabled == 'true' && (!inputs.source ||
       contains(fromJSON('["greenhouse","lever","ashby","smartrecruiters"]'), inputs.source)) }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -76,9 +118,9 @@ jobs:
       # A workflow_dispatch for one vendor turns the other three legs into no-ops.
       RUN_LEG: ${{ !inputs.source || inputs.source == matrix.vendor }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: env.RUN_LEG == 'true'
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.2.0
         if: env.RUN_LEG == 'true'
         with:
           enable-cache: true
@@ -98,12 +140,15 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   filings:
-    if: ${{ !inputs.source || inputs.source == 'edgar' || inputs.source == 'news' }}
+    needs: [preflight]
+    if: >-
+      ${{ needs.preflight.outputs.enabled == 'true' &&
+      (!inputs.source || inputs.source == 'edgar' || inputs.source == 'news') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -126,28 +171,34 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   resolve_score_publish:
-    needs: [ats, filings]
-    # One broken vendor never blocks the digest.
-    if: always()
+    needs: [preflight, ats, filings]
+    # One broken vendor never blocks the digest; nothing runs before cutover (preflight).
+    if: ${{ always() && needs.preflight.outputs.enabled == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      PUBLISH_ENABLED: ${{ needs.preflight.outputs.publish_enabled }}
     steps:
       - name: Check configuration
+        # preflight already gates this job on DATABASE_URL. Without the tell-data token or
+        # variable, resolve, score and the dead-man still run and every tell-data step
+        # (checkout, publish, prune, commit, digest) is skipped, so that is a warning.
         run: |
-          missing=""
-          [ -n "$DATABASE_URL" ] || missing="$missing DATABASE_URL"
-          [ -n "$TELL_DATA_REPO" ] || missing="$missing TELL_DATA_REPO(variable)"
-          if [ -n "$missing" ]; then
-            echo "::error::missing Actions configuration:$missing (docs/deploy/github-actions.md)"
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::missing Actions configuration: DATABASE_URL (docs/deploy/github-actions.md)"
             exit 1
           fi
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+          if [ "$PUBLISH_ENABLED" != true ]; then
+            echo "::warning::missing Actions configuration: TELL_DATA_PUSH_TOKEN or TELL_DATA_REPO(variable); tell-data steps skipped (docs/deploy/github-actions.md)"
+          fi
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        if: needs.preflight.outputs.publish_enabled == 'true'
         with:
           repository: ${{ vars.TELL_DATA_REPO }}
           path: tell-data
           token: ${{ secrets.TELL_DATA_PUSH_TOKEN }}
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -155,10 +206,15 @@ jobs:
       - run: uv run tell resolve
       - run: uv run tell score --all-profiles
       - run: uv run tell publish --out tell-data
+        if: needs.preflight.outputs.publish_enabled == 'true'
       # Idempotent and cheap, so it runs every time rather than on a monthly guard: archives
       # events older than 180 days to tell-data/events and drops old posting observations.
+      # Gated with the checkout: prune deletes what it archives, so it never runs without
+      # the tell-data checkout that receives the archive.
       - run: uv run tell prune --out tell-data
+        if: needs.preflight.outputs.publish_enabled == 'true'
       - name: Commit and push tell-data
+        if: needs.preflight.outputs.publish_enabled == 'true'
         # The daily commit is also what keeps this schedule alive past GitHub's 60-day
         # inactivity cutoff. Retries once over a concurrent push from weekly.yml.
         working-directory: tell-data
@@ -169,6 +225,7 @@ jobs:
           git commit -m "ingest $(date -u +%FT%TZ)" || echo "nothing to commit"
           git push || { git pull --rebase origin HEAD && git push; }
       - name: Slack digest
+        if: needs.preflight.outputs.publish_enabled == 'true'
         # The digest goes out only on the first run at or after the digest hour; decided
         # inside the command.
         env:

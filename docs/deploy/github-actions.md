@@ -49,8 +49,20 @@ event name (see "Re-running one source" below).
 Unset variables expand to empty strings, and tell's settings ignore empty values, so the
 defaults in `tell/config.py` apply. `TELL_REPO_URL` and `TELL_DATA_REPO_URL` are derived
 from `github.repository` and `TELL_DATA_REPO`. `TELL_HTTP_USER_AGENT` is
-`tell/0.1 (+https://github.com/<this repo>)`. The first step of each publishing job fails
-fast with a named error when `DATABASE_URL` or `TELL_DATA_REPO` is missing.
+`tell/0.1 (+https://github.com/<this repo>)`.
+
+**Preflight guard.** `ingest.yml` and `weekly.yml` start with a `preflight` job that only
+checks which secrets exist (never their values; secrets cannot be read in a job-level
+`if:`) and every other job is gated on its outputs. A run whose summary says
+`ingest skipped: DATABASE_URL secret not set; see docs/CUTOVER_CHECKLIST.md` (or `weekly
+skipped: ...`) did nothing and is green on purpose: the code repo has no `DATABASE_URL`
+yet, so there is nothing to poll and no failure email. Once the secrets exist the next
+scheduled run goes live by itself, with no edit or re-enable. A `workflow_dispatch` run
+behaves the same way. With `DATABASE_URL` set but `TELL_DATA_PUSH_TOKEN` or the
+`TELL_DATA_REPO` variable missing, collection, resolve, score and the dead-man still run
+and every `tell-data` step (checkout, publish, prune, commit, digest, weekly page) is
+skipped with a warning. The weekly `keepalive` job is not gated: it needs no secret and is
+what keeps the schedules enabled until cutover.
 
 ## ingest.yml, step by step
 

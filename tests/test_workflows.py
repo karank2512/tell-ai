@@ -31,6 +31,24 @@ TEMPLATE_WORKFLOWS = {
 }
 """Workflows copied into the other repos at cutover; parsed and checked like the local ones."""
 ATS_VENDORS = ["greenhouse", "lever", "ashby", "smartrecruiters"]
+GUARDED_WORKFLOWS = ("ingest.yml", "weekly.yml")
+"""Scheduled workflows that skip cleanly (green) until the cutover secrets exist."""
+ENABLED = "needs.preflight.outputs.enabled == 'true'"
+PUBLISH_ENABLED = "needs.preflight.outputs.publish_enabled == 'true'"
+UNGATED_JOBS = {("weekly.yml", "keepalive")}
+"""Jobs that need no secret and must run before cutover (keepalive keeps the cron alive)."""
+ACTION_PINS = {
+    "actions/checkout": "v7",
+    "astral-sh/setup-uv": "v10.2.0",  # setup-uv publishes no major tags since v8
+    "actions/configure-pages": "v6",
+    "actions/upload-pages-artifact": "v5",
+    "actions/deploy-pages": "v5",
+    "actions/upload-artifact": "v7",
+    "actions/download-artifact": "v8",
+    "pypa/gh-action-pypi-publish": "release/v1",
+    "gitleaks/gitleaks-action": "v3",
+}
+"""The Node 24 majors every workflow pins (Node 20 actions stop running on hosted runners)."""
 
 _EXPR = re.compile(r"\$\{\{.*?\}\}")
 _SHELL_OPERATORS = {"||", "&&", "|", ";", ">", ">>", "2>&1", "&"}
@@ -257,7 +275,7 @@ def test_ingest_discovery_job_feeds_ats() -> None:
     )
     assert "--limit 300" in batch
     assert "--rps 4" in batch
-    assert jobs["ats"]["needs"] == ["discover"]
+    assert jobs["ats"]["needs"] == ["preflight", "discover"]
     # A failed discovery pass never blocks polling.
     assert "cancelled()" in jobs["ats"]["if"]
 
@@ -277,8 +295,8 @@ def test_ingest_scheduled_sources_match_deadman() -> None:
 def test_resolve_score_publish_order_and_policy() -> None:
     wf = _load("ingest.yml")
     job = wf["jobs"]["resolve_score_publish"]
-    assert job["needs"] == ["ats", "filings"]
-    assert job["if"] == "always()"
+    assert job["needs"] == ["preflight", "ats", "filings"]
+    assert job["if"] == f"${{{{ always() && {ENABLED} }}}}"
     assert job["timeout-minutes"] == 45
     steps = job["steps"]
     order = [
@@ -325,6 +343,130 @@ def test_ingest_dispatch_source_skips_other_legs() -> None:
     filings = jobs["filings"]["steps"]
     assert "'edgar'" in filings[_index(filings, "--source edgar")]["if"]
     assert "'news'" in filings[_index(filings, "--source news")]["if"]
+
+
+# --- preflight guard (ingest.yml, weekly.yml) -------------------------------------------
+
+
+@pytest.mark.parametrize("name", GUARDED_WORKFLOWS)
+def test_preflight_job_turns_secrets_into_outputs(name: str) -> None:
+    jobs = _load(name)["jobs"]
+    assert next(iter(jobs)) == "preflight"
+    preflight = jobs["preflight"]
+    assert preflight["runs-on"] == "ubuntu-latest"
+    assert preflight["timeout-minutes"] == 5
+    assert "needs" not in preflight
+    assert "if" not in preflight
+    assert preflight["outputs"] == {
+        "enabled": "${{ steps.check.outputs.enabled }}",
+        "publish_enabled": "${{ steps.check.outputs.publish_enabled }}",
+    }
+    [step] = preflight["steps"]
+    assert step["id"] == "check"
+    assert step["env"] == {
+        "HAS_DATABASE_URL": "${{ secrets.DATABASE_URL != '' }}",
+        "HAS_TELL_DATA_PUSH_TOKEN": "${{ secrets.TELL_DATA_PUSH_TOKEN != '' }}",
+        "HAS_TELL_DATA_REPO": "${{ vars.TELL_DATA_REPO != '' }}",
+    }
+    script = str(step["run"])
+    assert 'echo "enabled=$enabled" >> "$GITHUB_OUTPUT"' in script
+    assert 'echo "publish_enabled=$publish_enabled" >> "$GITHUB_OUTPUT"' in script
+    kind = name.removesuffix(".yml")
+    notice = f"{kind} skipped: DATABASE_URL secret not set; see docs/CUTOVER_CHECKLIST.md"
+    assert notice in script
+    assert '>> "$GITHUB_STEP_SUMMARY"' in script
+    assert "exit 1" not in script  # a missing secret skips; it never turns the run red
+    assert (REPO_ROOT / "docs" / "CUTOVER_CHECKLIST.md").is_file()
+
+
+@pytest.mark.parametrize("name", GUARDED_WORKFLOWS)
+def test_every_job_needs_preflight_and_is_gated_on_it(name: str) -> None:
+    jobs = _load(name)["jobs"]
+    gated = [j for j in jobs if j != "preflight" and (name, j) not in UNGATED_JOBS]
+    assert gated
+    for job_name in gated:
+        job = jobs[job_name]
+        needs = job["needs"]
+        assert isinstance(needs, list), f"{name}:{job_name}"
+        assert needs[0] == "preflight", f"{name}:{job_name} needs {needs}"
+        assert ENABLED in str(job["if"]), f"{name}:{job_name} if: {job['if']}"
+
+
+def test_keepalive_runs_before_cutover() -> None:
+    """ADR 0026: keepalive needs no secret and keeps the cron enabled until the secrets exist."""
+    keepalive = _load("weekly.yml")["jobs"]["keepalive"]
+    assert "needs" not in keepalive
+    assert "if" not in keepalive
+
+
+def test_resolve_score_publish_keeps_always_with_the_guard() -> None:
+    """One broken vendor never blocks the digest, but nothing runs before cutover."""
+    condition = str(_load("ingest.yml")["jobs"]["resolve_score_publish"]["if"])
+    assert "always()" in condition
+    assert f"&& {ENABLED}" in condition
+
+
+@pytest.mark.parametrize(
+    ("name", "job", "gated", "ungated"),
+    [
+        (
+            "ingest.yml",
+            "resolve_score_publish",
+            ["tell publish --out", "tell prune --out", "git push", "tell notify --slack"],
+            ["tell resolve", "tell score", "tell deadman"],
+        ),
+        (
+            "weekly.yml",
+            "weekly",
+            [
+                "tell weekly --week",
+                "tell backtest refresh",
+                "git push",
+                "$SLACK_WEEKLY_WEBHOOK_URL",
+            ],
+            ["tell runlog --week"],
+        ),
+    ],
+)
+def test_tell_data_steps_need_publish_config(
+    name: str, job: str, gated: list[str], ungated: list[str]
+) -> None:
+    """Without TELL_DATA_PUSH_TOKEN / TELL_DATA_REPO nothing touches tell-data; prune in
+    particular deletes what it archives, so it never runs without the checkout."""
+    steps = _steps(_load(name), job)
+    data_checkout = next(s for s in steps if s.get("with", {}).get("path") == "tell-data")
+    assert PUBLISH_ENABLED in str(data_checkout["if"])
+    for needle in gated:
+        assert PUBLISH_ENABLED in str(steps[_index(steps, needle)].get("if", "")), needle
+    for needle in ungated:
+        assert "publish_enabled" not in str(steps[_index(steps, needle)].get("if", "")), needle
+
+
+def test_no_secrets_in_any_if() -> None:
+    """Actions cannot evaluate ``secrets`` in a job- or step-level ``if:``; the preflight
+    outputs are the only way to branch on them."""
+    for path in _workflow_paths():
+        for job_name, job in _load(path.name)["jobs"].items():
+            assert "secrets." not in str(job.get("if", "")), f"{path.name}:{job_name}"
+            for step in job.get("steps", []):
+                assert "secrets." not in str(step.get("if", "")), f"{path.name}:{job_name}"
+
+
+@pytest.mark.parametrize("path", _workflow_paths(), ids=lambda p: p.name)
+def test_action_majors_are_pinned(path: Path) -> None:
+    uses = [
+        str(step["uses"])
+        for job in _load(path.name)["jobs"].values()
+        for step in job.get("steps", [])
+        if "uses" in step
+    ]
+    assert uses, path.name
+    for ref in uses:
+        action, _, version = ref.partition("@")
+        assert action in ACTION_PINS, f"{path.name}: unreviewed action {ref}"
+        assert version == ACTION_PINS[action], (
+            f"{path.name}: {ref}, expected @{ACTION_PINS[action]}"
+        )
 
 
 # --- weekly.yml -------------------------------------------------------------------------
