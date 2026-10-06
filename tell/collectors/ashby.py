@@ -24,13 +24,14 @@ Mapping (spec section 3.3 "Fields used"):
   ``summaryComponents``) only when the employer displays compensation on the posting.
 * Postings with ``isListed: false`` are skipped.
 
-Board health: a 404 is not retried (``tell.http.fetch`` never retries 4xx). The
-first 404 records the poll time in ``last_polled_at`` without touching
-``last_verified_at``; a second consecutive 404 marks the board ``dead``. A later
-successful poll first restores ``last_polled_at`` to the last successful poll
-(``last_verified_at``) so the ``job_closed`` rule (two consecutive *real* polls
-without a posting) never counts a 404 as an observation. ``base`` has no helper
-for this, so it lives here privately.
+Board health: a 404 is not retried (``tell.http.fetch`` never retries 4xx). Liveness
+is the shared ADR 0015 rule (``docs/decisions/0015-ats-404-and-reverification.md``):
+a 200 calls :func:`~tell.collectors.base.record_board_ok`, a 404 calls
+:func:`~tell.collectors.base.record_board_not_found` (``dead`` after two 404s at least
+12 hours apart, plus one ``board_verify`` review item). A 404 never advances
+``last_polled_at``, so the ``job_closed`` rule (two consecutive *real* polls without
+a posting) never counts a 404 as an observation; this module never writes
+``last_verified_at``.
 """
 
 from __future__ import annotations
@@ -55,6 +56,8 @@ from tell.collectors.base import (
     RunResult,
     iso_utc,
     parse_iso,
+    record_board_not_found,
+    record_board_ok,
     sync_board_postings,
     write_events,
 )
@@ -87,9 +90,6 @@ FIXTURE_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / SOURC
 FIXTURE_BOARD_IDENTIFIER = "tell-fixture"
 """Synthetic board ``run_fixture`` creates once and then reuses (normal, then updated)."""
 FIXTURE_COMPANY_DOMAIN = "ashby-fixture.invalid"
-
-DEAD = "dead"
-
 
 # --- the contract ----------------------------------------------------------------------
 
@@ -295,29 +295,12 @@ def parse(raw: AshbyJobBoard | str | bytes) -> list[ObservedPosting]:
 # --- ingest ----------------------------------------------------------------------------
 
 
-def _missed_last_poll(board: AtsBoard) -> bool:
-    """True when the previous poll of ``board`` did not verify it (it answered 404)."""
-    if board.last_polled_at is None:
-        return False
-    return board.last_verified_at is None or board.last_verified_at < board.last_polled_at
-
-
-def _record_not_found(board: AtsBoard, now: datetime) -> None:
-    if _missed_last_poll(board):
-        board.status = DEAD
-    board.last_polled_at = now
-
-
 def _sync(
     session: Session, board: AtsBoard, response: AshbyJobBoard, *, run_id: str, now: datetime
 ) -> RunResult:
-    if _missed_last_poll(board):
-        # The 404 in between was not an observation; close postings against the last real poll.
-        board.last_polled_at = board.last_verified_at
     events = sync_board_postings(session, board, parse(response), run_id=run_id, now=now)
     stats = write_events(session, events)
-    board.last_verified_at = now
-    session.flush()
+    record_board_ok(session, board, now=now)
     return RunResult(
         fetched=len(response.jobs), inserted=stats.inserted, skipped=stats.skipped, events=events
     )
@@ -342,8 +325,8 @@ def ingest_board(
     """Poll one Ashby board, reconcile its postings and write the resulting events.
 
     The caller owns the run (``start_run`` / ``finish_run``) and the transaction.
-    A 404 returns an empty :class:`RunResult` and, on the second consecutive 404,
-    sets ``board.status = 'dead'``. Errors other than 404 propagate.
+    A 404 returns an empty :class:`RunResult` and goes to ``record_board_not_found``
+    (ADR 0015). Errors other than 404 propagate.
     """
     _require_ashby(board)
     own_client = client is None
@@ -354,8 +337,7 @@ def ingest_board(
         if own_client:
             http.close()
     if response is None:
-        _record_not_found(board, now)
-        session.flush()
+        record_board_not_found(session, board, now=now)
         return RunResult(fetched=0, inserted=0, skipped=0)
     return _sync(session, board, response, run_id=run_id, now=now)
 

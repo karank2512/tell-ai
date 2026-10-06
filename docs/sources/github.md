@@ -24,7 +24,7 @@ the clash is logged. `company_id` on every event is that company's id.
 
 Headers on every request: `Accept: application/vnd.github+json`,
 `X-GitHub-Api-Version: 2022-11-28`, the project User-Agent
-`tell/0.1 (+https://github.com/karankapur/tell)`, and `Authorization: Bearer <GITHUB_TOKEN>`
+`tell/0.1 (+https://github.com/karank2512/tell-ai)`, and `Authorization: Bearer <GITHUB_TOKEN>`
 when `GITHUB_TOKEN` is set. In Actions the workflow's own `GITHUB_TOKEN` is enough because
 only public data is read.
 
@@ -80,19 +80,44 @@ counts only `github_release` events with `is_flagship = true` as `launch`.
 | Unauthenticated | 60 requests per hour per IP |
 | Conditional `304` | Free: does not count against the limit |
 
-The collector reads `X-RateLimit-Remaining` on every response. When it drops below 50, the
-collector finishes the response in hand and then stops the run. The run still finishes
-`ok`, with `notes.rate_limited = true`, `rate_limit_remaining`, `rate_limit_reset` (epoch
-seconds) and `stopped_at_org`. A `403`/`429` that carries `X-RateLimit-Remaining: 0` or
-`Retry-After` (primary or secondary limit) stops the run the same way.
+The collector reads `X-RateLimit-Remaining` and `X-RateLimit-Reset` on every response.
+
+- **Floor.** When `X-RateLimit-Remaining` drops below 50 (or reaches 0), the collector
+  finishes the response in hand and stops before sending the next request.
+- **Refusal.** A `429`, a `403` carrying `X-RateLimit-Remaining: 0` or `Retry-After`
+  (primary or secondary limit), or a `5xx` carrying `X-RateLimit-Remaining: 0`, stops
+  the run at once, after exactly one request. The collector never sleeps on a rate-limit
+  answer and never retries it.
+- **Why this needs care.** `tell.http.fetch` retries `429` and `5xx` up to five times by
+  default (1, 2, 4, 8 s backoff, honouring `Retry-After` capped at 120 s) and then raises
+  `RetryExhausted`. GitHub requests therefore call `fetch(..., max_attempts=1)` and
+  inspect the response themselves: a rate-limit answer stops the run, while `5xx` and
+  transport errors are retried in `GithubClient` on the same 1, 2, 4, 8 s schedule
+  (five attempts in all).
+
+A stop is recorded in `runs.notes`:
+
+| Key | Meaning |
+| --- | --- |
+| `rate_limited` | `true` (`false` on a run that was never stopped) |
+| `rate_limit_status` | The refusing HTTP status (`429`, `403`, `5xx`), or `null` when the floor was reached on a normal response |
+| `rate_limit_remaining` | Last `X-RateLimit-Remaining` seen |
+| `rate_limit_reset` | Last `X-RateLimit-Reset` seen (epoch seconds) |
+| `rate_limit_retry_after_s` | `Retry-After` on the refusal, in seconds (number or HTTP-date, not capped) |
+| `rate_limit_resume_at` | ISO UTC time of the later of stop time + `Retry-After` and `X-RateLimit-Reset`: the earliest moment the next run should start |
+| `stopped_at_org` | The org being polled when the run stopped |
+| `completed_orgs` | Orgs whose listing and release candidates were fully read before the stop |
+
+A rate-limited run finishes `ok` only if at least one org completed before the stop.
+Otherwise it finishes `failed`, so the next run keeps reading ETags and summaries from
+the last `ok` run. Orgs not reached are carried forward from the previous notes either way.
 
 Without a token, the floor of 50 leaves about 10 requests per hour, which is roughly one or
 two orgs. Production runs set `GITHUB_TOKEN`.
 
-Requests are serial, per GitHub's best-practice guidance. `tell.http.fetch` retries `5xx`
-and `429` with backoff of 1, 2, 4 and 8 s and honours `Retry-After`. A `404` org (renamed or
-deleted) counts as an error and is listed in `notes.missing_orgs`, and the run moves on to
-the next org.
+Requests are serial, per GitHub's best-practice guidance. A `404` org (renamed or deleted)
+counts as an error and is listed in `notes.missing_orgs`, and the run moves on to the next
+org.
 
 ## Legal note
 

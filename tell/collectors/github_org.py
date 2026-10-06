@@ -34,20 +34,29 @@ rate limit and is skipped without counting (neither ``fetched`` nor ``skipped``)
 repos with stars) stored in ``runs.notes["orgs"]`` so releases are still polled.
 
 Rate limit: ``X-RateLimit-Remaining`` is read on every response; once it drops below
-:data:`RATE_LIMIT_FLOOR` the response in hand is finished and the run stops, noting
-``rate_limited`` in ``runs.notes``. A ``403``/``429`` rate-limit answer stops it too.
+:data:`RATE_LIMIT_FLOOR` (or reaches 0) the response in hand is finished and the run
+stops before the next request, noting ``rate_limited`` in ``runs.notes``. A ``429``, or
+a ``403`` carrying ``X-RateLimit-Remaining: 0`` or ``Retry-After``, stops it at once:
+GitHub requests go through :func:`tell.http.fetch` with ``max_attempts=1`` so a ``429``
+is never slept on and retried; only ``5xx`` and transport errors are retried here, on
+the shared backoff schedule. The stop note records ``Retry-After`` and
+``X-RateLimit-Reset`` and when the next run may resume. A rate-limited run finishes
+``ok`` only if at least one org completed, otherwise ``failed``.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import math
 import re
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, RootModel, ValidationError
@@ -64,7 +73,15 @@ from tell.collectors.base import (
     write_events,
 )
 from tell.config import get_settings
-from tell.http import RateBudget, fetch, make_client
+from tell.http import (
+    MAX_ATTEMPTS,
+    RateBudget,
+    RetryExhausted,
+    backoff_delay,
+    fetch,
+    make_client,
+    parse_retry_after,
+)
 from tell.models import Company, Run
 
 __all__ = [
@@ -127,6 +144,7 @@ _REPO_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 _ORG_URL_PREFIX = re.compile(r"^(?:https?://)?(?:www\.)?github\.com/", re.IGNORECASE)
 
 Sleeper = Callable[[float], None]
+WallClock = Callable[[], datetime]
 _log = logging.getLogger(__name__)
 
 
@@ -215,12 +233,42 @@ def releases_url(owner: str, repo: str) -> str:
 
 
 class RateLimitStopError(RuntimeError):
-    """The rate-limit floor was reached (or GitHub refused for rate); the run stops here."""
+    """The rate-limit floor was reached (or GitHub refused for rate); the run stops here.
 
-    def __init__(self, remaining: int | None, reset: int | None) -> None:
-        super().__init__(f"GitHub rate limit floor reached (remaining={remaining})")
+    ``remaining``/``reset`` are ``X-RateLimit-Remaining``/``X-RateLimit-Reset`` (epoch
+    seconds); ``retry_after`` is the ``Retry-After`` delay in seconds (uncapped); ``status``
+    is the HTTP status that refused (``None`` when the floor was reached on a 2xx/304);
+    ``resume_at`` is the earliest moment both headers allow another request.
+    """
+
+    def __init__(
+        self,
+        remaining: int | None,
+        reset: int | None,
+        *,
+        retry_after: float | None = None,
+        status: int | None = None,
+        resume_at: datetime | None = None,
+    ) -> None:
+        reason = f"HTTP {status}" if status is not None else f"remaining={remaining}"
+        super().__init__(f"GitHub rate limit reached ({reason})")
         self.remaining = remaining
         self.reset = reset
+        self.retry_after = retry_after
+        self.status = status
+        self.resume_at = resume_at
+
+    def note(self) -> dict[str, Any]:
+        """The ``runs.notes`` keys describing this stop."""
+        return {
+            "rate_limit_remaining": self.remaining,
+            "rate_limit_reset": self.reset,
+            "rate_limit_retry_after_s": self.retry_after,
+            "rate_limit_status": self.status,
+            "rate_limit_resume_at": (
+                self.resume_at.isoformat() if self.resume_at is not None else None
+            ),
+        }
 
 
 def _int_header(response: httpx.Response, name: str) -> int | None:
@@ -231,6 +279,37 @@ def _int_header(response: httpx.Response, name: str) -> int | None:
         return int(raw.strip())
     except ValueError:
         return None
+
+
+def _retry_after_s(response: httpx.Response, now: datetime) -> float | None:
+    """``Retry-After`` as seconds (number or HTTP-date), not capped; ``None`` if unusable."""
+    raw = response.headers.get("Retry-After")
+    if raw is None or not raw.strip():
+        return None
+    try:
+        seconds = float(raw.strip())
+    except ValueError:
+        try:
+            when = parsedate_to_datetime(raw.strip())
+        except (TypeError, ValueError):
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        seconds = (when - now).total_seconds()
+    if not math.isfinite(seconds):
+        return None
+    return max(seconds, 0.0)
+
+
+def _resume_at(now: datetime, retry_after: float | None, reset: int | None) -> datetime | None:
+    """The later of ``now + Retry-After`` and ``X-RateLimit-Reset``; ``None`` without either."""
+    candidates: list[datetime] = []
+    if retry_after is not None:
+        candidates.append(now + timedelta(seconds=retry_after))
+    if reset is not None:
+        with contextlib.suppress(OverflowError, OSError, ValueError):
+            candidates.append(datetime.fromtimestamp(reset, UTC))
+    return max(candidates) if candidates else None
 
 
 class GithubClient:
@@ -251,6 +330,7 @@ class GithubClient:
         floor: int = RATE_LIMIT_FLOOR,
         budget: RateBudget | None = None,
         sleep: Sleeper = time.sleep,
+        now: WallClock = utcnow,
     ) -> None:
         self._own = client is None
         self.http = client if client is not None else make_client()
@@ -263,10 +343,13 @@ class GithubClient:
         self.floor = floor
         self._budget = budget
         self._sleep = sleep
+        self._now = now
         self.requests = 0
         self.not_modified = 0
         self.rate_remaining: int | None = None
         self.rate_reset: int | None = None
+        self.retry_after: float | None = None
+        self.stop_status: int | None = None
         self.stopped = False
 
     def __enter__(self) -> GithubClient:
@@ -290,34 +373,90 @@ class GithubClient:
 
     def _observe_rate(self, response: httpx.Response) -> None:
         remaining = _int_header(response, "X-RateLimit-Remaining")
+        reset = _int_header(response, "X-RateLimit-Reset")
         if remaining is not None:
             self.rate_remaining = remaining
-            self.rate_reset = _int_header(response, "X-RateLimit-Reset")
+        if remaining is not None or reset is not None:
+            self.rate_reset = reset
+
+    def _stop(self) -> RateLimitStopError:
+        now = self._now()
+        return RateLimitStopError(
+            self.rate_remaining,
+            self.rate_reset,
+            retry_after=self.retry_after,
+            status=self.stop_status,
+            resume_at=_resume_at(now, self.retry_after, self.rate_reset),
+        )
+
+    def _refused_for_rate(self, response: httpx.Response) -> bool:
+        """A ``429``, or a ``403``/``5xx`` saying the limit is spent (remaining 0 / Retry-After)."""
+        if response.status_code == 429:
+            return True
+        remaining = _int_header(response, "X-RateLimit-Remaining")
+        if response.status_code == 403:
+            return remaining == 0 or "Retry-After" in response.headers
+        return response.status_code >= 500 and remaining == 0
+
+    def _send(self, url: str, *, conditional: bool) -> httpx.Response:
+        """One logical GET: a single attempt per :func:`fetch` call, retrying only 5xx/transport.
+
+        A ``429`` (or any refusal for rate) returns at once instead of being slept on, so
+        :meth:`get` can stop the run. ``5xx`` and transport errors are retried on the
+        shared backoff schedule, at most :data:`tell.http.MAX_ATTEMPTS` attempts in all.
+        """
+        headers = self.headers(url, conditional=conditional)
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                response = fetch(
+                    url,
+                    client=self.http,
+                    headers=headers,
+                    budget=self._budget,
+                    sleep=self._sleep,
+                    max_attempts=1,
+                )
+            except RetryExhausted as exc:
+                if exc.response is None:  # transport error on this attempt
+                    if attempt >= MAX_ATTEMPTS:
+                        raise
+                    self._sleep(backoff_delay(attempt))
+                    continue
+                response = exc.response
+                self.requests += 1
+                if self._refused_for_rate(response):
+                    return response
+                if attempt >= MAX_ATTEMPTS:
+                    raise
+                self._observe_rate(response)
+                delay = parse_retry_after(response.headers.get("Retry-After"))
+                self._sleep(delay if delay is not None else backoff_delay(attempt))
+                continue
+            self.requests += 1
+            return response
 
     def get(self, url: str, *, conditional: bool = True) -> httpx.Response | None:
         """GET ``url``; ``None`` on ``304``. Raises :class:`RateLimitStopError` when stopped.
 
-        Any other non-2xx raises :class:`httpx.HTTPStatusError`. After a response that
-        leaves fewer than ``floor`` requests, the run is marked stopped: the caller
-        still processes this response, and the next call raises.
+        A ``429`` (or a ``403`` carrying ``X-RateLimit-Remaining: 0`` or ``Retry-After``)
+        stops the run immediately, after exactly one request. Any other non-2xx raises
+        :class:`httpx.HTTPStatusError` (or :class:`tell.http.RetryExhausted` once ``5xx``
+        retries run out). After a response that leaves fewer than ``floor`` requests (or
+        none), the run is marked stopped: the caller still processes this response, and
+        the next call raises before sending anything.
         """
         if self.stopped:
-            raise RateLimitStopError(self.rate_remaining, self.rate_reset)
-        response = fetch(
-            url,
-            client=self.http,
-            headers=self.headers(url, conditional=conditional),
-            budget=self._budget,
-            sleep=self._sleep,
-        )
-        self.requests += 1
+            raise self._stop()
+        response = self._send(url, conditional=conditional)
         self._observe_rate(response)
-        if response.status_code in (403, 429) and (
-            self.rate_remaining == 0 or "Retry-After" in response.headers
-        ):
+        if self._refused_for_rate(response):
             self.stopped = True
-            raise RateLimitStopError(self.rate_remaining, self.rate_reset)
-        if self.rate_remaining is not None and self.rate_remaining < self.floor:
+            self.stop_status = response.status_code
+            self.retry_after = _retry_after_s(response, self._now())
+            raise self._stop()
+        if self.rate_remaining is not None and self.rate_remaining < max(self.floor, 1):
             self.stopped = True
         if response.status_code == 304:
             self.not_modified += 1
@@ -549,6 +688,17 @@ class GithubRunResult:
     rate_limited: dict[str, Any] | None = None
     missing: list[str] = field(default_factory=list)
     drift: str | None = None
+    completed: list[str] = field(default_factory=list)
+    """Orgs whose repo listing and every release candidate were read without error."""
+
+    @property
+    def status(self) -> Literal["ok", "failed"]:
+        """``failed`` on contract drift, or on a rate-limit stop before any org completed."""
+        if self.drift is not None:
+            return "failed"
+        if self.rate_limited is not None and not self.completed:
+            return "failed"
+        return "ok"
 
     def record(self, session: Session, fetched: int, events: list[Event]) -> None:
         stats = write_events(session, events)
@@ -565,6 +715,7 @@ class GithubRunResult:
             "requests": self.requests,
             "not_modified": self.not_modified,
             "rate_limited": self.rate_limited is not None,
+            "completed_orgs": len(self.completed),
         }
         if self.rate_limited is not None:
             notes.update(self.rate_limited)
@@ -682,7 +833,8 @@ def collect(
     ETags come from the latest successful github run's notes. A 404 org is counted as
     an error and noted in ``missing_orgs``; a response that fails the contract is an
     error noted as ``drift``; other HTTP failures are errors; each skips to the next
-    org. Reaching the rate-limit floor stops the run (``rate_limited``). The caller
+    org. A ``429``/rate-limit ``403`` or reaching the rate-limit floor stops the run
+    cleanly (``rate_limited`` plus the ``Retry-After``/``X-RateLimit-Reset`` note). The caller
     (normally :func:`ingest`) closes the run with :attr:`GithubRunResult.notes`.
     """
     orgs = configured_orgs(session)
@@ -706,12 +858,9 @@ def collect(
                     now=now,
                 )
             except RateLimitStopError as stop:
-                result.rate_limited = {
-                    "rate_limit_remaining": stop.remaining,
-                    "rate_limit_reset": stop.reset,
-                    "stopped_at_org": org,
-                }
-                _log.warning("github: rate limit floor reached at %s; stopping", org)
+                result.rate_limited = {**stop.note(), "stopped_at_org": org}
+                _log.warning("github: rate limit reached at %s (%s); stopping", org, stop)
+                session.flush()
                 break
             except ValidationError as exc:
                 result.errors += 1
@@ -725,6 +874,8 @@ def collect(
             except httpx.HTTPError as exc:
                 result.errors += 1
                 _log.warning("github: %s failed: %s", org, exc)
+            else:
+                result.completed.append(org)
             session.flush()
         result.requests = api.requests
         result.not_modified = api.not_modified
@@ -748,7 +899,9 @@ def ingest(
     """One github run: ``start_run``, :func:`collect`, ``finish_run`` with the notes.
 
     Finishes ``ok`` unless a response failed the contract (then ``failed``, so its
-    ETags are not reused). A rate-limit stop still finishes ``ok``. Flushes, never commits.
+    ETags are not reused). A rate-limit stop finishes ``ok`` only if at least one org
+    completed before it, otherwise ``failed`` (see :attr:`GithubRunResult.status`).
+    Flushes, never commits.
     """
     started = now or utcnow()
     run_id = start_run(session, SOURCE, now=started)
@@ -758,7 +911,7 @@ def ingest(
     return finish_run(
         session,
         run_id,
-        status="failed" if result.drift is not None else "ok",
+        status=result.status,
         fetched=result.fetched,
         inserted=result.inserted,
         skipped=result.skipped,

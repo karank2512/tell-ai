@@ -52,15 +52,11 @@ No published limit. tell polls each board at most every 6 hours, 8 boards in par
 (`TELL_POLL_CONCURRENCY`), with one token bucket for the host at `TELL_RATE_ATS_RPS`
 (default 8 requests per second, `shared_budget()`). 429 and 5xx are retried by
 `tell.http.fetch` on the 1, 2, 4, 8 s schedule, honouring `Retry-After`. Every request
-sends `User-Agent: tell/0.1 (+https://github.com/karankapur/tell)`.
+sends `User-Agent: tell/0.1 (+https://github.com/karank2512/tell-ai)`.
 
 A 404 is never retried. Greenhouse answers an unknown token with
 `404 {"status":404,"error":"Job not found"}`. A board that 404s is usually a renamed
-token; `ingest_board` records the first 404 by advancing `last_polled_at` without
-`last_verified_at`, and sets `status = 'dead'` only on the second consecutive 404. A
-successful poll in between (or discovery re-verifying the board) resets the count, and a
-`dead` board that answers again goes back to `active`. Re-running discovery for dead
-boards is Phase 3's job.
+token. `ingest_board` hands every 404 to `base.record_board_not_found`: `not_found_count` goes up by one and `first_not_found_at` is set on the first 404 of a streak. The board becomes `status = 'dead'` once the count is at least 2 and the current 404 is at least 12 hours after the first one; at that moment one `review_queue` item (`kind='board_verify'`, `reason: 'not_found_twice'`) is opened unless an open `board_verify` item for the board already exists. A 404 never advances `last_polled_at`, so it never counts as a poll without a posting for `job_closed` (SPEC section 5 rule 3). A 200 calls `base.record_board_ok`, which resets the count, sets `last_polled_at`, turns a `dead` board back to `active` and resolves that item. The collector never writes `last_verified_at`; that column is discovery's ownership verification (SPEC section 4 step 5). The rule is the same for all four ATS collectors: see [ADR 0015](../decisions/0015-ats-404-and-reverification.md).
 
 ## Legal note
 

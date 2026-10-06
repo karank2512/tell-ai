@@ -71,6 +71,13 @@ Conventions every collector follows
   ``form_d_filed`` event and never write a second funding event.
 * One run = ``start_run`` ... ``finish_run``; ``finish_run`` emits exactly one JSON
   log line (spec section 1) on the ``tell.runs`` logger.
+* Board liveness is one rule for every ATS collector
+  (``docs/decisions/0015-ats-404-and-reverification.md``): a poll that answers 200
+  calls :func:`record_board_ok` after :func:`sync_board_postings`; a poll that answers
+  404 calls :func:`record_board_not_found` and nothing else. A 404 never advances
+  ``last_polled_at``, so the ``job_closed`` rule counts only real polls. Collectors
+  never write ``ats_boards.last_verified_at``: that column belongs to discovery's
+  ownership verification (spec section 4 step 5).
 """
 
 from __future__ import annotations
@@ -97,11 +104,12 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from tell.db import upsert
-from tell.models import AtsBoard, EventRow, Posting, PostingObservation, Run
+from tell.models import AtsBoard, EventRow, Posting, PostingObservation, ReviewQueueItem, Run
 from tell.signals.taxonomy import fingerprint as make_fingerprint
 from tell.signals.taxonomy import normalize_title, role_family
 
 __all__ = [
+    "BOARD_VERIFY_KIND",
     "CLOSE_GAP",
     "COLLECTORS_ONLY_ENV",
     "COLLECTOR_KINDS",
@@ -110,6 +118,9 @@ __all__ = [
     "JOB_CLOSED",
     "JOB_OPENED",
     "JOB_UPDATED",
+    "NOT_FOUND_DEAD_AFTER",
+    "NOT_FOUND_DEAD_GAP",
+    "NOT_FOUND_REASON",
     "PII_KEYS",
     "WRITE_BATCH",
     "CollectorKind",
@@ -126,6 +137,8 @@ __all__ = [
     "iso_utc",
     "new_run_id",
     "parse_iso",
+    "record_board_not_found",
+    "record_board_ok",
     "sha256_hex",
     "start_run",
     "sync_board_postings",
@@ -151,6 +164,18 @@ EXTRA_TEXT_KEYS: frozenset[str] = frozenset({"content", "body"})
 
 EXTRA_MAX_CHARS = 500
 """Longest string allowed anywhere inside ``ObservedPosting.extra``; descriptions are longer."""
+
+NOT_FOUND_DEAD_AFTER = 2
+"""404 polls in a row (with no 200 in between) before a board can be marked ``dead``."""
+
+NOT_FOUND_DEAD_GAP = timedelta(hours=12)
+"""Minimum span from the first 404 of a streak to the one that marks the board ``dead``."""
+
+BOARD_VERIFY_KIND = "board_verify"
+"""``review_queue.kind`` opened when a board dies (shared with discovery)."""
+
+NOT_FOUND_REASON = "not_found_twice"
+"""``review_queue.payload.reason`` of the item :func:`record_board_not_found` opens."""
 
 JOB_OPENED = "job_opened"
 JOB_UPDATED = "job_updated"
@@ -767,6 +792,9 @@ def sync_board_postings(
       absent at the previous poll too, and ``now - previous poll >= 12h`` (no closes
       on a first poll).
     * Reads ``board.last_polled_at`` as the previous poll time, then sets it to ``now``.
+      Only polls that answered 200 reach this function (a 404 goes to
+      :func:`record_board_not_found`, which leaves ``last_polled_at`` alone), so the
+      previous poll time is always a real observation of the board.
 
     The caller writes the returned events with :func:`write_events` in the same
     transaction. Nothing here reads ``events`` back.
@@ -793,6 +821,99 @@ def sync_board_postings(
     board.last_polled_at = now
     session.flush()
     return events
+
+
+# --- board liveness (ADR 0015) ---------------------------------------------------------
+
+
+def _open_board_verify(session: Session, board: AtsBoard) -> list[ReviewQueueItem]:
+    """Open ``board_verify`` items about ``board`` (vendor + identifier), whoever raised them."""
+    stmt = (
+        select(ReviewQueueItem)
+        .where(
+            ReviewQueueItem.kind == BOARD_VERIFY_KIND,
+            ReviewQueueItem.status == "open",
+            ReviewQueueItem.payload.contains(
+                {"vendor": board.vendor, "identifier": board.identifier}
+            ),
+        )
+        .order_by(ReviewQueueItem.id)
+    )
+    return list(session.scalars(stmt))
+
+
+def record_board_not_found(session: Session, board: AtsBoard, *, now: datetime) -> str:
+    """Record one 404 poll of ``board`` and return its resulting ``status``.
+
+    * ``not_found_count`` goes up by one; ``first_not_found_at`` is set on the first
+      404 of a streak and kept until :func:`record_board_ok` resets it.
+    * When ``not_found_count >= 2`` and ``now - first_not_found_at >= 12h`` the board
+      becomes ``dead`` and one ``review_queue`` item (``kind='board_verify'``, payload
+      ``{board_id, vendor, identifier, reason: 'not_found_twice', first_not_found_at,
+      last_not_found_at}``) is opened, unless an open ``board_verify`` item for the same
+      vendor + identifier already exists. Two 404s inside 12 hours are not enough: the
+      streak waits for a later 404 that is.
+    * A ``paused`` board keeps its status (a human owns it); its count still advances.
+    * ``last_polled_at`` and ``last_verified_at`` are never touched: a 404 is not an
+      observation of the board's postings, and ownership verification is discovery's.
+
+    Flushes; never commits.
+    """
+    _require_aware(now, "now")
+    _ensure_persistent(session, board)
+    board.not_found_count = (board.not_found_count or 0) + 1
+    if board.first_not_found_at is None:
+        board.first_not_found_at = now
+    first = board.first_not_found_at
+    dies = board.not_found_count >= NOT_FOUND_DEAD_AFTER and now - first >= NOT_FOUND_DEAD_GAP
+    if dies and board.status != "paused":
+        board.status = "dead"
+        if not _open_board_verify(session, board):
+            session.add(
+                ReviewQueueItem(
+                    kind=BOARD_VERIFY_KIND,
+                    payload={
+                        "board_id": board.id,
+                        "vendor": board.vendor,
+                        "identifier": board.identifier,
+                        "reason": NOT_FOUND_REASON,
+                        "first_not_found_at": iso_utc(first),
+                        "last_not_found_at": iso_utc(now),
+                    },
+                    created_at=now,
+                )
+            )
+    session.flush()
+    return board.status
+
+
+def record_board_ok(session: Session, board: AtsBoard, *, now: datetime) -> None:
+    """Record one poll of ``board`` that answered 200; call it after :func:`sync_board_postings`.
+
+    Resets ``not_found_count`` / ``first_not_found_at`` to ``0`` / ``NULL``, sets
+    ``last_polled_at = now`` and turns a ``dead`` board back to ``active``. A board
+    that had reached the death threshold also gets the ``not_found_twice`` item
+    :func:`record_board_not_found` opened for it resolved, since the board answers
+    again. ``last_verified_at`` is never touched (discovery owns it).
+
+    Flushes; never commits.
+    """
+    _require_aware(now, "now")
+    _ensure_persistent(session, board)
+    reached_threshold = (
+        board.status == "dead" or (board.not_found_count or 0) >= NOT_FOUND_DEAD_AFTER
+    )
+    board.not_found_count = 0
+    board.first_not_found_at = None
+    board.last_polled_at = now
+    if board.status == "dead":
+        board.status = "active"
+    if reached_threshold:
+        for item in _open_board_verify(session, board):
+            if item.payload.get("reason") == NOT_FOUND_REASON:
+                item.status = "resolved"
+                item.resolved_at = now
+    session.flush()
 
 
 # --- collector registration ---------------------------------------------------------------

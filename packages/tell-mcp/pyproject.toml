@@ -23,7 +23,7 @@ dependencies = [
 tell-mcp = "tell_mcp.server:main"
 
 [project.urls]
-Homepage = "https://github.com/karankapur/tell"
+Homepage = "https://github.com/karank2512/tell-ai"
 
 [build-system]
 requires = ["hatchling>=1.26"]

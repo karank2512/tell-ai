@@ -62,7 +62,7 @@ def test_success_returns_response_and_sends_project_user_agent(
     assert response.json() == {"jobs": []}
     assert route.call_count == 1
     sent = route.calls.last.request
-    assert sent.headers["User-Agent"] == "tell/0.1 (+https://github.com/karankapur/tell)"
+    assert sent.headers["User-Agent"] == "tell/0.1 (+https://github.com/karank2512/tell-ai)"
     assert clock.sleeps == []
 
 
@@ -73,7 +73,7 @@ def test_per_call_user_agent_override_for_sec(mocked: respx.MockRouter, clock: F
         fetch(URL, client=client, sleep=clock.sleep)
     first, second = route.calls[0].request, route.calls[1].request
     assert first.headers["User-Agent"] == "tell/0.1 (sec-contact)"
-    assert second.headers["User-Agent"] == "tell/0.1 (+https://github.com/karankapur/tell)"
+    assert second.headers["User-Agent"] == "tell/0.1 (+https://github.com/karank2512/tell-ai)"
 
 
 def test_make_client_defaults() -> None:

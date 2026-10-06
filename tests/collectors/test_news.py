@@ -1,7 +1,8 @@
 """News collector: parsing, name guard, events, block policy, feed discovery, rotation.
 
 Every HTTP call goes through ``respx``; the rate budget's sleeper is a no-op so the
-1 rps limit costs no wall time.
+1 rps limit costs no wall time. The leadership-redaction tests (ADR 0016) use
+placeholder names ("Jane Doe" style) in these test strings only, never in fixtures.
 """
 
 from __future__ import annotations
@@ -24,9 +25,11 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from tell.collectors import news
-from tell.collectors.base import sha256_hex, start_run, utcnow
+from tell.collectors.base import Event, sha256_hex, start_run, utcnow
 from tell.collectors.news import (
     FALLBACK_PATHS,
+    MAX_COMPANIES,
+    RUN_BUDGET,
     CompanyRef,
     NewsFeed,
     NewsItem,
@@ -37,6 +40,7 @@ from tell.collectors.news import (
     google_news_url,
     headline,
     ingest,
+    last_polled,
     name_in_title,
     news_key,
     on_domain,
@@ -62,7 +66,16 @@ ATOM = f"https://{DOMAIN}/blog/atom.xml"
 RSS_HEADERS = {"Content-Type": "application/rss+xml; charset=utf-8"}
 ATOM_HEADERS = {"Content-Type": "application/atom+xml; charset=utf-8"}
 HTML_HEADERS = {"Content-Type": "text/html; charset=utf-8"}
-PAYLOAD_KEYS = {"title", "source", "matched_regex", "category", "query", "match", "key"}
+PAYLOAD_KEYS = {
+    "title",
+    "title_redacted",
+    "source",
+    "matched_regex",
+    "category",
+    "query",
+    "match",
+    "key",
+}
 
 
 def _bytes(name: str) -> bytes:
@@ -256,6 +269,22 @@ def test_run_fixture_normal_writes_six_classified_events(db_session: Session) ->
     assert funding.occurred_at == datetime(2026, 10, 1, 13, 5, tzinfo=UTC)
     assert funding.payload["source"] == "Ledger Daily"
     assert funding.payload["matched_regex"] == "funding.raises"
+    # Funding / launch / expansion keep the raw title; leadership is redacted (ADR 0016).
+    assert funding.payload["title"] == (
+        "Quillstone Analytics raises $24M Series A to expand forecasting platform - Ledger Daily"
+    )
+    assert funding.payload["title_redacted"] is False
+    leadership = sorted(
+        (e.payload["title"], e.payload["title_redacted"])
+        for e in result.events
+        if e.type == "news_leadership"
+    )
+    assert leadership == [
+        ("appoints new chief revenue officer", True),
+        ("names as chief financial officer", True),
+    ]
+    for event in result.events:
+        assert event.payload["title_redacted"] is (event.type == "news_leadership")
     stored = json.dumps([row.payload for row in rows])
     assert "description" not in stored
     assert "font color" not in stored
@@ -406,13 +435,51 @@ def test_block_stops_the_run_without_retry(
         assert blocked.call_count == 1
         assert other.call_count == 0
         assert mock.calls.call_count == 1
-    assert run.status == "ok"
+    # A block fails the run so the SPEC section 11 dead-man sees a persistent block.
+    assert run.status == "failed"
     assert run.errors == 1
     assert run.notes is not None
     assert run.notes["blocked"] is True
     assert run.notes["blocked_by"] == {"status": status, "url": GNEWS, "company_id": first.id}
     assert run.notes["polled"] == {}
+    assert run.notes["polled_count"] == 0
+    assert run.notes["deferred"] == 1
+    assert run.notes["budget_exhausted"] is False
     assert _count(db_session, EventRow) == 0
+
+
+@pytest.mark.db
+def test_block_after_some_polls_keeps_them_and_fails(
+    db_session: Session, client: httpx.Client
+) -> None:
+    first = _company(db_session, name="Brightloom", domain="brightloom.example")
+    second = _company(db_session)
+    third = _company(db_session, name="Corvana", domain="corvana.example")
+    with respx.mock(assert_all_called=False) as mock:
+        mock.get(google_news_url("Brightloom")).mock(
+            return_value=httpx.Response(200, content=_bytes("empty.xml"))
+        )
+        mock.get(url__regex=r"https://brightloom\.example/.*").mock(
+            return_value=httpx.Response(404)
+        )
+        mock.get(GNEWS).mock(return_value=httpx.Response(429))
+        later = mock.get(google_news_url("Corvana"))
+        run = ingest(
+            db_session,
+            now=NOW,
+            client=client,
+            company_ids=[first.id, second.id, third.id],
+            budgets=_budgets(),
+        )
+        assert later.call_count == 0
+    assert run.status == "failed"
+    assert run.notes is not None
+    assert run.notes["blocked"] is True
+    assert run.notes["polled"] == {str(first.id): "2026-10-05T12:00:00+00:00"}
+    assert run.notes["polled_count"] == 1
+    assert run.notes["deferred"] == 1
+    # The blocked run's polls still count for the rotation.
+    assert last_polled(db_session, NOW + timedelta(hours=1)) == {first.id: NOW}
 
 
 @pytest.mark.db
@@ -801,8 +868,8 @@ def test_rotation_selection(db_session: Session) -> None:
         db_session.flush()
 
         chosen = [c.id for c in select_companies(db_session, now)]
-        # priority (active + watchlist) first, then the id % 7 == 2 bucket
-        assert chosen == [3, 11, 2, 9]
+        # watchlist first, then active in 30 days, then the id % 7 == 2 bucket
+        assert chosen == [11, 3, 2, 9]
 
         _news_run(
             db_session, now - timedelta(hours=2), {"3": (now - timedelta(hours=2)).isoformat()}
@@ -812,11 +879,55 @@ def test_rotation_selection(db_session: Session) -> None:
         )
         _news_run(db_session, now - timedelta(hours=3), {"9": "not a date", "x": now.isoformat()})
         db_session.flush()
-        assert [c.id for c in select_companies(db_session, now)] == [11, 2, 9]
+        # Priority companies are polled at most once per 24 hours, not every 6.
+        assert [c.id for c in select_companies(db_session, now)] == [2, 9]
         assert recently_polled(db_session, now) == {3: now - timedelta(hours=2)}
+        assert last_polled(db_session, now) == {
+            3: now - timedelta(hours=2),
+            11: now - timedelta(hours=7),
+        }
 
-        explicit = select_companies(db_session, now, company_ids=[3, 5, 12])
-        assert [c.id for c in explicit] == [5, 12]
+        # Explicit ids replace the rotation and only respect the 6-hour cache.
+        explicit = select_companies(db_session, now, company_ids=[3, 5, 11, 12])
+        assert [c.id for c in explicit] == [5, 11, 12]
+
+
+@pytest.mark.db
+def test_rotation_intervals_daily_for_priority_weekly_for_the_tail(db_session: Session) -> None:
+    _companies(db_session, range(1, 15))
+    now = NOW  # a Monday: the tail bucket is id % 7 == 0, i.e. 7 and 14
+    for company_id in (1, 2, 3, 4):
+        _event(db_session, company_id, now - timedelta(days=5))
+    db_session.flush()
+
+    def ago(**delta: float) -> str:
+        return (now - timedelta(**delta)).isoformat()
+
+    _news_run(
+        db_session,
+        now - timedelta(days=6, hours=23, minutes=30),
+        {"7": ago(days=6, hours=23, minutes=30), "4": ago(days=6)},
+    )
+    _news_run(db_session, now - timedelta(days=3), {"14": ago(days=3)})
+    _news_run(db_session, now - timedelta(hours=25), {"1": ago(hours=25)})
+    _news_run(db_session, now - timedelta(hours=23, minutes=30), {"2": ago(hours=23, minutes=30)})
+    _news_run(db_session, now - timedelta(hours=22), {"3": ago(hours=22)})
+    db_session.flush()
+
+    chosen = [c.id for c in select_companies(db_session, now)]
+    # 3 polled 22h ago: not due. 2 at 23h30 is due (one hour of slack for cron jitter).
+    # Within the active group the least recently polled come first: 4 (6 days), 1, 2.
+    # Tail: 7 was polled a week ago (less slack): due; 14 three days ago: not due.
+    assert chosen == [4, 1, 2, 7]
+
+
+@pytest.mark.db
+def test_polls_older_than_the_lookback_are_ignored(db_session: Session) -> None:
+    _companies(db_session, range(7, 8))
+    _news_run(db_session, NOW - timedelta(days=8), {"7": (NOW - timedelta(days=8)).isoformat()})
+    db_session.flush()
+    assert last_polled(db_session, NOW) == {}
+    assert [c.id for c in select_companies(db_session, NOW)] == [7]
 
 
 @pytest.mark.db
@@ -863,6 +974,180 @@ def test_collect_builds_and_closes_its_own_client(
     assert created[0].is_closed
 
 
+# --- run budget ----------------------------------------------------------------------------------
+
+
+def test_budget_defaults() -> None:
+    budget_minutes = RUN_BUDGET.total_seconds() / 60
+    google_news_minutes = MAX_COMPANIES / 60  # one query per company at 1 rps
+    assert (MAX_COMPANIES, budget_minutes) == (1200, 25)
+    # The Google News queries alone fit the 30-minute filings job with margin.
+    assert google_news_minutes <= budget_minutes < 30
+
+
+def _three_companies(session: Session) -> list[Company]:
+    return [
+        _company(session, name=f"Budget {letter}", domain=f"budget-{letter}.example")
+        for letter in ("a", "b", "c")
+    ]
+
+
+def _mock_empty(mock: respx.MockRouter) -> None:
+    mock.get(url__regex=r"https://news\.google\.com/rss/search.*").mock(
+        return_value=httpx.Response(200, content=_bytes("empty.xml"))
+    )
+    mock.get(url__regex=r"https://budget-[abc]\.example/.*").mock(return_value=httpx.Response(404))
+
+
+@pytest.mark.db
+def test_max_companies_caps_the_run_and_defers_the_rest(
+    db_session: Session, client: httpx.Client
+) -> None:
+    companies = _three_companies(db_session)
+    with respx.mock(assert_all_called=False) as mock:
+        _mock_empty(mock)
+        run = ingest(
+            db_session,
+            now=NOW,
+            client=client,
+            company_ids=[c.id for c in companies],
+            budgets=_budgets(),
+            max_companies=2,
+        )
+        queried = [u for u in _urls(mock) if u.startswith("https://news.google.com/")]
+        assert queried == [google_news_url(c.name) for c in companies[:2]]
+    assert run.status == "ok"
+    assert run.notes is not None
+    assert run.notes["selected"] == 3
+    assert run.notes["deferred"] == 1
+    assert run.notes["polled_count"] == 2
+    assert run.notes["budget_exhausted"] is False
+
+
+@pytest.mark.db
+def test_wall_clock_budget_stops_cleanly(db_session: Session, client: httpx.Client) -> None:
+    companies = _three_companies(db_session)
+    ticks = iter([0.0, 0.0, 10.0, 26 * 60.0, 27 * 60.0])
+    with respx.mock(assert_all_called=False) as mock:
+        _mock_empty(mock)
+        run = ingest(
+            db_session,
+            now=NOW,
+            client=client,
+            company_ids=[c.id for c in companies],
+            budgets=_budgets(),
+            clock=lambda: next(ticks),
+        )
+        queried = [u for u in _urls(mock) if u.startswith("https://news.google.com/")]
+        assert queried == [google_news_url(c.name) for c in companies[:2]]
+    assert run.status == "ok"
+    assert run.notes is not None
+    assert run.notes["budget_exhausted"] is True
+    assert run.notes["deferred"] == 1
+    assert run.notes["polled"] == {
+        str(companies[0].id): "2026-10-05T12:00:00+00:00",
+        str(companies[1].id): "2026-10-05T12:00:00+00:00",
+    }
+
+
+@pytest.mark.db
+def test_budget_keeps_priority_order(db_session: Session, client: httpx.Client) -> None:
+    _companies(db_session, range(1, 15))
+    _event(db_session, 3, NOW - timedelta(days=2))
+    watchlist = Watchlist(owner="owner-handle", name="pilot")
+    db_session.add(watchlist)
+    db_session.flush()
+    db_session.add(WatchlistItem(watchlist_id=watchlist.id, company_id=12))
+    db_session.flush()
+    with respx.mock(assert_all_called=False) as mock:
+        mock.get(url__regex=r"https://news\.google\.com/rss/search.*").mock(
+            return_value=httpx.Response(200, content=_bytes("empty.xml"))
+        )
+        mock.get(url__regex=r"https://c\d+\.example/.*").mock(return_value=httpx.Response(404))
+        run = ingest(db_session, now=NOW, client=client, budgets=_budgets(), max_companies=2)
+        queried = [u for u in _urls(mock) if u.startswith("https://news.google.com/")]
+    # Watchlist member, then the active company; the Monday tail bucket (7, 14) waits.
+    assert queried == [google_news_url("Company 12"), google_news_url("Company 3")]
+    assert run.notes is not None
+    assert (run.notes["selected"], run.notes["deferred"]) == (4, 2)
+
+
+# --- leadership redaction (ADR 0016, provisional) --------------------------------------------------
+
+LEADERSHIP_HEADLINES = [
+    "Quillstone Analytics appoints Jane Doe as chief revenue officer",
+    "Quillstone Analytics Appoints Jane Doe As Chief Revenue Officer",
+    "Quillstone Analytics names John Roe as its new chief financial officer",
+    "Quillstone Analytics hires Ada Example as head of sales",
+    "Quillstone Analytics promotes Max Placeholder to president",
+    "Jane Doe joins Quillstone Analytics as chief technology officer",
+    "Quillstone Analytics appoints Jane Doe as CFO and John Roe as COO",
+    "Quillstone Analytics appoints Jane Doe, former rival executive, as CFO",
+    "Quillstone Analytics names former payments executive as chief financial officer",
+]
+
+
+def _leadership_events(titles: list[str]) -> list[Event]:
+    feed = NewsFeed(
+        origin="google_news",
+        feed_url=GNEWS,
+        company=CompanyRef(name=NAME, domain=DOMAIN),
+        items=[
+            NewsItem(
+                title=f"{title} - Ledger Daily",
+                link=f"https://news.google.com/rss/articles/lead-{index}",
+                pub_date=NOW,
+                source="Ledger Daily",
+            )
+            for index, title in enumerate(titles)
+        ],
+    )
+    events, dropped = derive_events(feed, company_id=None, run_id="r", now=NOW)
+    assert dropped == 0
+    return events
+
+
+def test_leadership_titles_are_stored_redacted() -> None:
+    events = _leadership_events(LEADERSHIP_HEADLINES)
+    assert [e.type for e in events] == ["news_leadership"] * len(LEADERSHIP_HEADLINES)
+    titles = [e.payload["title"] for e in events]
+    assert titles == [
+        "Quillstone Analytics appoints [person] as chief revenue officer",
+        "Quillstone Analytics Appoints [person] As Chief Revenue Officer",
+        "Quillstone Analytics names [person] as its new chief financial officer",
+        "Quillstone Analytics hires [person] as head of sales",
+        "Quillstone Analytics promotes [person] to president",
+        "[person] joins Quillstone Analytics as chief technology officer",
+        "Quillstone Analytics appoints [person] as CFO and [person] as COO",
+        "appoints as CFO",
+        "names as chief financial officer",
+    ]
+    for event, raw in zip(events, LEADERSHIP_HEADLINES, strict=True):
+        assert event.payload["title_redacted"] is True
+        assert raw not in event.payload["title"]
+        assert set(event.payload) == PAYLOAD_KEYS
+        assert event.url == event.external_id  # the URL stays the receipt
+
+
+def test_no_leadership_payload_title_contains_the_capitalised_run() -> None:
+    names = ["Jane Doe", "John Roe", "Ada Example", "Max Placeholder"]
+    events = _leadership_events(LEADERSHIP_HEADLINES)
+    stored = json.dumps([e.payload for e in events])
+    for name in names:
+        for word in name.split():
+            assert word not in stored, word
+
+
+def test_non_leadership_titles_are_unchanged() -> None:
+    feed = NewsFeed.model_validate_json(_bytes("normal.json"))
+    events, _ = derive_events(feed, company_id=None, run_id="r", now=NOW)
+    raw = {item.link: item.title for item in feed.items}
+    for event in events:
+        if event.type != "news_leadership":
+            assert event.payload["title"] == raw[event.url]
+            assert event.payload["title_redacted"] is False
+
+
 # --- migrations ------------------------------------------------------------------------------------
 
 
@@ -872,7 +1157,8 @@ def test_company_feeds_table_is_migrated(db_session: Session) -> None:
     insp = inspect(conn)
     assert "company_feeds" in insp.get_table_names()
     assert "version_marker" in {c["name"] for c in insp.get_columns("postings")}
-    assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0003"
+    # At or past 0003 (later phases add migrations on top).
+    assert int(conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()) >= 3
 
 
 @pytest.mark.db

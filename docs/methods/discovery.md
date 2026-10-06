@@ -35,7 +35,9 @@ domain, find the board or record that none was found.
    `lxml.html`), then the raw HTML text (inline scripts, data attributes), against the
    patterns below. Supported vendors win over unsupported ones (a page linking both a
    Workday site and a Lever board resolves to Lever); within a class the first hit wins.
-4. **Slug guesses**, only when the scan found nothing: from the domain label (`acme`),
+   `grnh.se` short links rank **last**, after unsupported vendors too (see below).
+4. **Slug guesses**, only when the scan found nothing (or its only hit was a `grnh.se`
+   short link that did not resolve): from the domain label (`acme`),
    try `acme`, `acmeinc`, `acme-inc`, and for each slug Greenhouse, Lever, Ashby,
    SmartRecruiters in that order, with a small GET. A 200 with at least one job counts.
 5. **Verify ownership** of a supported board: the board's own company name must reach
@@ -64,7 +66,8 @@ domain, find the board or record that none was found.
 
 | Vendor | Shapes recognised | Identifier stored | Status |
 | --- | --- | --- | --- |
-| greenhouse | `boards.greenhouse.io/{token}`, `job-boards.greenhouse.io/{token}`, `.../embed/job_board[/js]?for={token}` (iframe and script embeds), `boards-api.greenhouse.io/v1/boards/{token}`, `grnh.se/{token}` | token | active |
+| greenhouse | `boards.greenhouse.io/{token}`, `job-boards.greenhouse.io/{token}`, `.../embed/job_board[/js]?for={token}` (iframe and script embeds), `boards-api.greenhouse.io/v1/boards/{token}` | token | active |
+| greenhouse (short link) | `grnh.se/{code}`, resolved through its redirect (below) | the resolved token | active |
 | lever | `jobs.lever.co/{site}`, `jobs.eu.lever.co/{site}` | `site`, or `eu:{site}` | active |
 | ashby | `jobs.ashbyhq.com/{name}` (incl. `/embed`), `api.ashbyhq.com/posting-api/job-board/{name}` | name (percent-decoded) | active |
 | smartrecruiters | `careers.smartrecruiters.com/{company}` | company | active |
@@ -73,8 +76,17 @@ domain, find the board or record that none was found.
 | oracle | `{host}/hcmUI/CandidateExperience` | host | unsupported |
 
 Hosts must start at a boundary, so look-alikes such as `notboards.greenhouse.io` do not
-match. `grnh.se` codes are often job short links rather than board tokens; the Greenhouse
-name lookup then fails and the hit lands in review instead of being activated.
+match.
+
+`grnh.se/{code}` links are Greenhouse's per-posting short links: the code is an opaque hash,
+not a board token. They rank after every other hit, and a chosen one is resolved with
+**one GET of `https://grnh.se/{code}` with redirects not followed** (no retries, through the
+run's rate budget). Only a `Location` that starts with `https://boards.greenhouse.io/{token}`
+or `https://job-boards.greenhouse.io/{token}` resolves; the token is then verified like any
+other page hit (confidence 0.95, `discovered_from` = the company page). Anything else (no
+redirect, an error, a redirect to the company's own site such as `/careers?gh_jid=...`)
+falls through to the slug guesses; the short-link code itself is never sent to review or
+stored as an identifier.
 
 Workday, Oracle and Workable are recorded with `status='unsupported'` and are never fetched
 further or polled (`docs/decisions/0003-drop-workday-oracle-collectors.md`); they exist so
@@ -134,15 +146,24 @@ processed, `inserted` = `board` + `unsupported`, `skipped` = `review` + `no_boar
 `reverify_due(board, now)` is true when:
 
 - `last_verified_at` is missing or 30 days old or older; or
-- the board has answered **404 twice in a row**. `ats_boards` has no 404 counter, and
-  discovery does not add one: every ATS collector already sets `status='dead'` on the
-  second consecutive 404 (Greenhouse, Ashby and SmartRecruiters infer the streak from
+- the board has answered **404 twice in a row** and has been polled since discovery last
+  looked at it: `status='dead'` and `last_verified_at < last_polled_at`. Discovery does not
+  read a 404 counter: every ATS collector already sets `status='dead'` on the second
+  consecutive 404 (Greenhouse, Ashby and SmartRecruiters infer the streak from
   `last_polled_at` > `last_verified_at`; Lever counts it in an open `review_queue` item),
   so `dead` is the marker discovery reads.
 
 `paused` boards are never due (they wait for their review item). Re-verification reruns the
 whole procedure for the company's domain: a dead board found and verified again becomes
 `active`; a renamed board is written as a new row.
+
+**Every outcome stamps the company's dead boards.** After any outcome for a company
+(`board`, `unsupported`, `review`, `no_board`), discovery sets `last_verified_at = now` on
+that company's `dead` boards and on its `vendor='none'` marker row, if one remains. A dead
+board that discovery could not revive (the company moved to another board, or has none) is
+therefore checked again only after 30 days, or sooner if a collector polls it again after
+that stamp; before this rule a dead board was due on every batch forever, because no
+outcome ever touched its row.
 
 Note: the collectors also set `last_verified_at` on every successful poll, so for polled
 boards the 30-day rule rarely fires; it matters for `unsupported` and `no_board` rows, which

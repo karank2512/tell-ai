@@ -44,8 +44,8 @@ dependencies = [
 tell = "tell.cli:app"
 
 [project.urls]
-Homepage = "https://github.com/karankapur/tell"
-Repository = "https://github.com/karankapur/tell"
+Homepage = "https://github.com/karank2512/tell-ai"
+Repository = "https://github.com/karank2512/tell-ai"
 
 [dependency-groups]
 dev = [

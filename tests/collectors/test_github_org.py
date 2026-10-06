@@ -42,6 +42,7 @@ from tell.collectors.github_org import (
     run_fixture,
 )
 from tell.config import get_settings
+from tell.http import RetryExhausted
 from tell.models import Company, EventRow, Run
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "github"
@@ -363,7 +364,7 @@ def test_headers_with_token_from_settings(
         list_releases(api, ORG, "uv")
     request = route.calls.last.request
     assert request.headers["Authorization"] == "Bearer test-token-not-real"
-    assert request.headers["User-Agent"] == "tell/0.1 (+https://github.com/karankapur/tell)"
+    assert request.headers["User-Agent"] == "tell/0.1 (+https://github.com/karank2512/tell-ai)"
 
 
 def test_list_repos_follows_link_next(mocked: respx.MockRouter) -> None:
@@ -453,6 +454,158 @@ def test_other_403_is_an_http_error(mocked: respx.MockRouter) -> None:
         list_releases(api, ORG, "uv")
     assert not api.stopped
     assert api.rate_remaining is None
+
+
+def _limited(status: int = 429, **headers: str) -> httpx.Response:
+    return httpx.Response(status, json={"message": "rate limited"}, headers=headers)
+
+
+def test_429_stops_after_exactly_one_request_without_sleeping(
+    mocked: respx.MockRouter,
+) -> None:
+    route = mocked.get(REPOS_URL).mock(
+        return_value=_limited(
+            429, **{"Retry-After": "60", "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "17"}
+        )
+    )
+    api = GithubClient(httpx.Client(), sleep=_no_sleep, now=lambda: NOW)
+    with pytest.raises(RateLimitStopError) as excinfo:
+        list_repos(api, ORG)
+    assert route.call_count == 1
+    assert api.requests == 1
+    assert api.stopped
+    stop = excinfo.value
+    assert (stop.status, stop.remaining, stop.reset, stop.retry_after) == (429, 0, 17, 60.0)
+    assert stop.resume_at == NOW + timedelta(seconds=60)  # later than the 1970 reset
+    assert stop.note()["rate_limit_resume_at"] == (NOW + timedelta(seconds=60)).isoformat()
+    # Every later call stops before sending anything.
+    with pytest.raises(RateLimitStopError):
+        list_repos(api, ORG)
+    assert route.call_count == 1
+
+
+def test_429_without_headers_still_stops(mocked: respx.MockRouter) -> None:
+    route = mocked.get(UV_RELEASES).mock(return_value=_limited())
+    api = GithubClient(httpx.Client(), sleep=_no_sleep, now=lambda: NOW)
+    with pytest.raises(RateLimitStopError) as excinfo:
+        list_releases(api, ORG, "uv")
+    assert route.call_count == 1
+    assert excinfo.value.note() == {
+        "rate_limit_remaining": None,
+        "rate_limit_reset": None,
+        "rate_limit_retry_after_s": None,
+        "rate_limit_status": 429,
+        "rate_limit_resume_at": None,
+    }
+
+
+def test_retry_after_http_date_and_reset_pick_the_later(mocked: respx.MockRouter) -> None:
+    reset = int((NOW + timedelta(minutes=30)).timestamp())
+    mocked.get(UV_RELEASES).mock(
+        return_value=_limited(
+            403,
+            **{
+                "Retry-After": "Mon, 05 Oct 2026 12:02:00 GMT",
+                "X-RateLimit-Remaining": "7",
+                "X-RateLimit-Reset": str(reset),
+            },
+        )
+    )
+    api = GithubClient(httpx.Client(), sleep=_no_sleep, now=lambda: NOW)
+    with pytest.raises(RateLimitStopError) as excinfo:
+        list_releases(api, ORG, "uv")
+    stop = excinfo.value
+    assert stop.status == 403
+    assert stop.retry_after == 120.0
+    assert stop.resume_at == NOW + timedelta(minutes=30)
+
+
+@pytest.mark.parametrize("raw", ["soon", "nan", "inf", "  "])
+def test_unusable_retry_after_is_ignored(mocked: respx.MockRouter, raw: str) -> None:
+    mocked.get(UV_RELEASES).mock(return_value=_limited(429, **{"Retry-After": raw}))
+    api = GithubClient(httpx.Client(), sleep=_no_sleep, now=lambda: NOW)
+    with pytest.raises(RateLimitStopError) as excinfo:
+        list_releases(api, ORG, "uv")
+    assert excinfo.value.retry_after is None
+
+
+def test_naive_http_date_and_absurd_reset(mocked: respx.MockRouter) -> None:
+    mocked.get(UV_RELEASES).mock(
+        return_value=_limited(
+            429,
+            **{"Retry-After": "Mon, 05 Oct 2026 11:00:00 -0000", "X-RateLimit-Reset": "10" * 20},
+        )
+    )
+    api = GithubClient(httpx.Client(), sleep=_no_sleep, now=lambda: NOW)
+    with pytest.raises(RateLimitStopError) as excinfo:
+        list_releases(api, ORG, "uv")
+    assert excinfo.value.retry_after == 0.0  # a date in the past means "now"
+    assert excinfo.value.resume_at == NOW
+
+
+def test_remaining_zero_stops_before_the_next_call(mocked: respx.MockRouter) -> None:
+    link = f'<{PAGE_2}>; rel="next"'
+    first = mocked.get(REPOS_URL).mock(return_value=_ok(_repos_raw(), remaining=0, link=link))
+    page_2 = mocked.get(PAGE_2).mock(return_value=_ok([]))
+    api = GithubClient(httpx.Client(), floor=0, sleep=_no_sleep, now=lambda: NOW)
+    with pytest.raises(RateLimitStopError) as excinfo:
+        list_repos(api, ORG)
+    assert first.call_count == 1
+    assert not page_2.called
+    assert api.requests == 1
+    assert excinfo.value.remaining == 0
+    assert excinfo.value.status is None
+    assert excinfo.value.resume_at == datetime.fromtimestamp(1791219415, UTC)
+
+
+def test_5xx_is_retried_then_succeeds(mocked: respx.MockRouter) -> None:
+    route = mocked.get(UV_RELEASES).mock(
+        side_effect=[
+            httpx.Response(502),
+            httpx.Response(503, headers={"Retry-After": "3"}),
+            _ok([]),
+        ]
+    )
+    slept: list[float] = []
+    api = GithubClient(httpx.Client(), sleep=slept.append)
+    assert list_releases(api, ORG, "uv") == []
+    assert route.call_count == 3
+    assert slept == [1.0, 3.0]
+    assert api.requests == 3
+    assert not api.stopped
+
+
+def test_5xx_exhausts_retries(mocked: respx.MockRouter) -> None:
+    route = mocked.get(UV_RELEASES).mock(return_value=httpx.Response(500))
+    slept: list[float] = []
+    api = GithubClient(httpx.Client(), sleep=slept.append)
+    with pytest.raises(RetryExhausted):
+        list_releases(api, ORG, "uv")
+    assert route.call_count == 5
+    assert slept == [1.0, 2.0, 4.0, 8.0]
+    assert not api.stopped
+
+
+def test_5xx_with_remaining_zero_stops(mocked: respx.MockRouter) -> None:
+    route = mocked.get(UV_RELEASES).mock(
+        return_value=httpx.Response(503, headers={"X-RateLimit-Remaining": "0"})
+    )
+    api = GithubClient(httpx.Client(), sleep=_no_sleep, now=lambda: NOW)
+    with pytest.raises(RateLimitStopError) as excinfo:
+        list_releases(api, ORG, "uv")
+    assert route.call_count == 1
+    assert excinfo.value.status == 503
+
+
+def test_transport_errors_are_retried_then_raise(mocked: respx.MockRouter) -> None:
+    route = mocked.get(UV_RELEASES).mock(side_effect=httpx.ConnectError("boom"))
+    slept: list[float] = []
+    api = GithubClient(httpx.Client(), sleep=slept.append)
+    with pytest.raises(RetryExhausted):
+        list_releases(api, ORG, "uv")
+    assert route.call_count == 5
+    assert slept == [1.0, 2.0, 4.0, 8.0]
+    assert api.requests == 0
 
 
 # --- runs against the database ----------------------------------------------------------------
@@ -624,7 +777,8 @@ def test_rate_limit_floor_stops_the_run(db_session: Session, mocked: respx.MockR
 
     run = ingest(db_session, now=NOW, client=httpx.Client())
 
-    assert run.status == "ok"
+    # The floor stopped the run inside the first org, so no org completed.
+    assert run.status == "failed"
     assert routes["repos"].call_count == 1
     assert not routes["uv"].called
     assert not routes["ruff"].called
@@ -651,9 +805,10 @@ def test_rate_limit_stop_keeps_previous_etags_and_summaries(
         return_value=httpx.Response(403, headers={"X-RateLimit-Remaining": "0"})
     )
     second = ingest(db_session, now=LATER, client=httpx.Client())
-    assert second.status == "ok"
+    assert second.status == "failed"  # stopped before any org completed
     assert second.notes is not None
     assert second.notes["rate_limited"] is True
+    assert second.notes["completed_orgs"] == 0
     assert second.notes["etags"] == first.notes["etags"]
     assert second.notes["orgs"] == first.notes["orgs"]
 
@@ -765,3 +920,77 @@ def test_run_fixture_empty(db_session: Session) -> None:
     run_id = start_run(db_session, "github", now=NOW)
     result = run_fixture(db_session, EMPTY, run_id=run_id, now=NOW)
     assert (result.fetched, result.inserted, result.skipped, result.events) == (0, 0, 0, [])
+
+
+@pytest.mark.db
+def test_429_on_first_repos_call_stops_the_run_cleanly(
+    db_session: Session, mocked: respx.MockRouter
+) -> None:
+    _company(db_session, "astral.example", ORG)
+    _company(db_session, "other.example", OTHER_ORG)
+    routes = _mock_astral(mocked)
+    routes["repos"].mock(
+        side_effect=None,
+        return_value=_limited(429, **{"Retry-After": "90", "X-RateLimit-Reset": "1791219415"}),
+    )
+    other = mocked.get(OTHER_REPOS_URL).mock(return_value=_ok([]))
+
+    run = ingest(db_session, now=NOW, client=httpx.Client(), sleep=_no_sleep)
+
+    assert routes["repos"].call_count == 1
+    assert not routes["uv"].called
+    assert not other.called
+    assert run.status == "failed"  # no org completed before the stop
+    assert (run.fetched, run.inserted, run.errors) == (0, 0, 0)
+    assert run.notes is not None
+    assert run.notes["rate_limited"] is True
+    assert run.notes["requests"] == 1
+    assert run.notes["completed_orgs"] == 0
+    assert run.notes["stopped_at_org"] == ORG
+    assert run.notes["rate_limit_status"] == 429
+    assert run.notes["rate_limit_retry_after_s"] == 90.0
+    assert run.notes["rate_limit_reset"] == 1791219415
+    assert run.notes["rate_limit_resume_at"] is not None
+
+
+@pytest.mark.db
+def test_rate_limit_after_one_org_completed_finishes_ok(
+    db_session: Session, mocked: respx.MockRouter
+) -> None:
+    _company(db_session, "other.example", OTHER_ORG)
+    _company(db_session, "astral.example", ORG)
+    other = mocked.get(OTHER_REPOS_URL).mock(return_value=_ok([]))
+    routes = _mock_astral(mocked)
+    routes["repos"].mock(side_effect=None, return_value=_limited(429))
+
+    run = ingest(db_session, now=NOW, client=httpx.Client(), sleep=_no_sleep)
+
+    assert other.call_count == 1
+    assert routes["repos"].call_count == 1
+    assert run.status == "ok"
+    assert run.notes is not None
+    assert run.notes["rate_limited"] is True
+    assert run.notes["completed_orgs"] == 1
+    assert run.notes["stopped_at_org"] == ORG
+    assert run.notes["requests"] == 2
+
+
+@pytest.mark.db
+def test_remaining_zero_stops_the_run_before_the_next_call(
+    db_session: Session, mocked: respx.MockRouter
+) -> None:
+    _company(db_session, "astral.example", ORG)
+    _company(db_session, "other.example", OTHER_ORG)
+    routes = _mock_astral(mocked, remaining=0)
+    other = mocked.get(OTHER_REPOS_URL).mock(return_value=_ok([]))
+
+    run = ingest(db_session, now=NOW, client=httpx.Client(), sleep=_no_sleep)
+
+    assert routes["repos"].call_count == 1
+    assert not routes["uv"].called
+    assert not other.called
+    assert run.inserted == 3  # the response in hand is still processed
+    assert run.notes is not None
+    assert run.notes["rate_limited"] is True
+    assert run.notes["rate_limit_remaining"] == 0
+    assert run.notes["requests"] == 1

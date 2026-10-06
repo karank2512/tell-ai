@@ -4,7 +4,7 @@ Normative reference: `docs/SPEC.md` (the Build spec). Business context: the busi
 
 ## Decisions locked (recorded in `docs/decisions/`)
 
-- Repos under Karan's **personal GitHub account**: `tell`, `tell-data`, `tell-private`. Pages URL and `TELL_DATA_REPO` stay env-parametrized so nothing is hardcoded.
+- Repos under Karan's **personal GitHub account** (karank2512): `tell-ai` (code; package/CLI still named `tell`), `tell-data`, `tell-private`. Pages URL and `TELL_DATA_REPO` stay env-parametrized so nothing is hardcoded.
 - Collectors built **fresh from the spec** (no scanner port).
 - **Local-first**: local Postgres (Docker compose Postgres 16, or an existing local server) for dev/tests; one guided cutover milestone creates Neon, Slack webhook, SEC contact, PyPI, GitHub repos/secrets/Pages.
 - **Workday and Oracle collectors dropped** (deviation from spec's flag-off default). Discovery still *detects* Workday/Oracle/Workable patterns and records them in `ats_boards` with `status='unsupported'` so coverage reporting ("we cannot see this one") stays honest; nothing ever polls them. `TELL_ENABLE_UNDOCUMENTED_ATS` is not created.

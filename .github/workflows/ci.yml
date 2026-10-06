@@ -63,13 +63,7 @@ jobs:
         run: uv run mypy --strict tell
 
       - name: Migrate (alembic upgrade head)
-        # Phase 1 adds alembic.ini; until then there is no schema to apply.
-        run: |
-          if [ -f alembic.ini ]; then
-            uv run alembic upgrade head
-          else
-            echo "alembic.ini not present yet; skipping migrations"
-          fi
+        run: uv run alembic upgrade head
 
       - name: Tests with coverage
         run: uv run pytest --cov=tell --cov-report=json --cov-report=term-missing -q

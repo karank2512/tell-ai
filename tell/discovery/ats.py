@@ -10,7 +10,11 @@ Given ``acme.com``, find the company's job board or record that none was found.
 2. Scan the page: ``<iframe src>``, ``<script src>``, ``<a href>`` (via ``lxml.html``),
    then the raw HTML text (inline scripts, data attributes), against :data:`PATTERNS`.
    Supported vendors win over unsupported ones; within a class the first hit wins.
-3. Nothing on the page: guess slugs from the domain label (``acme``, ``acmeinc``,
+   ``grnh.se`` short links rank last: they are per-posting links with an opaque code,
+   not board tokens. A chosen short link is resolved with one GET (redirects not
+   followed) whose ``Location`` must name ``boards.greenhouse.io/{token}`` or
+   ``job-boards.greenhouse.io/{token}``; otherwise discovery falls through to step 3.
+3. Nothing on the page (or an unresolvable short link): guess slugs from the domain label (``acme``, ``acmeinc``,
    ``acme-inc``) against each documented public API in turn; a 200 with at least one
    job counts. Page hits get confidence 0.95, guesses 0.6.
 4. Verify ownership: the board's company name (Greenhouse ``/v1/boards/{token}`` ->
@@ -31,7 +35,9 @@ answered 404 twice in a row. ``ats_boards`` has no 404 counter; every ATS collec
 already marks a board ``status='dead'`` on its second consecutive 404 (Greenhouse,
 Ashby and SmartRecruiters compare ``last_polled_at`` with ``last_verified_at``; Lever
 keeps the streak in an open ``review_queue`` item), so ``dead`` *is* the
-"two consecutive 404s" marker and discovery reads nothing else.
+"two consecutive 404s" marker. Every discovery outcome stamps ``last_verified_at = now``
+on the company's ``dead`` boards and its ``no_board`` marker, so a dead board is due
+again only after 30 days or after a poll newer than that stamp, not on every batch.
 
 Every result is logged as one JSON line on the ``tell.discovery`` logger:
 ``{domain, outcome, vendor, identifier, confidence, pages_checked}``.
@@ -56,7 +62,7 @@ import httpx
 from lxml import etree
 from lxml import html as lxml_html
 from rapidfuzz import fuzz
-from sqlalchemy import delete, exists, or_, select
+from sqlalchemy import and_, delete, exists, or_, select
 from sqlalchemy.orm import Session
 
 from tell.collectors.base import finish_run, start_run
@@ -67,6 +73,7 @@ from tell.models import AtsBoard, Company, ReviewQueueItem
 
 __all__ = [
     "CANDIDATE_PATHS",
+    "GREENHOUSE_SHORT_LINK",
     "GUESS_CONFIDENCE",
     "MATCH_THRESHOLD",
     "MAX_REDIRECTS",
@@ -90,6 +97,7 @@ __all__ = [
     "guess_slugs",
     "hosted_board_url",
     "name_ratio",
+    "resolve_short_link",
     "reverify_due",
     "select_due_boards",
     "select_new_companies",
@@ -132,6 +140,10 @@ LEVER_API = "https://api.lever.co/v0/postings"
 ASHBY_API = "https://api.ashbyhq.com/posting-api/job-board"
 SMARTRECRUITERS_API = "https://api.smartrecruiters.com/v1/companies"
 LEVER_EU_PREFIX = "eu:"
+GREENHOUSE_SHORT_LINK = "https://grnh.se"
+"""Greenhouse per-posting short links (``grnh.se/{code}``); the code is not a board token."""
+
+GRNH_SE_PATTERN = "grnh_se"
 
 _logger = logging.getLogger("tell.discovery")
 
@@ -204,7 +216,7 @@ PATTERNS: tuple[BoardPattern, ...] = (
         _START + r"boards-api\.greenhouse\.io/v1/boards/(" + _SLUG + ")",
         _group1,
     ),
-    _pattern("greenhouse", "grnh_se", _START + r"grnh\.se/(" + _SLUG + ")", _group1),
+    _pattern("greenhouse", GRNH_SE_PATTERN, _START + r"grnh\.se/(" + _SLUG + ")", _group1),
     _pattern(
         "lever",
         "lever",
@@ -263,6 +275,8 @@ class BoardHit:
     matched: str
     source: str
     """``redirect``, ``iframe``, ``script``, ``a``, ``text`` or ``guess``."""
+    pattern: str = ""
+    """The :data:`PATTERNS` name that matched (empty for guesses)."""
 
 
 def _hits_in(text: str, source: str) -> Iterable[BoardHit]:
@@ -270,7 +284,7 @@ def _hits_in(text: str, source: str) -> Iterable[BoardHit]:
         for match in pattern.regex.finditer(text):
             identifier = pattern.identifier(match)
             if identifier:
-                yield BoardHit(pattern.vendor, identifier, match.group(0), source)
+                yield BoardHit(pattern.vendor, identifier, match.group(0), source, pattern.name)
 
 
 def _attribute_values(content: bytes) -> list[tuple[str, str]]:
@@ -307,12 +321,19 @@ def find_boards(content: bytes | str, *, redirects: Sequence[str] = ()) -> list[
     return hits
 
 
+def _hit_rank(hit: BoardHit) -> int:
+    if hit.pattern == GRNH_SE_PATTERN:
+        return 2
+    return 0 if hit.vendor in SUPPORTED_VENDORS else 1
+
+
 def choose_hit(hits: Sequence[BoardHit]) -> BoardHit | None:
-    """The first supported-vendor hit, else the first unsupported one, else ``None``."""
-    for hit in hits:
-        if hit.vendor in SUPPORTED_VENDORS:
-            return hit
-    return hits[0] if hits else None
+    """The first supported-vendor hit, else the first unsupported one, else ``None``.
+
+    ``grnh.se`` short links rank after everything else: the code is a per-posting
+    link, not a board token, and only becomes a board through :func:`resolve_short_link`.
+    """
+    return min(hits, key=_hit_rank) if hits else None
 
 
 def _matches_board(url: str) -> bool:
@@ -452,6 +473,39 @@ def _scan_pages(
             hits = find_boards(page.content, redirects=page.redirects)
             return _Scan(hits, page.url, tuple(checked))
     return _Scan([], None, tuple(checked))
+
+
+_GREENHOUSE_BOARD_URL = re.compile(
+    r"^https?://(?:job-boards|boards)\.greenhouse\.io/(?!embed(?:[/?#]|$))(" + _SLUG + ")",
+    re.IGNORECASE,
+)
+"""A short link's ``Location`` naming a board: ``[job-]boards.greenhouse.io/{token}``."""
+
+
+def resolve_short_link(
+    client: httpx.Client, hit: BoardHit, *, budget: RateBudget | None = None
+) -> BoardHit | None:
+    """Turn a ``grnh.se`` hit into the Greenhouse board its redirect names, or ``None``.
+
+    One GET with ``follow_redirects=False`` (no retries); only a redirect whose
+    ``Location`` is ``boards.greenhouse.io/{token}`` or ``job-boards.greenhouse.io/{token}``
+    resolves. Anything else (no redirect, an error, a redirect to the company's own
+    site) returns ``None`` and discovery falls through to the slug guesses.
+    """
+    url = f"{GREENHOUSE_SHORT_LINK}/{_quoted(hit.identifier)}"
+    if budget is not None:
+        budget.acquire()
+    try:
+        response = client.get(url, follow_redirects=False)
+    except httpx.HTTPError:
+        return None
+    if not response.is_redirect:
+        return None
+    location = urljoin(url, response.headers["location"])
+    match = _GREENHOUSE_BOARD_URL.match(location)
+    if match is None:
+        return None
+    return BoardHit("greenhouse", match.group(1), location, hit.source, "greenhouse_board")
 
 
 def _get_json(
@@ -802,15 +856,61 @@ def discover_domain(
     company = _ensure_company(session, normalized, company_name)
     robots = robots or RobotsCache(client, user_agent=_user_agent(client), budget=budget)
 
+    result = _discover(
+        session,
+        client,
+        company,
+        normalized,
+        company_name,
+        now=now,
+        budget=budget,
+        sleep=sleep,
+        robots=robots,
+    )
+    _mark_verified(session, company, normalized, now)
+    return _log(result)
+
+
+def _mark_verified(session: Session, company: Company, domain: str, now: datetime) -> None:
+    """Stamp ``last_verified_at = now`` on the company's ``dead`` boards and ``none`` marker.
+
+    Runs after every outcome, so a dead board that discovery could not revive is not
+    picked again by the next batch (:func:`reverify_due`).
+    """
+    stmt = select(AtsBoard).where(
+        or_(
+            and_(AtsBoard.company_id == company.id, AtsBoard.status == "dead"),
+            and_(AtsBoard.vendor == NO_BOARD_VENDOR, AtsBoard.identifier == domain),
+        )
+    )
+    for board in session.scalars(stmt):
+        board.last_verified_at = now
+    session.flush()
+
+
+def _discover(
+    session: Session,
+    client: httpx.Client,
+    company: Company,
+    normalized: str,
+    company_name: str | None,
+    *,
+    now: datetime,
+    budget: RateBudget | None,
+    sleep: Sleeper,
+    robots: RobotsCache,
+) -> DiscoveryResult:
     scan = _scan_pages(client, normalized, robots=robots, budget=budget)
     hit = choose_hit(scan.hits)
+    if hit is not None and hit.pattern == GRNH_SE_PATTERN:
+        hit = resolve_short_link(client, hit, budget=budget)
     probe_name: str | None = None
     if hit is not None and scan.page_url is not None:
         confidence, discovered_from = PAGE_CONFIDENCE, scan.page_url
     else:
         probe = _guess(client, normalized, budget=budget, sleep=sleep)
         if probe is None:
-            return _log(_record_no_board(session, company, normalized, scan.pages_checked, now))
+            return _record_no_board(session, company, normalized, scan.pages_checked, now)
         hit = BoardHit(probe.vendor, probe.identifier, probe.url, "guess")
         confidence, discovered_from, probe_name = GUESS_CONFIDENCE, probe.url, probe.board_name
 
@@ -824,21 +924,19 @@ def discover_domain(
         ratio: float | None = None,
         review_id: int | None = None,
     ) -> DiscoveryResult:
-        return _log(
-            DiscoveryResult(
-                domain=normalized,
-                outcome=outcome,
-                vendor=found.vendor,
-                identifier=found.identifier,
-                confidence=confidence,
-                discovered_from=discovered_from,
-                pages_checked=scan.pages_checked,
-                company_id=company.id,
-                board_id=board_id,
-                board_name=name,
-                ratio=ratio,
-                review_id=review_id,
-            )
+        return DiscoveryResult(
+            domain=normalized,
+            outcome=outcome,
+            vendor=found.vendor,
+            identifier=found.identifier,
+            confidence=confidence,
+            discovered_from=discovered_from,
+            pages_checked=scan.pages_checked,
+            company_id=company.id,
+            board_id=board_id,
+            board_name=name,
+            ratio=ratio,
+            review_id=review_id,
         )
 
     if found.vendor in UNSUPPORTED_VENDORS:
@@ -941,18 +1039,21 @@ def reverify_due(board: AtsBoard, now: datetime) -> bool:
     """``True`` when discovery should look at this board's domain again.
 
     * ``paused`` boards wait for a human (their ``board_verify`` item): never due.
-    * ``dead`` boards are due at once: every ATS collector sets ``dead`` on the second
-      consecutive 404, which is spec section 4's "404 twice in a row".
-    * Otherwise due when never verified or last verified 30 days ago or more.
+    * Due when never verified or last verified 30 days ago or more.
+    * ``dead`` boards (every ATS collector sets ``dead`` on the second consecutive 404,
+      spec section 4's "404 twice in a row") are also due when they were polled after
+      their last verification. Discovery stamps ``last_verified_at`` on dead boards
+      after every outcome, so a board it could not revive waits for the next poll or
+      30 days instead of being re-checked on every batch.
     """
     _require_aware(now)
     if board.status == "paused":
         return False
-    if board.status == "dead":
+    verified = board.last_verified_at
+    if verified is None or now - verified >= REVERIFY_AFTER:
         return True
-    if board.last_verified_at is None:
-        return True
-    return now - board.last_verified_at >= REVERIFY_AFTER
+    polled = board.last_polled_at
+    return board.status == "dead" and polled is not None and verified < polled
 
 
 def select_new_companies(session: Session, limit: int) -> list[Company]:
@@ -985,9 +1086,13 @@ def select_due_boards(session: Session, now: datetime, limit: int) -> list[AtsBo
             AtsBoard.company_id.is_not(None),
             AtsBoard.status != "paused",
             or_(
-                AtsBoard.status == "dead",
                 AtsBoard.last_verified_at.is_(None),
                 AtsBoard.last_verified_at <= cutoff,
+                and_(
+                    AtsBoard.status == "dead",
+                    AtsBoard.last_polled_at.is_not(None),
+                    AtsBoard.last_verified_at < AtsBoard.last_polled_at,
+                ),
             ),
         )
         .order_by(AtsBoard.last_verified_at.asc().nulls_first(), AtsBoard.id)

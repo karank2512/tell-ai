@@ -12,13 +12,16 @@ hand-written DDL in the spec and the migration name the same objects.
 
 Nothing here goes beyond the DDL except the allowed-value constants below (the
 spec documents them as comments next to the columns), a generic ``__repr__`` and
-two recorded deviations. ``postings.version_marker`` (migration ``0002``,
+three recorded deviations. ``postings.version_marker`` (migration ``0002``,
 ``docs/decisions/0013-postings-version-marker.md``) holds the provider change
 marker last seen for a posting so ``job_updated`` does not depend on events that
 the 180-day prune removes. The ``company_feeds`` table (migration ``0003``,
 ``docs/decisions/0014-company-feeds-table.md``) keeps the company blog feeds the
 news collector discovers (spec section 3.7) and their conditional-request
-validators, which section 5 has nowhere to keep.
+validators, which section 5 has nowhere to keep. ``ats_boards.not_found_count`` and
+``ats_boards.first_not_found_at`` (migration ``0004``,
+``docs/decisions/0015-ats-404-and-reverification.md``) carry the 404 streak that
+decides when a board is ``dead``.
 ``api_keys`` / ``api_usage`` arrive with Phase 9 in their own migration.
 """
 
@@ -192,7 +195,15 @@ class AtsBoard(Base):
     confidence: Mapped[Decimal] = mapped_column(Numeric(3, 2), nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'active'"))
     last_verified_at: Mapped[datetime | None] = mapped_column(_timestamptz())
+    """Discovery's ownership verification (spec section 4 step 5); collectors never write it."""
     last_polled_at: Mapped[datetime | None] = mapped_column(_timestamptz())
+    """Last poll that answered 200; a 404 never advances it (ADR 0015)."""
+    not_found_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    """404 polls since the last 200 (ADR 0015, migration 0004)."""
+    first_not_found_at: Mapped[datetime | None] = mapped_column(_timestamptz())
+    """First 404 of the current streak; ``NULL`` when the last poll answered 200."""
 
 
 class Posting(Base):

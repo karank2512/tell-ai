@@ -17,3 +17,6 @@ Template: [0000-template.md](0000-template.md). Each record covers one locked de
 | [0011](0011-venv-outside-icloud.md) | Keep the uv environment outside iCloud-synced folders |
 | [0012](0012-tell-mcp-as-workspace-package.md) | tell-mcp is a uv workspace package, not `tell/mcp/server.py` |
 | [0013](0013-postings-version-marker.md) | `postings.version_marker` holds the provider change marker |
+| [0014](0014-company-feeds-table.md) | `company_feeds` keeps discovered company RSS/Atom feeds |
+| [0015](0015-ats-404-and-reverification.md) | One 404 / dead-board rule for every ATS collector |
+| [0016](0016-news-headline-redaction.md) | Leadership news headlines are stored with the person's name redacted (provisional, pending confirmation) |

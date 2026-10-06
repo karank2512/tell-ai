@@ -50,7 +50,7 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "discovery"
 NOW = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
 DOMAIN = "acme.com"
 BASE = "https://acme.com"
-UA = "tell/0.1 (+https://github.com/karankapur/tell)"
+UA = "tell/0.1 (+https://github.com/karank2512/tell-ai)"
 SR_EMPTY = {"offset": 0, "limit": 1, "totalFound": 0, "content": []}
 
 
@@ -160,6 +160,7 @@ def test_every_pattern_extracts_its_identifier(
     hits = find_boards((FIXTURES / fixture).read_bytes())
     assert len(hits) == 1
     assert (hits[0].vendor, hits[0].identifier, hits[0].source) == (vendor, identifier, source)
+    assert hits[0].pattern
 
 
 @pytest.mark.parametrize(
@@ -220,6 +221,23 @@ def test_choose_hit_prefers_supported_vendors() -> None:
     workday = BoardHit("workday", "acme.wd1/External", "x", "a")
     assert choose_hit([workday]) == workday
     assert choose_hit([]) is None
+
+
+def test_choose_hit_ranks_grnh_se_short_links_last() -> None:
+    hits = find_boards((FIXTURES / "greenhouse_grnh_mixed.html").read_bytes())
+    assert [(h.pattern, h.identifier) for h in hits] == [
+        ("grnh_se", "7f3a2b1c8"),
+        ("workday", "acme.wd5/AcmeCareers"),
+        ("lever", "acme"),
+    ]
+    chosen = choose_hit(hits)
+    assert chosen is not None
+    assert (chosen.vendor, chosen.identifier) == ("lever", "acme")
+    # Below unsupported vendors too: a short link is not a board token.
+    chosen = choose_hit(hits[:2])
+    assert chosen is not None
+    assert chosen.vendor == "workday"
+    assert choose_hit(hits[:1]) == hits[0]
 
 
 def test_guess_slugs_and_domain_helpers() -> None:
@@ -758,8 +776,25 @@ def test_reverify_due() -> None:
     assert reverify_due(_board(last_verified_at=now - timedelta(days=30)), now)
     assert reverify_due(_board(last_verified_at=now - timedelta(days=45)), now)
     assert reverify_due(_board(last_verified_at=None), now)
-    # Two consecutive 404s: every ATS collector marks the board dead.
-    assert reverify_due(_board(status="dead", last_verified_at=now), now)
+    # Two consecutive 404s: every ATS collector marks the board dead. A dead board is
+    # due when never verified, 30 days after its last verification, or once polled
+    # after that verification; not again right after discovery has looked at it.
+    assert not reverify_due(_board(status="dead", last_verified_at=now), now)
+    assert not reverify_due(
+        _board(status="dead", last_verified_at=now, last_polled_at=now - timedelta(hours=1)),
+        now,
+    )
+    assert reverify_due(
+        _board(status="dead", last_verified_at=now - timedelta(days=2), last_polled_at=now),
+        now,
+    )
+    assert reverify_due(_board(status="dead", last_verified_at=None), now)
+    assert not reverify_due(_board(status="dead", last_verified_at=now - timedelta(days=29)), now)
+    assert reverify_due(_board(status="dead", last_verified_at=now - timedelta(days=30)), now)
+    # A poll after verification only matters for dead boards.
+    assert not reverify_due(
+        _board(last_verified_at=now - timedelta(days=2), last_polled_at=now), now
+    )
     # Paused boards wait for their review item.
     assert not reverify_due(_board(status="paused", last_verified_at=None), now)
     assert reverify_due(_board(status="no_board", last_verified_at=now - timedelta(days=31)), now)
@@ -783,11 +818,19 @@ def test_select_due_boards(db_session: Session) -> None:
     old = _board(company_id=a.id, identifier="a", last_verified_at=NOW - timedelta(days=31))
     a_dup = _board(company_id=a.id, identifier="a2", last_verified_at=NOW - timedelta(days=40))
     fresh = _board(company_id=b.id, identifier="b", last_verified_at=NOW - timedelta(days=1))
-    dead = _board(company_id=c.id, identifier="c", status="dead", last_verified_at=NOW)
+    dead = _board(
+        company_id=c.id,
+        identifier="c",
+        status="dead",
+        last_verified_at=NOW - timedelta(days=1),
+        last_polled_at=NOW - timedelta(hours=1),
+    )
     paused = _board(company_id=d.id, identifier="d", status="paused")
     never = _board(company_id=e.id, vendor="workday", identifier="e", status="unsupported")
     orphan = _board(company_id=None, identifier="orphan")
-    db_session.add_all([old, a_dup, fresh, dead, paused, never, orphan])
+    f = _company(db_session, "f.com", 5)
+    checked_dead = _board(company_id=f.id, identifier="f", status="dead", last_verified_at=NOW)
+    db_session.add_all([old, a_dup, fresh, dead, paused, never, orphan, checked_dead])
     db_session.flush()
 
     due = select_due_boards(db_session, NOW, 10)
@@ -888,7 +931,13 @@ def test_batch_reverifies_due_boards(
     db_session.add_all(
         [
             _board(company_id=stale.id, last_verified_at=NOW - timedelta(days=31)),
-            _board(company_id=dead.id, identifier="deadco", status="dead", last_verified_at=NOW),
+            _board(
+                company_id=dead.id,
+                identifier="deadco",
+                status="dead",
+                last_verified_at=NOW - timedelta(days=3),
+                last_polled_at=NOW - timedelta(days=1),
+            ),
         ]
     )
     db_session.flush()
@@ -908,13 +957,21 @@ def test_batch_reverifies_due_boards(
     assert rows["acme"].last_verified_at == NOW
     assert rows["acme"].status == "active"
     assert rows["deadco"].status == "dead"
+    assert rows["deadco"].last_verified_at == NOW
 
 
 def test_batch_reactivates_a_dead_board_found_again(
     db_session: Session, router: respx.MockRouter, client: httpx.Client
 ) -> None:
     company = _company(db_session, "acme.com", 30)
-    db_session.add(_board(company_id=company.id, status="dead", last_verified_at=NOW))
+    db_session.add(
+        _board(
+            company_id=company.id,
+            status="dead",
+            last_verified_at=NOW - timedelta(days=2),
+            last_polled_at=NOW - timedelta(days=1),
+        )
+    )
     db_session.flush()
     site(router, {"/careers": page("greenhouse_script.html")})
     greenhouse_name(router)
@@ -957,3 +1014,225 @@ def test_batch_with_injected_budget(
     budget = RateBudget(1000.0, burst=100, clock=lambda: 0.0, sleep=no_sleep)
     batch = discover_batch(db_session, client, now=NOW, budget=budget)
     assert batch.outcomes["unsupported"] == 1
+
+
+# --- regression: dead boards are not re-verified on every batch ------------------------------
+
+
+def _dead_board(company_id: int, **kwargs: Any) -> AtsBoard:
+    """A board two collector 404s marked dead: polled after its last verification."""
+    defaults: dict[str, Any] = {
+        "company_id": company_id,
+        "vendor": "lever",
+        "identifier": "oldacme",
+        "status": "dead",
+        "last_verified_at": NOW - timedelta(days=3),
+        "last_polled_at": NOW - timedelta(days=1),
+    }
+    return _board(**{**defaults, **kwargs})
+
+
+def _mock_outcome(router: respx.MockRouter, outcome: str) -> None:
+    if outcome == "board":
+        site(router, {"/careers": page("greenhouse_link.html")})
+        greenhouse_name(router)
+    elif outcome == "review":
+        site(router, {"/careers": page("greenhouse_link.html")})
+        greenhouse_name(router, name="Globex Corporation")
+    elif outcome == "unsupported":
+        site(router, {"/careers": page("workday.html")})
+    else:
+        site(router)
+        no_guesses(router)
+
+
+@pytest.mark.parametrize("outcome", ["board", "unsupported", "review", "no_board"])
+def test_every_outcome_stamps_the_companys_dead_boards(
+    db_session: Session, router: respx.MockRouter, client: httpx.Client, outcome: str
+) -> None:
+    company = _company(db_session, DOMAIN, 30)
+    dead = _dead_board(company.id)
+    db_session.add(dead)
+    db_session.flush()
+    assert reverify_due(dead, NOW)
+    _mock_outcome(router, outcome)
+
+    result = discover(db_session, client)
+
+    assert result.outcome == outcome
+    assert (dead.status, dead.last_verified_at) == ("dead", NOW)
+    assert not reverify_due(dead, NOW)
+    assert select_due_boards(db_session, NOW, 10) == []
+
+
+def test_review_for_a_board_owned_elsewhere_stamps_the_no_board_marker(
+    db_session: Session, router: respx.MockRouter, client: httpx.Client
+) -> None:
+    company = _company(db_session, DOMAIN, 30)
+    other = _company(db_session, "acme-holdings.com", 30)
+    marker = _board(
+        company_id=company.id,
+        vendor="none",
+        identifier=DOMAIN,
+        confidence=Decimal("0.00"),
+        status="no_board",
+        last_verified_at=NOW - timedelta(days=40),
+    )
+    owned = _board(company_id=other.id, identifier="acme", last_verified_at=NOW)
+    db_session.add_all([marker, owned])
+    db_session.flush()
+    site(router, {"/careers": page("greenhouse_link.html")})
+    greenhouse_name(router)
+
+    result = discover(db_session, client)
+
+    assert result.outcome == "review"
+    assert (marker.status, marker.last_verified_at) == ("no_board", NOW)
+    assert not reverify_due(marker, NOW)
+
+
+def test_dead_board_is_reverified_once_then_waits_for_a_poll_or_30_days(
+    db_session: Session, router: respx.MockRouter, client: httpx.Client
+) -> None:
+    company = _company(db_session, "dead.com", 30)
+    dead = _dead_board(company.id, vendor="greenhouse", identifier="deadco")
+    db_session.add(dead)
+    db_session.flush()
+    site(router, base="https://dead.com")
+    no_guesses(router, "dead")
+    budget = RateBudget(1000.0, burst=100, clock=lambda: 0.0, sleep=no_sleep)
+
+    def run() -> int:
+        batch = discover_batch(
+            db_session,
+            client,
+            now=utcnow(),
+            limit=0,
+            reverify_limit=5,
+            budget=budget,
+            sleep=no_sleep,
+        )
+        return batch.reverified
+
+    with freeze_time(NOW):
+        assert run() == 1
+    assert (dead.status, dead.last_verified_at) == ("dead", NOW)
+    [marker] = [b for b in boards(db_session) if b.vendor == "none"]
+    assert marker.last_verified_at == NOW
+    calls = len(router.calls)
+
+    # The next batches leave it alone: no requests, nothing re-verified.
+    for days in (1, 29):
+        with freeze_time(NOW + timedelta(days=days)):
+            assert run() == 0
+    assert len(router.calls) == calls
+
+    # A poll after the verification (the collector saw another 404) makes it due again.
+    dead.last_polled_at = NOW + timedelta(days=2)
+    db_session.flush()
+    with freeze_time(NOW + timedelta(days=3)):
+        assert [b.id for b in select_due_boards(db_session, utcnow(), 10)] == [dead.id]
+
+    # Without a newer poll, 30 days after the verification.
+    dead.last_polled_at = NOW - timedelta(days=1)
+    db_session.flush()
+    with freeze_time(NOW + timedelta(days=29, hours=23)):
+        assert select_due_boards(db_session, utcnow(), 10) == []
+    with freeze_time(NOW + timedelta(days=30)):
+        assert [b.company_id for b in select_due_boards(db_session, utcnow(), 10)] == [company.id]
+
+
+# --- regression: grnh.se short links ---------------------------------------------------------
+
+SHORT_LINK = "https://grnh.se/7f3a2b1c8"
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "https://boards.greenhouse.io/acme/jobs/4012345?gh_src=abc",
+        "https://job-boards.greenhouse.io/acme/jobs/4012345",
+        "https://boards.greenhouse.io/acme",
+    ],
+)
+def test_grnh_se_hit_resolves_through_its_redirect(
+    db_session: Session, router: respx.MockRouter, client: httpx.Client, location: str
+) -> None:
+    site(router, {"/careers": page("greenhouse_grnh.html")})
+    router.get(SHORT_LINK).respond(301, headers={"Location": location})
+    greenhouse_name(router)
+
+    result = discover(db_session, client)
+
+    assert (result.outcome, result.vendor, result.identifier) == ("board", "greenhouse", "acme")
+    assert result.confidence == PAGE_CONFIDENCE
+    assert result.discovered_from == f"{BASE}/careers"
+    urls = requested(router)
+    # One GET, redirect not followed, no slug guesses.
+    assert urls.count(SHORT_LINK) == 1
+    assert location not in urls
+    assert not [u for u in urls if u.endswith("/jobs") or "api.lever" in u]
+    [board] = boards(db_session)
+    assert (board.identifier, board.status) == ("acme", "active")
+
+
+def test_resolve_short_link_directly(router: respx.MockRouter, client: httpx.Client) -> None:
+    hit = BoardHit("greenhouse", "7f3a2b1c8", "grnh.se/7f3a2b1c8", "a", "grnh_se")
+    router.get(SHORT_LINK).respond(
+        302, headers={"Location": "https://job-boards.greenhouse.io/acme"}
+    )
+    budget = RateBudget(1000.0, burst=100, clock=lambda: 0.0, sleep=no_sleep)
+    resolved = ats.resolve_short_link(client, hit, budget=budget)
+    assert resolved is not None
+    assert (resolved.vendor, resolved.identifier, resolved.source, resolved.pattern) == (
+        "greenhouse",
+        "acme",
+        "a",
+        "greenhouse_board",
+    )
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(200, content=b"<html>posting</html>"),
+        httpx.Response(404),
+        redirect("https://acme.com/careers?gh_jid=4012345"),
+        redirect("https://notboards.greenhouse.io/acme"),
+        redirect("https://acme.com/?next=https://boards.greenhouse.io/acme"),
+        redirect("https://boards.greenhouse.io/embed/job_app?token=4012345"),
+    ],
+)
+def test_unresolvable_grnh_se_falls_through_to_guesses_not_review(
+    db_session: Session,
+    router: respx.MockRouter,
+    client: httpx.Client,
+    response: httpx.Response,
+) -> None:
+    site(router, {"/careers": page("greenhouse_grnh.html")})
+    router.get(SHORT_LINK).mock(return_value=response)
+    no_guesses(router)
+
+    result = discover(db_session, client)
+
+    assert result.outcome == "no_board"
+    assert requested(router).count(SHORT_LINK) == 1
+    assert f"{GREENHOUSE_API}/acme/jobs" in requested(router)
+    assert reviews(db_session) == []
+    assert [(b.vendor, b.status) for b in boards(db_session)] == [("none", "no_board")]
+
+
+def test_grnh_se_transport_error_falls_through_to_a_guess(
+    db_session: Session, router: respx.MockRouter, client: httpx.Client
+) -> None:
+    site(router, {"/careers": page("greenhouse_grnh.html")})
+    router.get(SHORT_LINK).mock(side_effect=httpx.ConnectError("refused"))
+    no_guesses(router)
+    router.get(f"{GREENHOUSE_API}/acme/jobs").respond(200, json={"jobs": [{"id": 1}], "meta": {}})
+    greenhouse_name(router)
+
+    result = discover(db_session, client)
+
+    assert (result.outcome, result.vendor, result.identifier) == ("board", "greenhouse", "acme")
+    assert result.confidence == GUESS_CONFIDENCE
+    assert reviews(db_session) == []

@@ -70,27 +70,35 @@ plus `is_amendment`, `file_number`, `issuer_name`, `issuer_city`, `issuer_state`
 `previous_names` and `amendments: []`.
 
 **Amendment rule (SPEC §5 rule 4).** A D/A looks up the original `form_d_filed` by
-`payload.file_number` (fallback: `payload.accession_number == previousAccessionNumber`) and
-calls `base.update_event_payload` with the new amounts and an appended `amendments` entry
+`payload.accession_number == previousAccessionNumber` first; when that is absent or unknown it
+takes the latest original with the same `payload.file_number` whose `occurred_at` is on or
+before the D/A's filing date (issuers reuse a Form D file number across later offerings, so the
+oldest original under that number is usually a different round). It then calls `base.update_event_payload` with the new amounts and an appended `amendments` entry
 (`accession_number`, `date_filed`, amounts). No event is written, so no second funding
 signal can exist. Amounts are overwritten only by the latest amendment by filing date;
 replaying an amendment already in the list is a no-op. In one run all new D filings are
-written before any D/A is applied. A D/A whose original is unknown becomes
-`form_d_amendment` (`is_amendment: true`), which Phase 7 never scores as funding.
+written before any D/A is applied. A D/A whose original is unknown (including one filed
+before every original under its file number) becomes `form_d_amendment`
+(`is_amendment: true`), which Phase 7 never scores as funding.
 
 **Quarterly backfill (SPEC §13.2).** `load_formd_quarterly(zip_or_dir, run_id=, now=)` reads
 `FORMDSUBMISSION.tsv`, `ISSUERS.tsv` and `OFFERING.tsv` (columns by header name; dates as
 `DD-MON-YYYY` or ISO) and returns events with `payload.backfill = true`, the same keys as the
-daily path (so overlaps dedupe), amendments merged in memory the same way, no `company_id`.
+daily path (so overlaps dedupe), amendments merged in memory the same way (previous
+accession first, else the latest original per file number filed on or before the D/A), no
+`company_id`.
 
 ## Fixtures (`tests/fixtures/edgar/`)
 
 **Provenance: hand-crafted.** A one-off live request to the daily index with the project
-User-Agent (`tell/0.1 (+https://github.com/karankapur/tell)`, no contact address) was refused
+User-Agent (`tell/0.1 (+https://github.com/karank2512/tell-ai)`, no contact address) was refused
 with 403 "Undeclared Automated Tool", so every fixture was written by hand to the documented
 EDGAR shapes with fictional issuers (CIKs 999xxxx) and re-recording is a cutover task once
 `SEC_USER_AGENT` holds a real contact (`make refresh-fixtures`). The ticker file uses real,
 public CIK/ticker pairs of well-known listed companies.
+
+Cutover checklist: re-record the hand-crafted EDGAR fixtures with `make refresh-fixtures` once
+`SEC_USER_AGENT` carries a real contact address, and diff them.
 
 | File | What |
 | --- | --- |

@@ -3,6 +3,9 @@
 Headlines are realistic but invented: fictional companies and role words only, never
 a person's name. Every row must classify exactly as labelled (category and rule), and
 negatives must stay unclassified.
+
+The leadership redaction tests (ADR 0016) need a name to redact: they use obvious
+placeholder names ("Jane Doe" style) inside these test strings only, never in fixtures.
 """
 
 from __future__ import annotations
@@ -11,7 +14,16 @@ import re
 
 import pytest
 
-from tell.collectors.news_classify import CATEGORIES, RULES, Category, classify, event_type
+from tell.collectors.news_classify import (
+    CATEGORIES,
+    PERSON,
+    RULES,
+    Category,
+    classify,
+    event_type,
+    person_spans,
+    redact_leadership,
+)
 
 # (title, expected category, expected rule name)
 LABELLED: list[tuple[str, Category | None, str | None]] = [
@@ -65,6 +77,16 @@ LABELLED: list[tuple[str, Category | None, str | None]] = [
         "leadership",
         "leadership.appoints",
     ),
+    (
+        "Wren Health names former investor as chief financial officer ahead of funding push",
+        "leadership",
+        "leadership.names_as",
+    ),
+    (
+        "Ex-banker joins Larkspur as head of finance after it secures funding",
+        "leadership",
+        "leadership.joins_as",
+    ),
     # --- funding -------------------------------------------------------------------
     (
         "Quillstone Analytics raises $24M Series A to expand forecasting platform",
@@ -101,8 +123,39 @@ LABELLED: list[tuple[str, Category | None, str | None]] = [
         "funding",
         "funding.dollar_amount",
     ),
+    ("Orchard Grid secures funding to scale grid batteries", "funding", "funding.secures_funding"),
+    (
+        "Bramblewood secures new growth funding from climate investors",
+        "funding",
+        "funding.secures_funding",
+    ),
+    (
+        "Copperleaf gets $4 million in funding from regional fund",
+        "funding",
+        "funding.gets_in_funding",
+    ),
+    ("Copperleaf Gets $4M In Funding", "funding", "funding.gets_in_funding"),
+    (
+        "Lattice Ops announces strategic raise from growth investors",
+        "funding",
+        "funding.announces",
+    ),
+    (
+        "Bramble Foods announces new round led by food-tech fund",
+        "funding",
+        "funding.announces",
+    ),
+    (
+        "Saltmarsh Bio announces $12M funding to expand trials",
+        "funding",
+        "funding.dollar_amount",
+    ),
+    ("Fieldnote receives strategic funding from logistics group", "funding", "funding.funding"),
+    ("Kiteline lands new funding to grow its team", "funding", "funding.funding"),
+    ("Exclusive: Tallgrass in talks for funding", "funding", "funding.funding"),
     # Funding outranks launch.
     ("Pathwise raises $10M and launches new analytics suite", "funding", "funding.raises"),
+    ("Driftwood Labs launches with fresh funding", "funding", "funding.funding"),
     # --- launch --------------------------------------------------------------------
     ("Quillstone Analytics launches real-time anomaly alerts", "launch", "launch.launches"),
     ("Beacon Health introduces AI scribe for clinics", "launch", "launch.introduces"),
@@ -143,6 +196,7 @@ LABELLED: list[tuple[str, Category | None, str | None]] = [
     ("Kestrel AI CEO on why launching is the easy part", None, None),
     ("Customer story: scaling support with Beacon Health", None, None),
     ("Arcadia Logistics wins regional innovation award", None, None),
+    ("Cobalt Security announces partnership with regional bank", None, None),
 ]
 
 
@@ -184,6 +238,12 @@ def test_rule_names_are_unique_and_prefixed_by_category() -> None:
     assert order == sorted(order, key=CATEGORIES.index)
 
 
+def test_bare_funding_keyword_is_a_whole_word() -> None:
+    assert classify("Acme funding update") == ("funding", "funding.funding")
+    assert classify("Acme is crowdfunding its next model") == (None, None)
+    assert classify("Acme refunding customers after outage") == (None, None)
+
+
 def test_event_type() -> None:
     assert [event_type(c) for c in CATEGORIES] == [
         "news_leadership",
@@ -191,3 +251,95 @@ def test_event_type() -> None:
         "news_launch",
         "news_expansion",
     ]
+
+
+# --- leadership redaction (ADR 0016, provisional) -------------------------------------
+# Placeholder names only, and only in these test strings.
+
+REDACTED: list[tuple[str, str]] = [
+    # Span after the verb, up to " as ", " to ", " its ", " the " or the end.
+    ("Acme appoints Jane Doe as chief revenue officer", "Acme appoints [person] as chief revenue officer"),
+    ("Acme Appoints Jane Doe As Chief Revenue Officer", "Acme Appoints [person] As Chief Revenue Officer"),
+    ("Acme names John Q. Roe its new CFO", "Acme names [person] its new CFO"),
+    ("Acme names Ada Example the new head of sales", "Acme names [person] the new head of sales"),
+    ("Acme hires Max Placeholder to lead sales", "Acme hires [person] to lead sales"),
+    ("Acme promotes Jane Doe to president", "Acme promotes [person] to president"),
+    ("Acme taps Jane Doe as CFO", "Acme taps [person] as CFO"),
+    ("Acme welcomes Jane Doe to its board", "Acme welcomes [person] to its board"),
+    ("Acme appoints Jane Doe", "Acme appoints [person]"),
+    ("Acme names Dr. Jane Doe Chief Medical Officer", "Acme names [person] Chief Medical Officer"),
+    ("Acme appoints Jane Doe-Roe: what it means", "Acme appoints [person]: what it means"),
+    # "X joins Acme as CFO": the run before " joins".
+    ("Jane Doe joins Acme as CFO", "[person] joins Acme as CFO"),
+    ("Former Google exec Jane Doe joins Acme as CFO", "Former Google exec [person] joins Acme as CFO"),
+    # Two people.
+    ("Acme appoints Jane Doe and John Roe as co-chief executives", "Acme appoints [person] and [person] as co-chief executives"),
+    ("Acme appoints Jane Doe as CFO, John Roe as COO", "Acme appoints [person] as CFO, [person] as COO"),
+    ("Acme promotes Jane Doe to president, succeeding John Roe", "Acme promotes [person] to president, succeeding [person]"),
+    # No delimited span: only the role phrase is kept.
+    ("Brightloom appoints new chief revenue officer", "appoints new chief revenue officer"),
+    ("Corvana Health Appoints Chief Medical Officer", "Appoints Chief Medical Officer"),
+    ("Quillstone names former payments executive as chief financial officer", "names as chief financial officer"),
+    ("Ex-fintech leader joins Ardent Pay as head of partnerships", "joins as head of partnerships"),
+    ("Acme appoints Jane Doe, former Stripe executive, as CFO", "appoints as CFO"),
+    ("Acme names VP of Engineering Jane Doe as CTO", "names VP of Engineering"),
+    ("Acme taps former rival exec Jane Doe as CFO", "taps as CFO"),
+    ("Acme appoints Jane Doe Ann Roe Max Poe Lee as CFO", "appoints as CFO"),
+    ("Fernhill Robotics appoints former cloud executive to lead go-to-market", "appoints [person]"),
+    ("Leadership update from the Acme team", PERSON),
+]  # fmt: skip
+
+PLACEHOLDER_NAMES = (
+    "Jane",
+    "Doe",
+    "John",
+    "Roe",
+    "Ada",
+    "Example",
+    "Max",
+    "Placeholder",
+    "Ann",
+    "Poe",
+    "Lee",
+)
+
+
+@pytest.mark.parametrize(("title", "expected"), REDACTED, ids=[t for t, _ in REDACTED])
+def test_redact_leadership(title: str, expected: str) -> None:
+    assert redact_leadership(title) == expected
+
+
+@pytest.mark.parametrize(("title", "expected"), REDACTED, ids=[t for t, _ in REDACTED])
+def test_redacted_title_holds_no_capitalised_name_run(title: str, expected: str) -> None:
+    redacted = redact_leadership(title)
+    tokens = title.split()
+    for start, end in person_spans(title):
+        run = " ".join(tokens[start:end])
+        assert run not in redacted
+    words = set(re.findall(r"[\w'-]+", redacted))
+    assert not words & set(PLACEHOLDER_NAMES), redacted
+
+
+def test_person_spans_shapes() -> None:
+    assert person_spans("Acme appoints Jane Doe as CFO") == [(2, 4)]
+    assert person_spans("Jane Doe joins Acme as CFO") == [(0, 2)]
+    assert person_spans("Acme hires Jane Doe away from rival") == []  # not delimited
+    assert person_spans("Acme names Jane Doe, ex-rival CFO, as CFO") == []  # apposition
+    assert person_spans("Acme appoints new chief revenue officer") == []
+    assert person_spans("Acme Appoints Chief Medical Officer") == []
+
+
+def test_redaction_collapses_whitespace_and_is_deterministic() -> None:
+    title = "Acme  appoints\n Jane   Doe as CFO"
+    assert redact_leadership(title) == "Acme appoints [person] as CFO"
+    assert redact_leadership(title) == redact_leadership(title)
+
+
+@pytest.mark.parametrize(
+    "title",
+    [t for t, c, _ in LABELLED if c == "leadership"],
+)
+def test_labelled_leadership_titles_are_never_stored_raw(title: str) -> None:
+    redacted = redact_leadership(title)
+    assert redacted
+    assert redacted != title

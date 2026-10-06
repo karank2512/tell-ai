@@ -20,15 +20,16 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from tell.collectors import smartrecruiters as sr
-from tell.collectors.base import content_hash, start_run
+from tell.collectors.base import RunResult, content_hash, start_run
 from tell.config import get_settings
 from tell.http import RateBudget, make_client
 from tell.models import AtsBoard, EventRow, Posting
+from tests.collectors import _board_liveness as liveness
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "smartrecruiters"
 NOW = datetime(2026, 10, 5, 18, 0, tzinfo=UTC)
 LATER = NOW + timedelta(hours=6)
-UA = "tell/0.1 (+https://github.com/karankapur/tell)"
+UA = "tell/0.1 (+https://github.com/karank2512/tell-ai)"
 LIST_URL = "https://api.smartrecruiters.com/v1/companies/BoschGroup/postings"
 DETAIL_ID = "744000153523769"
 DETAIL_TEXT = (
@@ -468,7 +469,7 @@ def test_ingest_board_fetches_details_only_for_new_ids(
     assert first.events[0].external_id == "smartrecruiters:BoschGroup:744000153546489"
     assert (detail.call_count, gone.call_count, flaky.call_count) == (1, 1, 5)
     assert sleeps.calls == [1.0, 2.0, 4.0, 8.0]
-    assert board.last_verified_at == NOW
+    assert board.last_verified_at is None  # discovery owns it (ADR 0015)
     assert board.last_polled_at == NOW
     rows = db_session.execute(
         select(Posting.external_id, Posting.content_hash).where(Posting.board_id == board.id)
@@ -485,7 +486,8 @@ def test_ingest_board_fetches_details_only_for_new_ids(
     assert (detail.call_count, gone.call_count, flaky.call_count) == (1, 1, 5)
     posting = db_session.scalars(select(Posting).where(Posting.external_id == DETAIL_ID)).one()
     assert posting.content_hash == content_hash(DETAIL_TEXT)
-    assert board.last_verified_at == LATER
+    assert board.last_polled_at == LATER
+    assert board.last_verified_at is None
 
 
 @pytest.mark.db
@@ -501,7 +503,7 @@ def test_ingest_board_owns_its_client_when_none_given(
 
 
 @pytest.mark.db
-def test_ingest_board_marks_dead_after_two_consecutive_404s(
+def test_ingest_board_marks_dead_after_two_404s_12h_apart(
     db_session: Session,
     mocked: respx.MockRouter,
     client: httpx.Client,
@@ -516,27 +518,34 @@ def test_ingest_board_marks_dead_after_two_consecutive_404s(
         db_session, board, run_id="r1", now=NOW, client=client, budget=budget, sleep=sleeps
     )
     assert (first.fetched, first.inserted, first.events) == (0, 0, [])
-    assert board.status == "active"
-    assert board.last_polled_at == NOW
+    assert (board.status, board.not_found_count, board.first_not_found_at) == ("active", 1, NOW)
+    assert board.last_polled_at is None
 
     sr.ingest_board(
         db_session, board, run_id="r2", now=LATER, client=client, budget=budget, sleep=sleeps
     )
+    assert (board.status, board.not_found_count) == ("active", 2)  # only 6h apart
+    dead_at = NOW + timedelta(hours=12)
+    sr.ingest_board(
+        db_session, board, run_id="r3", now=dead_at, client=client, budget=budget, sleep=sleeps
+    )
     assert board.status == "dead"
-    assert route.call_count == 2
+    assert route.call_count == 3
     assert sleeps.calls == []
     assert _count(db_session) == 0
 
-    # The board comes back: it is verified and revived.
+    # The board comes back: it is revived; last_verified_at stays discovery's.
     route.respond(200, json=_json("normal.json"))
     mocked.get(url__startswith=f"{LIST_URL}/").respond(404)
-    later = LATER + timedelta(hours=6)
+    later = dead_at + timedelta(hours=6)
     revived = sr.ingest_board(
-        db_session, board, run_id="r3", now=later, client=client, budget=budget, sleep=sleeps
+        db_session, board, run_id="r4", now=later, client=client, budget=budget, sleep=sleeps
     )
     assert revived.inserted == 3
-    assert board.status == "active"
-    assert board.last_verified_at == later
+    assert (board.status, board.not_found_count) == ("active", 0)
+    polled: datetime | None = board.last_polled_at  # widen: mypy narrowed it to None above
+    assert polled == later
+    assert board.last_verified_at == NOW - timedelta(days=1)
 
 
 @pytest.mark.db
@@ -569,8 +578,71 @@ def test_never_verified_board_dies_on_second_404(
 ) -> None:
     board = AtsBoard(vendor="smartrecruiters", identifier="Gone", confidence=Decimal("0.60"))
     mocked.get("https://api.smartrecruiters.com/v1/companies/Gone/postings").respond(404)
-    for run_id, now in (("r1", NOW), ("r2", LATER)):
+    for run_id, now in (("r1", NOW), ("r2", NOW + timedelta(hours=12))):
         sr.ingest_board(
             db_session, board, run_id=run_id, now=now, client=client, budget=budget, sleep=sleeps
         )
     assert board.status == "dead"
+    assert board.id is not None  # a transient board is persisted by the 404 bookkeeping
+
+
+# --- ADR 0015: the shared 404 / dead-board rule ------------------------------------------
+
+
+@pytest.fixture
+def liveness_poll(
+    db_session: Session,
+    mocked: respx.MockRouter,
+    client: httpx.Client,
+    budget: RateBudget,
+    sleeps: Sleeps,
+) -> tuple[AtsBoard, liveness.Poll]:
+    bodies = {"present": _json("normal.json"), "absent": _json("empty_board.json")}
+    route = mocked.get(LIST_URL)
+    mocked.get(url__startswith=f"{LIST_URL}/").respond(404)  # details: hash unknown
+    board = _board(db_session)
+
+    def poll(now: datetime, outcome: liveness.Outcome) -> RunResult:
+        if outcome == "404":
+            route.respond(404)
+        else:
+            route.respond(200, json=bodies[outcome])
+        return sr.ingest_board(
+            db_session,
+            board,
+            run_id=f"r-{now:%d%H}",
+            now=now,
+            client=client,
+            budget=budget,
+            sleep=sleeps,
+        )
+
+    return board, poll
+
+
+@pytest.mark.db
+def test_liveness_404_between_polls_never_closes(
+    db_session: Session, liveness_poll: tuple[AtsBoard, liveness.Poll]
+) -> None:
+    liveness.a_404_between_polls_never_closes(db_session, *liveness_poll, NOW)
+
+
+@pytest.mark.db
+def test_liveness_two_404s_under_12h_stay_active(
+    db_session: Session, liveness_poll: tuple[AtsBoard, liveness.Poll]
+) -> None:
+    liveness.two_404s_under_12h_stay_active(db_session, *liveness_poll, NOW)
+
+
+@pytest.mark.db
+def test_liveness_two_404s_12h_apart_kill_once(
+    db_session: Session, liveness_poll: tuple[AtsBoard, liveness.Poll]
+) -> None:
+    liveness.two_404s_12h_apart_kill_once(db_session, *liveness_poll, NOW)
+
+
+@pytest.mark.db
+def test_liveness_a_later_200_revives_and_resets(
+    db_session: Session, liveness_poll: tuple[AtsBoard, liveness.Poll]
+) -> None:
+    liveness.a_later_200_revives_and_resets(db_session, *liveness_poll, NOW)

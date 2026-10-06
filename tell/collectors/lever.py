@@ -12,11 +12,14 @@ Fields used: ``id``, ``text`` (title), ``categories.team`` / ``department`` /
 marker is ``createdAt``: the idempotency key is ``lever:{site}:{id}:{createdAt}``,
 so ``ObservedPosting.version == str(createdAt)``.
 
-Board liveness: a 404 opens a ``board_verify`` review item (so discovery re-checks
-the site) and leaves the board ``active``; a second consecutive 404 marks the board
-``dead``; any successful poll in between resolves the item and resets the count.
-``ats_boards`` has no column for a 404 streak, so the open review item is where the
-streak lives (see ``docs/sources/lever.md``).
+Board liveness is the shared ADR 0015 rule
+(``docs/decisions/0015-ats-404-and-reverification.md``): a 200 calls
+:func:`~tell.collectors.base.record_board_ok`, a 404 calls
+:func:`~tell.collectors.base.record_board_not_found` (``dead`` after two 404s at least
+12 hours apart, plus one ``board_verify`` review item). A 404 never advances
+``last_polled_at``; this module never writes ``last_verified_at``. ``active`` and
+``dead`` boards are polled (a dead board that answers 200 again is revived); any
+other status (``paused``, ``no_board``, ``unsupported``) is skipped without a request.
 """
 
 from __future__ import annotations
@@ -40,17 +43,17 @@ from tell.collectors.base import (
     ObservedPosting,
     RunResult,
     from_epoch_ms,
-    iso_utc,
+    record_board_not_found,
+    record_board_ok,
     sync_board_postings,
     write_events,
 )
 from tell.config import get_settings
 from tell.http import HostRateBudgets, RateBudget, fetch, make_client
-from tell.models import AtsBoard, Company, ReviewQueueItem
+from tell.models import AtsBoard, Company
 
 __all__ = [
     "COLLECTOR",
-    "DEAD_AFTER_404S",
     "EU_PREFIX",
     "FIXTURE_DIR",
     "FIXTURE_SITE",
@@ -76,11 +79,8 @@ EU_API = "https://api.eu.lever.co/v0/postings"
 EU_PREFIX = "eu:"
 QUERY: dict[str, str] = {"mode": "json"}
 
-DEAD_AFTER_404S = 2
-"""Consecutive 404 polls after which a board's status becomes ``dead``."""
-
-REVIEW_KIND = "board_verify"
-REVIEW_REASON = "http_404"
+POLLED_STATUSES = frozenset({"active", "dead"})
+"""Board statuses :func:`ingest_board` requests; any other status is skipped."""
 
 FIXTURE_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / SOURCE
 FIXTURE_SITE = "tell-fixture"
@@ -287,62 +287,6 @@ def parse(raw: LeverPostings | str | bytes) -> list[ObservedPosting]:
     return [_observe(posting) for posting in postings.root]
 
 
-# --- board liveness (404 streak) ------------------------------------------------------------
-
-
-def _open_404_item(session: Session, board: AtsBoard) -> ReviewQueueItem | None:
-    stmt = (
-        select(ReviewQueueItem)
-        .where(
-            ReviewQueueItem.kind == REVIEW_KIND,
-            ReviewQueueItem.status == "open",
-            ReviewQueueItem.payload.contains(
-                {"vendor": board.vendor, "board_identifier": board.identifier}
-            ),
-            ReviewQueueItem.payload.contains({"reason": REVIEW_REASON}),
-        )
-        .order_by(ReviewQueueItem.id)
-        .limit(1)
-    )
-    return session.scalars(stmt).first()
-
-
-def _record_404(session: Session, board: AtsBoard, now: datetime) -> int:
-    """Count one more consecutive 404 for ``board``; mark it dead at the threshold."""
-    stamp = iso_utc(now)
-    item = _open_404_item(session, board)
-    if item is None:
-        streak = 1
-        session.add(
-            ReviewQueueItem(
-                kind=REVIEW_KIND,
-                payload={
-                    "vendor": board.vendor,
-                    "board_identifier": board.identifier,
-                    "reason": REVIEW_REASON,
-                    "consecutive_404s": streak,
-                    "first_404_at": stamp,
-                    "last_404_at": stamp,
-                },
-                created_at=now,
-            )
-        )
-    else:
-        streak = int(item.payload.get("consecutive_404s", 1)) + 1
-        item.payload = {**item.payload, "consecutive_404s": streak, "last_404_at": stamp}
-    if streak >= DEAD_AFTER_404S:
-        board.status = "dead"
-    session.flush()
-    return streak
-
-
-def _clear_404s(session: Session, board: AtsBoard, now: datetime) -> None:
-    item = _open_404_item(session, board)
-    if item is not None:
-        item.status = "resolved"
-        item.resolved_at = now
-
-
 # --- ingest ---------------------------------------------------------------------------------
 
 
@@ -353,9 +297,7 @@ def _apply_poll(
     observed = parse(raw)
     events = sync_board_postings(session, board, observed, run_id=run_id, now=now)
     stats = write_events(session, events)
-    _clear_404s(session, board, now)
-    board.last_verified_at = now
-    session.flush()
+    record_board_ok(session, board, now=now)
     return RunResult(
         fetched=len(raw.root), inserted=stats.inserted, skipped=stats.skipped, events=events
     )
@@ -373,19 +315,19 @@ def ingest_board(
 ) -> RunResult:
     """Poll one Lever board and write its events; the caller owns the run and the commit.
 
-    Boards whose status is not ``active`` are skipped without a request. A 404 returns
-    an empty result and advances the 404 streak (``dead`` after the second in a row);
+    Boards whose status is not ``active`` or ``dead`` are skipped without a request.
+    A 404 returns an empty result and goes to ``record_board_not_found`` (ADR 0015);
     other HTTP failures propagate so the run records an error.
     """
     if board.vendor != SOURCE:
         msg = f"ingest_board expects a {SOURCE!r} board, got vendor {board.vendor!r}"
         raise ValueError(msg)
-    if board.status != "active":
+    if board.status not in POLLED_STATUSES:
         return RunResult(fetched=0, inserted=0, skipped=0)
     try:
         raw = fetch_board(client, board.identifier, budget=budget, sleep=sleep)
     except BoardNotFoundError:
-        _record_404(session, board, now)
+        record_board_not_found(session, board, now=now)
         return RunResult(fetched=0, inserted=0, skipped=0)
     return _apply_poll(session, board, raw, run_id=run_id, now=now)
 

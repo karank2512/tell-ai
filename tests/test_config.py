@@ -57,10 +57,10 @@ def test_defaults() -> None:
     s = Settings()
     assert s.database_url == "postgresql+psycopg://karankapur@localhost:5432/tell_dev"
     assert s.sec_user_agent == "tell/0.1 (contact@example.invalid)"
-    assert s.tell_http_user_agent == "tell/0.1 (+https://github.com/karankapur/tell)"
+    assert s.tell_http_user_agent == "tell/0.1 (+https://github.com/karank2512/tell-ai)"
     assert s.slack_webhook_url is None
     assert s.github_token is None
-    assert s.tell_data_repo == "karankapur/tell-data"
+    assert s.tell_data_repo == "karank2512/tell-data"
     assert s.tell_data_push_token is None
     assert s.tell_poll_concurrency == 8
     assert s.tell_rate_edgar_rps == 5.0
@@ -68,7 +68,7 @@ def test_defaults() -> None:
     assert s.tell_rate_ats_rps == 8.0
     assert s.tell_discovery_budget == 300
     assert s.tell_discovery_rps == 4.0
-    assert s.tell_base_url == "https://karankapur.github.io/tell-data"
+    assert s.tell_base_url == "https://karank2512.github.io/tell-data"
     assert s.tell_api_key is None
     assert s.tell_alert_threshold == 6.0
     assert s.tell_slack_tz == "America/Los_Angeles"

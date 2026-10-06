@@ -17,7 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from tell.collectors import lever
-from tell.collectors.base import JOB_OPENED, JOB_UPDATED, content_hash, start_run
+from tell.collectors.base import JOB_OPENED, JOB_UPDATED, RunResult, content_hash, start_run
 from tell.collectors.lever import (
     COLLECTOR,
     BoardNotFoundError,
@@ -34,6 +34,7 @@ from tell.collectors.lever import (
 from tell.config import get_settings
 from tell.http import RateBudget, RetryExhausted
 from tell.models import AtsBoard, Company, EventRow, Posting, ReviewQueueItem
+from tests.collectors import _board_liveness as liveness
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "lever"
 NORMAL = FIXTURES / "normal.json"
@@ -298,7 +299,7 @@ def test_fetch_board_exact_url_and_user_agent(mocked: respx.MockRouter, budget: 
     assert len(result.root) == 4
     request = route.calls.last.request
     assert str(request.url) == "https://api.lever.co/v0/postings/spotify?mode=json"
-    assert request.headers["User-Agent"] == "tell/0.1 (+https://github.com/karankapur/tell)"
+    assert request.headers["User-Agent"] == "tell/0.1 (+https://github.com/karank2512/tell-ai)"
 
 
 def test_fetch_board_eu_host_with_default_client(
@@ -412,7 +413,7 @@ def test_run_fixture_twice_inserts_nothing_the_second_time(db_session: Session) 
     assert _count(db_session, Company) == 1
     board = db_session.scalars(select(AtsBoard)).one()
     assert board.last_polled_at == LATER
-    assert board.last_verified_at == LATER
+    assert board.last_verified_at is None  # discovery owns it (ADR 0015)
 
 
 @pytest.mark.db
@@ -485,13 +486,13 @@ def test_ingest_board_writes_postings_and_events(
     }
     assert all(e.company_id == board.company_id for e in result.events)
     assert board.last_polled_at == NOW
-    assert board.last_verified_at == NOW
+    assert board.last_verified_at is None
     assert board.status == "active"
     assert _count(db_session, Posting) == 4
 
 
 @pytest.mark.db
-def test_ingest_board_dead_only_after_second_consecutive_404(
+def test_ingest_board_404_records_the_streak_and_nothing_else(
     db_session: Session, mocked: respx.MockRouter, budget: RateBudget
 ) -> None:
     route = mocked.get(GLOBAL_URL).mock(return_value=httpx.Response(404))
@@ -499,56 +500,23 @@ def test_ingest_board_dead_only_after_second_consecutive_404(
 
     first = ingest_board(db_session, board, run_id="r1", now=NOW, budget=budget)
     assert (first.fetched, first.inserted, first.events) == (0, 0, [])
-    assert board.status == "active"
-    (item,) = _open_items(db_session)
-    assert item.kind == "board_verify"
-    assert item.payload == {
-        "vendor": "lever",
-        "board_identifier": "spotify",
-        "reason": "http_404",
-        "consecutive_404s": 1,
-        "first_404_at": "2026-10-05T12:00:00+00:00",
-        "last_404_at": "2026-10-05T12:00:00+00:00",
-    }
+    assert (board.status, board.not_found_count, board.first_not_found_at) == ("active", 1, NOW)
     assert board.last_polled_at is None
+    assert _open_items(db_session) == []
 
     ingest_board(db_session, board, run_id="r2", now=LATER, budget=budget)
+    assert (board.status, board.not_found_count) == ("active", 2)  # only 6h apart
+    assert _open_items(db_session) == []
+
+    ingest_board(db_session, board, run_id="r3", now=NOW + timedelta(hours=12), budget=budget)
     assert board.status == "dead"
     (item,) = _open_items(db_session)
-    assert item.payload["consecutive_404s"] == 2
-    assert item.payload["last_404_at"] == "2026-10-05T18:00:00+00:00"
+    assert item.payload["reason"] == "not_found_twice"
 
-    # A dead board is not polled again.
-    skipped = ingest_board(
-        db_session, board, run_id="r3", now=LATER + timedelta(hours=6), budget=budget
-    )
-    assert (skipped.fetched, skipped.inserted) == (0, 0)
-    assert route.call_count == 2
-
-
-@pytest.mark.db
-def test_ingest_board_success_resets_the_404_streak(
-    db_session: Session, mocked: respx.MockRouter, budget: RateBudget
-) -> None:
-    mocked.get(GLOBAL_URL).mock(
-        side_effect=[
-            httpx.Response(404),
-            httpx.Response(200, content=NORMAL.read_bytes()),
-            httpx.Response(404),
-        ]
-    )
-    board = _board(db_session)
-    ingest_board(db_session, board, run_id="r1", now=NOW, budget=budget)
-    ingest_board(db_session, board, run_id="r2", now=LATER, budget=budget)
-    resolved = db_session.scalars(select(ReviewQueueItem)).one()
-    assert resolved.status == "resolved"
-    assert resolved.resolved_at == LATER
-    assert board.status == "active"
-
-    ingest_board(db_session, board, run_id="r3", now=LATER + timedelta(hours=6), budget=budget)
-    assert board.status == "active"
-    (fresh,) = _open_items(db_session)
-    assert fresh.payload["consecutive_404s"] == 1
+    # A dead board is still polled, so it can come back (ADR 0015).
+    ingest_board(db_session, board, run_id="r4", now=NOW + timedelta(hours=18), budget=budget)
+    assert route.call_count == 4
+    assert len(_open_items(db_session)) == 1
 
 
 @pytest.mark.db
@@ -563,9 +531,11 @@ def test_ingest_board_404_streak_is_per_board(
     db_session.flush()
     ingest_board(db_session, board, run_id="r1", now=NOW, budget=budget)
     ingest_board(db_session, other, run_id="r1", now=NOW, budget=budget)
-    assert board.status == "active"
-    assert other.status == "active"
-    assert len(_open_items(db_session)) == 2
+    ingest_board(db_session, other, run_id="r2", now=NOW + timedelta(hours=12), budget=budget)
+    assert (board.status, board.not_found_count) == ("active", 1)
+    assert (other.status, other.not_found_count) == ("dead", 2)
+    (item,) = _open_items(db_session)
+    assert item.payload["identifier"] == "other"
 
 
 @pytest.mark.db
@@ -596,3 +566,52 @@ def test_ingest_board_rejects_other_vendors(db_session: Session) -> None:
     board = AtsBoard(vendor="greenhouse", identifier="spotify", confidence=Decimal("1.00"))
     with pytest.raises(ValueError, match="expects a 'lever' board"):
         ingest_board(db_session, board, run_id="r1", now=NOW)
+
+
+# --- ADR 0015: the shared 404 / dead-board rule ------------------------------------------
+
+
+@pytest.fixture
+def liveness_poll(
+    db_session: Session, mocked: respx.MockRouter, budget: RateBudget
+) -> tuple[AtsBoard, liveness.Poll]:
+    bodies = {"present": NORMAL.read_bytes(), "absent": EMPTY.read_bytes()}
+    route = mocked.get(GLOBAL_URL)
+    board = _board(db_session)
+
+    def poll(now: datetime, outcome: liveness.Outcome) -> RunResult:
+        if outcome == "404":
+            route.mock(return_value=httpx.Response(404))
+        else:
+            route.mock(return_value=httpx.Response(200, content=bodies[outcome]))
+        return ingest_board(db_session, board, run_id=f"r-{now:%d%H}", now=now, budget=budget)
+
+    return board, poll
+
+
+@pytest.mark.db
+def test_liveness_404_between_polls_never_closes(
+    db_session: Session, liveness_poll: tuple[AtsBoard, liveness.Poll]
+) -> None:
+    liveness.a_404_between_polls_never_closes(db_session, *liveness_poll, NOW)
+
+
+@pytest.mark.db
+def test_liveness_two_404s_under_12h_stay_active(
+    db_session: Session, liveness_poll: tuple[AtsBoard, liveness.Poll]
+) -> None:
+    liveness.two_404s_under_12h_stay_active(db_session, *liveness_poll, NOW)
+
+
+@pytest.mark.db
+def test_liveness_two_404s_12h_apart_kill_once(
+    db_session: Session, liveness_poll: tuple[AtsBoard, liveness.Poll]
+) -> None:
+    liveness.two_404s_12h_apart_kill_once(db_session, *liveness_poll, NOW)
+
+
+@pytest.mark.db
+def test_liveness_a_later_200_revives_and_resets(
+    db_session: Session, liveness_poll: tuple[AtsBoard, liveness.Poll]
+) -> None:
+    liveness.a_later_200_revives_and_resets(db_session, *liveness_poll, NOW)

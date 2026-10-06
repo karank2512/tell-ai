@@ -11,7 +11,7 @@ aliases), ``offeringData.typeOfFiling.newOrAmendment.isAmendment``, ``dateOfFirs
 ``industryGroup.industryGroupType``, ``offeringSalesAmounts`` (``totalOfferingAmount``,
 ``totalAmountSold``, ``totalRemaining``), ``investors.totalNumberAlreadyInvested``,
 ``federalExemptionsExclusions`` and the filing's ``fileNumber``; plus
-``previousAccessionNumber`` from ``newOrAmendment`` as a fallback amendment link.
+``previousAccessionNumber`` from ``newOrAmendment``, the preferred amendment link.
 
 The parser walks only ``primaryIssuer`` and ``offeringData``. The officers-and-directors
 element of the document is personal data: it is never read, never parsed and never
@@ -531,22 +531,29 @@ def company_ids_by_cik(session: Session, ciks: Iterable[str]) -> dict[str, int]:
 
 
 def _find_original(session: Session, filing: FormDFiling) -> tuple[str, dict[str, Any]] | None:
-    """The ``form_d_filed`` event this D/A amends: by file number, else previous accession."""
-    keys: list[tuple[str, str]] = []
-    if filing.file_number:
-        keys.append(("file_number", filing.file_number))
+    """The ``form_d_filed`` event this D/A amends, or ``None`` when it is unknown.
+
+    ``previousAccessionNumber`` wins when it names a known original. Otherwise the D/A
+    goes to the latest original with the same file number filed on or before it: an
+    issuer reuses its Form D file number across later offerings, so the oldest original
+    under that number is usually a different round.
+    """
+    base = select(EventRow.event_id, EventRow.payload).where(
+        EventRow.source == SOURCE, EventRow.type == FORM_D_FILED
+    )
     previous = filing.offering_data.type_of_filing.new_or_amendment.previous_accession_number
     if previous:
-        keys.append(("accession_number", previous))
-    for key, value in keys:
+        stmt = base.where(EventRow.payload.op("->>")("accession_number") == previous).limit(1)
+        row = session.execute(stmt).first()
+        if row is not None:
+            return str(row[0]), dict(row[1])
+    if filing.file_number:
         stmt = (
-            select(EventRow.event_id, EventRow.payload)
-            .where(
-                EventRow.source == SOURCE,
-                EventRow.type == FORM_D_FILED,
-                EventRow.payload.op("->>")(key) == value,
+            base.where(
+                EventRow.payload.op("->>")("file_number") == filing.file_number,
+                EventRow.occurred_at <= _occurred_at(filing.date_filed),
             )
-            .order_by(EventRow.occurred_at, EventRow.event_id)
+            .order_by(EventRow.occurred_at.desc(), EventRow.event_id.desc())
             .limit(1)
         )
         row = session.execute(stmt).first()
@@ -739,16 +746,37 @@ def _quarterly_filing(
     return FormDFiling.model_validate(data)
 
 
+def _quarterly_target(
+    filing: FormDFiling, originals: Sequence[FormDFiling], payloads: Mapping[str, Any]
+) -> str | None:
+    """In-memory twin of :func:`_find_original` over one data set's originals.
+
+    ``originals`` is sorted by filing date then accession, so the last match is the latest.
+    """
+    previous = filing.offering_data.type_of_filing.new_or_amendment.previous_accession_number
+    if previous and previous in payloads:
+        return previous
+    if not filing.file_number:
+        return None
+    candidates = [
+        f.accession_number
+        for f in originals
+        if f.file_number == filing.file_number and f.date_filed <= filing.date_filed
+    ]
+    return candidates[-1] if candidates else None
+
+
 def load_formd_quarterly(path: Path | str, *, run_id: str, now: datetime) -> list[Event]:
     """Turn one quarterly Form D data set into events for backtests (``payload.backfill``).
 
     ``path`` is the SEC ZIP or a directory holding ``FORMDSUBMISSION.tsv``,
     ``ISSUERS.tsv`` and ``OFFERING.tsv``; nothing else in it is opened. New filings
-    become ``form_d_filed``; a D/A whose original (same file number, else its previous
-    accession) is in the same data set is merged into that payload exactly as the
-    daily path does, and any other D/A becomes ``form_d_amendment``. Events carry no
-    ``company_id`` (Phase 5 links them) and the same ``edgar:{accession}`` key as the
-    daily collector, so a filing seen both ways is written once. Pure: no database.
+    become ``form_d_filed``; a D/A whose original (its previous accession, else the latest
+    original with the same file number filed on or before it) is in the same data set is
+    merged into that payload exactly as the daily path does, and any other D/A becomes
+    ``form_d_amendment``. Events carry no ``company_id`` (Phase 5 links them) and the
+    same ``edgar:{accession}`` key as the daily collector, so a filing seen both ways is
+    written once. Pure: no database.
     """
     tables = _quarterly_tables(Path(path))
     issuers = _primary_issuers(tables["ISSUERS.tsv"])
@@ -763,21 +791,11 @@ def load_formd_quarterly(path: Path | str, *, run_id: str, now: datetime) -> lis
         filings.append(_quarterly_filing(submission, issuers[accession], offerings[accession]))
     filings.sort(key=lambda f: (f.date_filed, f.accession_number))
 
-    payloads: dict[str, dict[str, Any]] = {}
-    by_file: dict[str, str] = {}
-    originals: list[FormDFiling] = []
+    originals = [f for f in filings if not f.is_amendment]
+    payloads = {f.accession_number: formd_payload(f, backfill=True) for f in originals}
     orphans: list[FormDFiling] = []
-    for filing in filings:
-        if not filing.is_amendment:
-            payloads[filing.accession_number] = formd_payload(filing, backfill=True)
-            if filing.file_number:
-                by_file.setdefault(filing.file_number, filing.accession_number)
-            originals.append(filing)
-            continue
-        previous = filing.offering_data.type_of_filing.new_or_amendment.previous_accession_number
-        target = by_file.get(filing.file_number or "") or (
-            previous if previous in payloads else None
-        )
+    for filing in (f for f in filings if f.is_amendment):
+        target = _quarterly_target(filing, originals, payloads)
         if target is None:
             orphans.append(filing)
             continue

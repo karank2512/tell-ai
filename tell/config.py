@@ -40,7 +40,7 @@ class Settings(BaseSettings):
         description="User-Agent for SEC EDGAR; the SEC requires a real contact address.",
     )
     tell_http_user_agent: str = Field(
-        default="tell/0.1 (+https://github.com/karankapur/tell)",
+        default="tell/0.1 (+https://github.com/karank2512/tell-ai)",
         description="User-Agent sent to every non-SEC source.",
     )
 
@@ -52,7 +52,7 @@ class Settings(BaseSettings):
         default=None, description="GitHub token for the GitHub org collector."
     )
     tell_data_repo: str = Field(
-        default="karankapur/tell-data",
+        default="karank2512/tell-data",
         description="GitHub repo (owner/name) receiving JSONL events and the static site.",
     )
     tell_data_push_token: SecretStr | None = Field(
@@ -82,7 +82,7 @@ class Settings(BaseSettings):
 
     # --- publishing / serving ------------------------------------------------
     tell_base_url: str = Field(
-        default="https://karankapur.github.io/tell-data",
+        default="https://karank2512.github.io/tell-data",
         description="Public base URL of the static site and api/v0 JSON.",
     )
     tell_api_key: SecretStr | None = Field(

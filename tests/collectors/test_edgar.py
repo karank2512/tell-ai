@@ -506,6 +506,110 @@ def test_older_amendment_is_listed_but_does_not_overwrite_amounts() -> None:
     assert amendment_patch(original, newer) is None
 
 
+# Form D file numbers are reused across an issuer's later offerings, so a D/A must land on
+# its own round: previousAccessionNumber first, else the latest original filed on or before it.
+FILE_NO = "021-555001"
+ACC_2024 = "0009990001-24-000001"
+ACC_2026 = "0009990001-26-000001"
+ACC_LATE = "0009990001-26-000009"
+
+
+def _variant(
+    base: FormDFiling, accession: str, filed: str, *, previous: str | None = None
+) -> FormDFiling:
+    document = base.to_json_dict()
+    document["accessionNumber"] = accession
+    document["dateFiled"] = filed
+    document["fileNumber"] = FILE_NO
+    if base.is_amendment:
+        new_or_amendment = document["offeringData"]["typeOfFiling"]["newOrAmendment"]
+        new_or_amendment["previousAccessionNumber"] = previous
+    return FormDFiling.model_validate(document)
+
+
+def _two_rounds(db_session: Session, *extra: FormDFiling) -> None:
+    original = _formd("formd_1.xml", ACC_D1, "9990001")
+    filings = [
+        _variant(original, ACC_2024, "2024-03-04"),
+        _variant(original, ACC_2026, "2026-09-01"),
+        *extra,
+    ]
+    edgar_formd.ingest_formd_filings(db_session, filings, run_id="edgar-a", now=NOW)
+
+
+def _originals(db_session: Session) -> dict[str, dict[str, Any]]:
+    db_session.expire_all()
+    return {
+        row.payload["accession_number"]: row.payload for row in _events(db_session, FORM_D_FILED)
+    }
+
+
+def _amend(previous: str | None, filed: str = "2026-10-01") -> FormDFiling:
+    amendment = _formd("formd_amendment.xml", ACC_DA, "9990001", form="D/A")
+    return _variant(amendment, ACC_DA, filed, previous=previous)
+
+
+@pytest.mark.db
+def test_amendment_follows_previous_accession_over_older_file_number_match(
+    db_session: Session,
+) -> None:
+    _two_rounds(db_session)
+    result = edgar_formd.ingest_formd_filings(
+        db_session, [_amend(ACC_2026)], run_id="edgar-b", now=NOW
+    )
+    assert (result.amended, result.events) == (1, [])
+    originals = _originals(db_session)
+    assert originals[ACC_2024]["amendments"] == []
+    assert originals[ACC_2024]["total_amount_sold"] == 12_500_000
+    assert "last_amended_on" not in originals[ACC_2024]
+    assert [a["accession_number"] for a in originals[ACC_2026]["amendments"]] == [ACC_DA]
+    assert originals[ACC_2026]["total_amount_sold"] == 16_000_000
+    assert _events(db_session, FORM_D_AMENDMENT) == []
+
+
+@pytest.mark.db
+def test_amendment_with_unknown_previous_takes_latest_original_on_or_before_it(
+    db_session: Session,
+) -> None:
+    later = _variant(_formd("formd_1.xml", ACC_D1, "9990001"), ACC_LATE, "2026-11-02")
+    _two_rounds(db_session, later)
+    result = edgar_formd.ingest_formd_filings(
+        db_session, [_amend("0009990001-25-999999")], run_id="edgar-b", now=NOW
+    )
+    assert result.amended == 1
+    originals = _originals(db_session)
+    assert originals[ACC_2024]["amendments"] == []
+    assert originals[ACC_LATE]["amendments"] == []
+    assert [a["accession_number"] for a in originals[ACC_2026]["amendments"]] == [ACC_DA]
+    # Same with no previous accession at all.
+    other = _amend(None).to_json_dict()
+    other["accessionNumber"] = "0009990001-26-000003"
+    edgar_formd.ingest_formd_filings(
+        db_session, [FormDFiling.model_validate(other)], run_id="edgar-c", now=NOW
+    )
+    originals = _originals(db_session)
+    assert len(originals[ACC_2026]["amendments"]) == 2
+    assert originals[ACC_2024]["amendments"] == []
+
+
+@pytest.mark.db
+def test_amendment_older_than_every_original_is_kept_without_funding(
+    db_session: Session,
+) -> None:
+    _two_rounds(db_session)
+    result = edgar_formd.ingest_formd_filings(
+        db_session, [_amend("0009990001-23-999999", filed="2023-05-01")], run_id="edgar-b", now=NOW
+    )
+    assert result.amended == 0
+    [row] = _events(db_session, FORM_D_AMENDMENT)
+    assert row.payload["accession_number"] == ACC_DA
+    assert row.payload["is_amendment"] is True
+    assert {a: p["amendments"] for a, p in _originals(db_session).items()} == {
+        ACC_2024: [],
+        ACC_2026: [],
+    }
+
+
 # --- 8-K -------------------------------------------------------------------------------------------
 
 
@@ -812,6 +916,53 @@ def test_quarterly_orphan_amendment_and_missing_files(tmp_path: Path) -> None:
         zf.writestr("README.txt", "nothing")
     with pytest.raises(FileNotFoundError):
         load_formd_quarterly(empty_zip, run_id="backfill", now=NOW)
+
+
+def _add_quarterly_round(folder: Path, accession: str, filed: str) -> None:
+    """Copy the first original's rows under a new accession and filing date."""
+    template = "0009990101-26-000001"
+    for name in ("FORMDSUBMISSION.tsv", "ISSUERS.tsv", "OFFERING.tsv"):
+        path = folder / name
+        lines = path.read_text().splitlines()
+        row = next(line for line in lines if line.startswith(template + "\t"))
+        row = row.replace(template, accession, 1)
+        if name == "FORMDSUBMISSION.tsv":
+            row = row.replace("12-JAN-2026", filed)
+        path.write_text("\n".join([*lines, row]) + "\n")
+
+
+@pytest.mark.parametrize("previous", ["0009990101-26-000001", ""])
+def test_quarterly_amendment_links_to_its_own_round(tmp_path: Path, previous: str) -> None:
+    folder = _copy_quarterly(tmp_path)
+    # An older round and a later round reuse the file number of 0009990101-26-000001.
+    _add_quarterly_round(folder, "0009990101-25-000001", "10-JAN-2025")
+    _add_quarterly_round(folder, "0009990101-26-000005", "01-APR-2026")
+    offering = folder / "OFFERING.tsv"
+    offering.write_text(
+        offering.read_text().replace("\ttrue\t0009990101-26-000001\t", f"\ttrue\t{previous}\t")
+    )
+    events = load_formd_quarterly(folder, run_id="backfill", now=NOW)
+    amendments = {e.external_id: e.payload["amendments"] for e in events}
+    assert all(e.type == FORM_D_FILED for e in events)
+    assert amendments == {
+        "0009990101-25-000001": [],
+        "0009990101-26-000001": [amendments["0009990101-26-000001"][0]],
+        "0009990102-26-000001": [],
+        "0009990101-26-000005": [],
+    }
+    assert amendments["0009990101-26-000001"][0]["accession_number"] == "0009990101-26-000002"
+
+
+def test_quarterly_amendment_older_than_every_original_is_an_orphan(tmp_path: Path) -> None:
+    folder = _copy_quarterly(tmp_path)
+    submission = folder / "FORMDSUBMISSION.tsv"
+    submission.write_text(submission.read_text().replace("16-MAR-2026", "02-JAN-2026"))
+    offering = folder / "OFFERING.tsv"
+    offering.write_text(offering.read_text().replace("\t0009990101-26-000001\t", "\t\t"))
+    events = load_formd_quarterly(folder, run_id="backfill", now=NOW)
+    by_id = {e.external_id: e for e in events}
+    assert by_id["0009990101-26-000002"].type == FORM_D_AMENDMENT
+    assert by_id["0009990101-26-000001"].payload["amendments"] == []
 
 
 @pytest.mark.db

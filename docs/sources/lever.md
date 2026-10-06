@@ -55,21 +55,13 @@ Lever publishes no rate limit.
 - Poll each board at most every 6 hours, 8 boards in parallel (`TELL_POLL_CONCURRENCY`).
 - `TELL_RATE_ATS_RPS` (default 8) sets the requests per second per host. The two Lever hosts get separate token buckets.
 - 429 and 5xx responses are retried by `tell.http.fetch` with backoff of 1, 2, 4 and 8 s. `Retry-After` is honoured.
-- Every request sends the project User-Agent `tell/0.1 (+https://github.com/karankapur/tell)`.
+- Every request sends the project User-Agent `tell/0.1 (+https://github.com/karank2512/tell-ai)`.
 
 ## Board liveness (404)
 
-- **First 404:** the board stays `active`. The collector opens a `review_queue` item with `kind='board_verify'` and payload `{vendor, board_identifier, reason: "http_404", consecutive_404s: 1, first_404_at, last_404_at}`. Discovery can then re-verify the site, since a renamed site is the usual cause (SPEC §4 step 5).
-- **Second consecutive 404:** `ats_boards.status = 'dead'` and the item's streak goes to 2. The item stays open for discovery.
-- **Successful poll in between:** the item is resolved and the streak starts over.
-- **Boards that are not `active`:** never requested.
+`ingest_board` hands every 404 to `base.record_board_not_found`: `not_found_count` goes up by one and `first_not_found_at` is set on the first 404 of a streak. The board becomes `status = 'dead'` once the count is at least 2 and the current 404 is at least 12 hours after the first one; at that moment one `review_queue` item (`kind='board_verify'`, `reason: 'not_found_twice'`) is opened unless an open `board_verify` item for the board already exists. A 404 never advances `last_polled_at`, so it never counts as a poll without a posting for `job_closed` (SPEC section 5 rule 3). A 200 calls `base.record_board_ok`, which resets the count, sets `last_polled_at`, turns a `dead` board back to `active` and resolves that item. The collector never writes `last_verified_at`; that column is discovery's ownership verification (SPEC section 4 step 5). The rule is the same for all four ATS collectors: see [ADR 0015](../decisions/0015-ats-404-and-reverification.md).
 
-`ats_boards` has no column for a 404 streak, and `base.py` has no helper for one. The open
-review item is where the streak is kept. It is private to this module.
-
-`last_polled_at` is changed only by a successful poll (in `base.sync_board_postings`), so a
-transient 404 never counts as a poll in which postings were missing. `last_verified_at` is
-set on every successful poll.
+Boards whose status is `active` or `dead` are requested (a dead board that answers again is revived); `paused`, `no_board` and `unsupported` boards are never requested.
 
 ## Legal note
 

@@ -15,8 +15,11 @@ lists every published job on one board; no key is needed. This module is only
 * Idempotency key ``greenhouse:{board_token}:{job.id}:{updated_at}``: the posting key
   is built by ``base`` from ``vendor:identifier:external_id`` and
   ``ObservedPosting.version`` is ``updated_at`` (normalised to UTC by ``iso_utc``).
-* A board that answers 404 twice in a row is marked ``status='dead'``; the first
-  404 is recorded by advancing ``last_polled_at`` without ``last_verified_at``.
+* Board liveness is the shared ADR 0015 rule: a 200 calls
+  :func:`~tell.collectors.base.record_board_ok`, a 404 calls
+  :func:`~tell.collectors.base.record_board_not_found` (``dead`` after two 404s at
+  least 12 hours apart, plus one ``board_verify`` review item). A 404 never advances
+  ``last_polled_at``; this module never writes ``last_verified_at``.
 """
 
 from __future__ import annotations
@@ -43,6 +46,8 @@ from tell.collectors.base import (
     ObservedPosting,
     RunResult,
     iso_utc,
+    record_board_not_found,
+    record_board_ok,
     sync_board_postings,
     write_events,
 )
@@ -384,28 +389,10 @@ def _sync(
     observed = parse(response)
     events = sync_board_postings(session, board, observed, run_id=run_id, now=now)
     stats = write_events(session, events)
-    board.last_verified_at = now
-    if board.status == "dead":
-        board.status = "active"
-    session.flush()
+    record_board_ok(session, board, now=now)
     return RunResult(
         fetched=len(response.jobs), inserted=stats.inserted, skipped=stats.skipped, events=events
     )
-
-
-def _record_not_found(board: AtsBoard, now: datetime) -> None:
-    """First 404: remember it via ``last_polled_at``; a second consecutive 404: ``dead``.
-
-    ``ats_boards`` has no failure counter, so "the previous poll was a 404" is read as
-    "the board was polled after it was last verified" (every successful poll sets both
-    to the same instant). Discovery re-verifying a board resets the count.
-    """
-    previous_poll = board.last_polled_at
-    verified = board.last_verified_at
-    previous_was_404 = previous_poll is not None and (verified is None or verified < previous_poll)
-    if previous_was_404:
-        board.status = "dead"
-    board.last_polled_at = now
 
 
 def ingest_board(
@@ -420,9 +407,9 @@ def ingest_board(
 ) -> RunResult:
     """Poll one Greenhouse board and write its ``job_*`` events (no commit).
 
-    On success: ``sync_board_postings`` + ``write_events``, ``last_polled_at`` and
-    ``last_verified_at`` set to ``now``. On 404: nothing fetched, the 404 recorded
-    (``status='dead'`` after the second consecutive one) and an empty result.
+    On success: ``sync_board_postings`` + ``write_events`` + ``record_board_ok``
+    (``last_polled_at = now``, 404 streak reset, a ``dead`` board revived). On 404:
+    nothing fetched, ``record_board_not_found`` (ADR 0015) and an empty result.
     Other HTTP failures propagate to the caller, which counts them as run errors.
     """
     if board.vendor != SOURCE:
@@ -433,8 +420,7 @@ def ingest_board(
     try:
         response = fetch_board(http, board.identifier, budget=budget, sleep=sleep)
     except BoardNotFoundError:
-        _record_not_found(board, now)
-        session.flush()
+        record_board_not_found(session, board, now=now)
         return RunResult(fetched=0, inserted=0, skipped=0, events=[])
     finally:
         if own_client:

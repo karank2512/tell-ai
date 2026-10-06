@@ -13,6 +13,12 @@ machine, events, idempotency) is :mod:`tell.collectors.base`.
   (the list response carries no public URL; the detail's slugged ``postingUrl`` is
   not used so the URL stays the same whether or not a detail was fetched).
 * Never kept: ``creator`` (a recruiter's name) and the description text.
+* Board liveness is the shared ADR 0015 rule: a 200 calls
+  :func:`~tell.collectors.base.record_board_ok`, a list-endpoint 404 calls
+  :func:`~tell.collectors.base.record_board_not_found` (``dead`` after two 404s at
+  least 12 hours apart, plus one ``board_verify`` review item). A 404 never advances
+  ``last_polled_at``; this module never writes ``last_verified_at``. A 404 on a
+  posting *detail* only costs that posting's content hash.
 """
 
 from __future__ import annotations
@@ -37,6 +43,8 @@ from tell.collectors.base import (
     ObservedPosting,
     RunResult,
     iso_utc,
+    record_board_not_found,
+    record_board_ok,
     sync_board_postings,
     write_events,
 )
@@ -452,22 +460,6 @@ def _descriptions(
     return texts
 
 
-def _record_not_found(board: AtsBoard, now: datetime) -> None:
-    """Count one 404: the second consecutive one marks the board ``dead``.
-
-    The previous poll also failed when the board was polled before and has not been
-    verified (answered 200) since: ``last_verified_at`` is ``NULL`` or older than
-    ``last_polled_at``. Transport errors and 5xx never touch either column, so only
-    polls that reached a final answer count.
-    """
-    previous_failed = board.last_polled_at is not None and (
-        board.last_verified_at is None or board.last_verified_at < board.last_polled_at
-    )
-    if previous_failed:
-        board.status = "dead"
-    board.last_polled_at = now
-
-
 def ingest_board(
     session: Session,
     board: AtsBoard,
@@ -480,10 +472,10 @@ def ingest_board(
 ) -> RunResult:
     """Poll one board: list, detail for new ids, sync ``postings``, write events.
 
-    On success sets ``last_verified_at = now`` (``sync_board_postings`` sets
-    ``last_polled_at``) and revives a ``dead`` board. On a 404 writes nothing,
-    records the poll, and marks the board ``dead`` after the second consecutive 404.
-    Other HTTP failures propagate and leave the board untouched.
+    On success calls ``record_board_ok`` (``last_polled_at = now``, 404 streak reset,
+    a ``dead`` board revived). On a list 404 writes no events and calls
+    ``record_board_not_found`` (ADR 0015). Other HTTP failures propagate and leave the
+    board untouched.
     """
     own_client = client is None
     http = client if client is not None else make_client()
@@ -492,8 +484,7 @@ def ingest_board(
             listing = fetch_board(http, board.identifier, budget=budget, sleep=sleep)
         except BoardNotFoundError as exc:
             _logger.warning("%s", exc)
-            _record_not_found(board, now)
-            session.flush()
+            record_board_not_found(session, board, now=now)
             return RunResult(fetched=0, inserted=0, skipped=0, events=[])
         known = _known_hashes(session, board)
         new_ids = list(dict.fromkeys(item.id for item in listing.content if item.id not in known))
@@ -508,10 +499,7 @@ def ingest_board(
     ]
     events = sync_board_postings(session, board, observed, run_id=run_id, now=now)
     stats = write_events(session, events)
-    board.last_verified_at = now
-    if board.status == "dead":
-        board.status = "active"
-    session.flush()
+    record_board_ok(session, board, now=now)
     return RunResult(
         fetched=len(listing.content), inserted=stats.inserted, skipped=stats.skipped, events=events
     )
@@ -551,7 +539,7 @@ def run_fixture(session: Session, case_path: Path, /, *, run_id: str, now: datet
     observed = parse(listing, identifier=FIXTURE_IDENTIFIER)
     events = sync_board_postings(session, board, observed, run_id=run_id, now=now)
     stats = write_events(session, events)
-    session.flush()
+    record_board_ok(session, board, now=now)
     return RunResult(
         fetched=len(listing.content), inserted=stats.inserted, skipped=stats.skipped, events=events
     )

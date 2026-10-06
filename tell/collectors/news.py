@@ -21,18 +21,31 @@ Every kept headline goes through :func:`tell.collectors.news_classify.classify`;
 unclassified items are not stored (counted as skipped). One event per article URL:
 ``external_id = url``, ``version = "1"``, so ``event_id = sha256("news|<url>|1")``;
 the SPEC key ``news:{sha256(url)}`` is in ``payload.key``. The payload is exactly
-``title, source, matched_regex, category, query, match, key``: never article text.
+``title, title_redacted, source, matched_regex, category, query, match, key``: never
+article text. Leadership headlines are stored redacted
+(:func:`tell.collectors.news_classify.redact_leadership`, ADR 0016, provisional):
+``title`` has the person's name replaced with ``[person]`` (or is only the role
+phrase) and ``title_redacted`` is ``true``; every other category stores the title
+unchanged with ``title_redacted = false``.
 
 Politeness: 1 request per second per host (``TELL_RATE_NEWS_RPS``), no retries. A
-429 or 503 from Google News is a block: the run stops at once and ``runs.notes``
-records ``"blocked": true`` (a block is a signal to slow down, not to retry). A
-company polled less than 6 hours ago is skipped (``runs.notes["polled"]`` of the
-news runs in the last 6 hours); a company feed is not re-polled before
-``company_feeds.last_polled_at + 6h``.
+429 or 503 from Google News is a block: the run stops at once and finishes
+``failed`` with ``runs.notes["blocked"] = true``, so the SPEC section 11 dead-man
+notices a block that persists (a block is a signal to slow down, not to retry). A
+company feed is not re-polled before ``company_feeds.last_polled_at + 6h``.
 
-Rotation (SPEC section 11): every run polls the companies with any event in the
-last 30 days and every watchlist member; the long tail is spread over the week by
-``company id % 7 == now.weekday()`` (UTC).
+Rotation (PLAN Phase 4, SPEC section 11), read from ``runs.notes["polled"]`` of the
+news runs of the last 7 days: watchlist members and companies with any event in
+the last 30 days are polled at most once per 24 hours; the long tail only on its
+weekday (``company id % 7 == now.weekday()``, UTC) and at most once per 7 days. Both
+intervals allow one hour of slack for cron start jitter. Explicit ``company_ids``
+replace the rotation and only respect the 6-hour cache.
+
+Budget per run: at most :data:`MAX_COMPANIES` companies (watchlist members first,
+then the active companies, then the long tail; least recently polled first within
+each group) and :data:`RUN_BUDGET` of wall-clock time. A run that hits either stops
+cleanly, keeps what it wrote, finishes ``ok`` and says so in ``runs.notes``
+(``deferred``, ``budget_exhausted``).
 
 :func:`ingest` is the entry point for ``tell ingest --source news``: it opens the
 run, calls :func:`collect` and closes the run with the notes the next run reads.
@@ -45,7 +58,7 @@ import logging
 import re
 import time
 import unicodedata
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -72,7 +85,7 @@ from tell.collectors.base import (
     utcnow,
     write_events,
 )
-from tell.collectors.news_classify import classify, event_type
+from tell.collectors.news_classify import classify, event_type, redact_leadership
 from tell.config import get_settings
 from tell.http import HostRateBudgets, RetryExhausted, fetch, make_client
 from tell.models import Company, CompanyFeed, EventRow, Run, WatchlistItem
@@ -80,6 +93,8 @@ from tell.models import Company, CompanyFeed, EventRow, Run, WatchlistItem
 __all__ = [
     "COLLECTOR",
     "FALLBACK_PATHS",
+    "MAX_COMPANIES",
+    "RUN_BUDGET",
     "SOURCE",
     "CompanyRef",
     "DiscoveredFeed",
@@ -94,6 +109,7 @@ __all__ = [
     "google_news_url",
     "headline",
     "ingest",
+    "last_polled",
     "name_in_title",
     "news_key",
     "on_domain",
@@ -108,11 +124,25 @@ GOOGLE_NEWS_HOST: Final = "news.google.com"
 FIXTURE_DIR: Final = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / SOURCE
 
 CACHE_TTL: Final = timedelta(hours=6)
-"""A company (or a company feed) polled less than this long ago is skipped."""
+"""A company feed (or an explicitly requested company) polled less than this long ago
+is skipped."""
 ACTIVE_WINDOW: Final = timedelta(days=30)
-"""Companies with any event in this window are polled every run (SPEC section 11)."""
+"""Companies with any event in this window are priority companies (SPEC section 11)."""
 ROTATION_DAYS: Final = 7
 """The long tail is polled once a week: ``company id % 7 == now.weekday()``."""
+PRIORITY_INTERVAL: Final = timedelta(hours=24)
+"""Watchlist members and active companies are polled at most once per this interval."""
+LONG_TAIL_INTERVAL: Final = timedelta(days=ROTATION_DAYS)
+"""Long-tail companies are polled at most once per this interval."""
+SCHEDULE_SLACK: Final = timedelta(hours=1)
+"""Taken off both intervals so cron start jitter does not push a poll a whole run later."""
+POLL_LOOKBACK: Final = timedelta(days=ROTATION_DAYS)
+"""How far back the ``runs.notes["polled"]`` history is read."""
+MAX_COMPANIES: Final = 1200
+"""Companies per run: 1,200 Google News queries at 1 rps is 20 minutes, inside the
+30-minute ``filings`` job with margin."""
+RUN_BUDGET: Final = timedelta(minutes=25)
+"""Wall-clock budget per run; the run stops cleanly before the next company after it."""
 DISCOVERY_RETRY: Final = timedelta(days=30)
 """A domain where discovery found no feed is not probed again for this long."""
 
@@ -325,8 +355,10 @@ def derive_events(
         if category is None or rule is None:
             dropped += 1
             continue
+        redacted = category == "leadership"
         payload: dict[str, Any] = {
-            "title": item.title,
+            "title": redact_leadership(text) if redacted else item.title,
+            "title_redacted": redacted,
             "source": item.source,
             "matched_regex": rule,
             "category": category,
@@ -369,6 +401,8 @@ class NewsRunResult:
     blocked: dict[str, Any] | None = None
     drift: str | None = None
     selected: int = 0
+    deferred: int = 0
+    budget_exhausted: bool = False
 
     def record(self, session: Session, fetched: int, events: list[Event], dropped: int) -> None:
         stats = write_events(session, events)
@@ -381,8 +415,11 @@ class NewsRunResult:
     def notes(self) -> dict[str, Any]:
         notes: dict[str, Any] = {
             "polled": dict(self.polled),
+            "polled_count": len(self.polled),
             "no_feed": list(self.no_feed),
             "selected": self.selected,
+            "deferred": self.deferred,
+            "budget_exhausted": self.budget_exhausted,
             "blocked": self.blocked is not None,
         }
         if self.blocked is not None:
@@ -401,12 +438,7 @@ def _news_runs_since(session: Session, since: datetime) -> Iterable[Mapping[str,
             yield notes
 
 
-def recently_polled(session: Session, now: datetime) -> dict[int, datetime]:
-    """Company id -> last Google News poll, for polls less than 6 hours before ``now``.
-
-    Read from ``runs.notes["polled"]`` of the news runs started in that window.
-    """
-    since = now - CACHE_TTL
+def _polled_since(session: Session, now: datetime, since: datetime) -> dict[int, datetime]:
     polled: dict[int, datetime] = {}
     for notes in _news_runs_since(session, since):
         entries = notes.get("polled")
@@ -422,6 +454,20 @@ def recently_polled(session: Session, now: datetime) -> dict[int, datetime]:
     return polled
 
 
+def last_polled(session: Session, now: datetime) -> dict[int, datetime]:
+    """Company id -> last Google News poll in the 7 days before ``now``.
+
+    Read from ``runs.notes["polled"]`` of the news runs started in that window
+    (whatever their status, so a blocked run's polls still count).
+    """
+    return _polled_since(session, now, now - POLL_LOOKBACK)
+
+
+def recently_polled(session: Session, now: datetime) -> dict[int, datetime]:
+    """Company id -> last Google News poll, for polls less than 6 hours before ``now``."""
+    return _polled_since(session, now, now - CACHE_TTL)
+
+
 def _recent_discovery_misses(session: Session, now: datetime) -> set[int]:
     misses: set[int] = set()
     for notes in _news_runs_since(session, now - DISCOVERY_RETRY):
@@ -434,37 +480,56 @@ def _recent_discovery_misses(session: Session, now: datetime) -> set[int]:
 def select_companies(
     session: Session, now: datetime, *, company_ids: Sequence[int] | None = None
 ) -> list[Company]:
-    """The companies this run polls, priority first (SPEC section 11 rotation).
+    """The companies due this run, in priority order (PLAN Phase 4 rotation).
 
-    Every run: companies with any event in the last 30 days and every watchlist
-    member, then the long-tail bucket ``id % 7 == now.weekday()`` (UTC). Explicit
-    ``company_ids`` replace the rotation. Either way a company polled less than 6
-    hours ago (:func:`recently_polled`) is left out.
+    Groups, in order: watchlist members, companies with any event in the last 30
+    days, then the long-tail bucket ``id % 7 == now.weekday()`` (UTC). The first two
+    are due when not polled in the last 24 hours, the long tail when not polled in
+    the last 7 days (both less :data:`SCHEDULE_SLACK`). Within a group the least
+    recently polled come first, then by id, so a run cut short by the budget resumes
+    with the companies it left out. Explicit ``company_ids`` replace the rotation and
+    only skip companies polled less than 6 hours ago.
     """
-    recent = recently_polled(session, now)
     if company_ids is not None:
+        recent = recently_polled(session, now)
         chosen = session.scalars(
             select(Company).where(Company.id.in_(list(company_ids))).order_by(Company.id)
         ).all()
         return [company for company in chosen if company.id not in recent]
 
-    active = select(EventRow.company_id).where(
-        EventRow.company_id.is_not(None),
-        EventRow.occurred_at >= now - ACTIVE_WINDOW,
-        EventRow.occurred_at <= now,
-    )
-    watched = select(WatchlistItem.company_id)
-    priority = set(
+    watched = set(session.scalars(select(WatchlistItem.company_id).distinct()))
+    active = set(
         session.scalars(
-            select(Company.id).where(or_(Company.id.in_(active), Company.id.in_(watched)))
+            select(EventRow.company_id)
+            .where(
+                EventRow.company_id.is_not(None),
+                EventRow.occurred_at >= now - ACTIVE_WINDOW,
+                EventRow.occurred_at <= now,
+            )
+            .distinct()
         )
     )
+    last = last_polled(session, now)
     weekday = now.astimezone(UTC).weekday()
     stmt = select(Company).where(
-        or_(Company.id.in_(priority), Company.id % ROTATION_DAYS == weekday)
+        or_(Company.id.in_(sorted(watched | active)), Company.id % ROTATION_DAYS == weekday)
     )
-    chosen = [company for company in session.scalars(stmt) if company.id not in recent]
-    return sorted(chosen, key=lambda company: (company.id not in priority, company.id))
+
+    def group(company: Company) -> int:
+        if company.id in watched:
+            return 0
+        return 1 if company.id in active else 2
+
+    def due(company: Company) -> bool:
+        previous = last.get(company.id)
+        interval = PRIORITY_INTERVAL if group(company) < 2 else LONG_TAIL_INTERVAL
+        return previous is None or now - previous >= interval - SCHEDULE_SLACK
+
+    never = datetime.min.replace(tzinfo=UTC)
+    chosen = [company for company in session.scalars(stmt) if due(company)]
+    return sorted(
+        chosen, key=lambda company: (group(company), last.get(company.id, never), company.id)
+    )
 
 
 # --- HTTP ------------------------------------------------------------------------------------
@@ -770,9 +835,15 @@ def collect(
     client: httpx.Client | None = None,
     company_ids: Sequence[int] | None = None,
     budgets: HostRateBudgets | None = None,
+    max_companies: int = MAX_COMPANIES,
+    budget: timedelta = RUN_BUDGET,
+    clock: Callable[[], float] = time.monotonic,
 ) -> NewsRunResult:
     """Poll Google News and company feeds for this run's companies and write events.
 
+    Polls at most ``max_companies`` companies in :func:`select_companies` order and
+    starts no company once ``budget`` of ``clock`` time has passed
+    (``budget_exhausted``); the companies left out are counted in ``deferred``.
     Stops at the first Google News block (429/503) or contract failure; everything
     written before that stays. Flushes, never commits. The caller (normally
     :func:`ingest`) closes the run with :attr:`NewsRunResult.notes`.
@@ -786,11 +857,19 @@ def collect(
         run_id=run_id,
         now=now,
     )
+    started = clock()
     try:
         companies = select_companies(session, now, company_ids=company_ids)
         run.result.selected = len(companies)
         run.misses = _recent_discovery_misses(session, now)
-        for company in companies:
+        queue = companies[: max(max_companies, 0)]
+        attempted = 0
+        for company in queue:
+            if clock() - started >= budget.total_seconds():
+                run.result.budget_exhausted = True
+                _logger.warning("news: run budget of %s used up; stopping cleanly", budget)
+                break
+            attempted += 1
             try:
                 answered = _poll_google_news(run, company)
             except _BlockedError as blocked:
@@ -810,6 +889,7 @@ def collect(
                 run.result.polled[str(company.id)] = iso_utc(now)
             _company_feeds(run, company)
             session.flush()
+        run.result.deferred = len(companies) - attempted
     finally:
         if client is None:
             http.close()
@@ -823,11 +903,16 @@ def ingest(
     client: httpx.Client | None = None,
     company_ids: Sequence[int] | None = None,
     budgets: HostRateBudgets | None = None,
+    max_companies: int = MAX_COMPANIES,
+    budget: timedelta = RUN_BUDGET,
+    clock: Callable[[], float] = time.monotonic,
 ) -> Run:
     """One news run: ``start_run``, :func:`collect`, ``finish_run`` with the notes.
 
-    A block still finishes ``ok`` (with ``notes.blocked = true`` and one error); a
-    contract failure finishes ``failed``. Flushes, never commits.
+    A Google News block finishes ``failed`` (``notes.blocked = true``, one error) so
+    the SPEC section 11 dead-man sees a block that persists; a contract failure also
+    finishes ``failed``. A run cut short by its budget finishes ``ok``. Flushes, never
+    commits.
     """
     started = now or utcnow()
     run_id = start_run(session, SOURCE, now=started)
@@ -838,12 +923,16 @@ def ingest(
         client=client,
         company_ids=company_ids,
         budgets=budgets,
+        max_companies=max_companies,
+        budget=budget,
+        clock=clock,
     )
-    errors = result.errors + (1 if result.blocked is not None else 0)
+    blocked = result.blocked is not None
+    errors = result.errors + (1 if blocked else 0)
     return finish_run(
         session,
         run_id,
-        status="failed" if result.drift is not None else "ok",
+        status="failed" if blocked or result.drift is not None else "ok",
         fetched=result.fetched,
         inserted=result.inserted,
         skipped=result.skipped,

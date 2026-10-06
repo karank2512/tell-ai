@@ -9,7 +9,7 @@ Collector: `tell/collectors/smartrecruiters.py` (`COLLECTOR.source = "smartrecru
 | List postings | `GET https://api.smartrecruiters.com/v1/companies/{companyIdentifier}/postings?limit=100&offset={offset}` | Every poll. Starts at `offset=0` and adds 100 while `offset < totalFound`; stops early on an empty page, and after 200 pages at most |
 | Posting detail | `GET https://api.smartrecruiters.com/v1/companies/{companyIdentifier}/postings/{id}` | Only for ids not yet in `postings` for that board. A 404 (withdrawn between the two calls) or an exhausted retry skips the description; the posting is still recorded, just without `content_hash` |
 
-Both are public and need no key. Requests go through `tell.http.fetch` with the project User-Agent `tell/0.1 (+https://github.com/karankapur/tell)`.
+Both are public and need no key. Requests go through `tell.http.fetch` with the project User-Agent `tell/0.1 (+https://github.com/karank2512/tell-ai)`.
 
 ## Identifier
 
@@ -43,7 +43,7 @@ SmartRecruiters publishes no rate limit for the public Posting API. The collecto
 - backs off on 429 and 5xx (1, 2, 4, 8 s, honouring `Retry-After`) and never retries other 4xx;
 - makes the second (detail) call only for postings it has not seen before, so a steady-state poll costs `ceil(totalFound / 100)` requests.
 
-**404 handling.** A 404 on the list call writes nothing and records the poll in `last_polled_at`. The board goes to `status = 'dead'` on the second consecutive 404. "Consecutive" means the previous poll also ended in a 404: `last_verified_at` is null or older than `last_polled_at`. A successful poll sets `last_verified_at`, and it moves a `dead` board back to `active`. Transport errors and exhausted 5xx retries do not change either column. Because a 404 counts as a poll, a posting missing from the next successful poll at least 12 hours later is closed. This is the same "two consecutive polls without it" rule that SPEC section 5 applies to empty responses.
+**404 handling.** A 404 on the list call writes no events; `ingest_board` hands it to `base.record_board_not_found`: `not_found_count` goes up by one and `first_not_found_at` is set on the first 404 of a streak. The board becomes `status = 'dead'` once the count is at least 2 and the current 404 is at least 12 hours after the first one; at that moment one `review_queue` item (`kind='board_verify'`, `reason: 'not_found_twice'`) is opened unless an open `board_verify` item for the board already exists. A 404 never advances `last_polled_at`, so it never counts as a poll without a posting for `job_closed` (SPEC section 5 rule 3). A 200 calls `base.record_board_ok`, which resets the count, sets `last_polled_at`, turns a `dead` board back to `active` and resolves that item. The collector never writes `last_verified_at`; that column is discovery's ownership verification (SPEC section 4 step 5). The rule is the same for all four ATS collectors: see [ADR 0015](../decisions/0015-ats-404-and-reverification.md). Transport errors and exhausted 5xx retries change none of these columns. A 404 on a posting detail is not a board 404: it only skips that posting's content hash.
 
 ## Legal note
 

@@ -13,7 +13,7 @@ GET https://api.ashbyhq.com/posting-api/job-board/{jobBoardName}?includeCompensa
 One call per board returns every posting on it; there is no pagination and no
 detail call. `includeCompensation=true` adds the `compensation` object to each job.
 Built by `board_url()` + `fetch_board()` through `tell.http.fetch` with the project
-User-Agent (`TELL_HTTP_USER_AGENT`, default `tell/0.1 (+https://github.com/karankapur/tell)`).
+User-Agent (`TELL_HTTP_USER_AGENT`, default `tell/0.1 (+https://github.com/karank2512/tell-ai)`).
 
 ## Identifier
 
@@ -55,12 +55,7 @@ The pydantic contract (`AshbyJobBoard`) requires `apiVersion`, `jobs`, and per j
 - Poll each board at most every 6 hours (the scheduler reads `ats_boards.last_polled_at`).
 - 429 and 5xx: retried by `tell.http.fetch` with 1, 2, 4, 8 s backoff (or `Retry-After`,
   capped at 120 s), then `RetryExhausted` propagates and the run records an error.
-- 404: not retried. The first 404 sets `last_polled_at` only; a second consecutive
-  404 sets `ats_boards.status = 'dead'`. A successful poll sets `last_verified_at`,
-  which resets the streak. A 404 never counts as an observation for `job_closed`:
-  the next successful poll restores `last_polled_at` to the last successful poll
-  before the state machine runs. Spec section 4 asks discovery to re-verify a board
-  after two 404s; that hook belongs to Phase 3.
+- 404: not retried. `ingest_board` hands it to `base.record_board_not_found`: `not_found_count` goes up by one and `first_not_found_at` is set on the first 404 of a streak. The board becomes `status = 'dead'` once the count is at least 2 and the current 404 is at least 12 hours after the first one; at that moment one `review_queue` item (`kind='board_verify'`, `reason: 'not_found_twice'`) is opened unless an open `board_verify` item for the board already exists. A 404 never advances `last_polled_at`, so it never counts as a poll without a posting for `job_closed` (SPEC section 5 rule 3). A 200 calls `base.record_board_ok`, which resets the count, sets `last_polled_at`, turns a `dead` board back to `active` and resolves that item. The collector never writes `last_verified_at`; that column is discovery's ownership verification (SPEC section 4 step 5). The rule is the same for all four ATS collectors: see [ADR 0015](../decisions/0015-ats-404-and-reverification.md).
 - Any other 4xx raises `httpx.HTTPStatusError`.
 
 ## Legal note

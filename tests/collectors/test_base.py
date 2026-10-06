@@ -38,6 +38,8 @@ from tell.collectors.base import (
     iso_utc,
     new_run_id,
     parse_iso,
+    record_board_not_found,
+    record_board_ok,
     sha256_hex,
     start_run,
     sync_board_postings,
@@ -45,7 +47,15 @@ from tell.collectors.base import (
     utcnow,
     write_events,
 )
-from tell.models import AtsBoard, Company, EventRow, Posting, PostingObservation, Run
+from tell.models import (
+    AtsBoard,
+    Company,
+    EventRow,
+    Posting,
+    PostingObservation,
+    ReviewQueueItem,
+    Run,
+)
 from tell.signals import taxonomy
 
 pytestmark = pytest.mark.db
@@ -673,6 +683,113 @@ def test_events_carry_board_company(db_session: Session) -> None:
     events, _ = poll(db_session, board, [obs("j1", extra={"team": "GTM"})], now=T0)
     assert events[0].company_id == company.id
     assert events[0].payload["extra"] == {"team": "GTM"}
+
+
+# --- board liveness (ADR 0015) -----------------------------------------------------------------
+
+
+def verify_items(session: Session) -> list[ReviewQueueItem]:
+    stmt = select(ReviewQueueItem).where(ReviewQueueItem.kind == "board_verify")
+    return list(session.scalars(stmt.order_by(ReviewQueueItem.id)))
+
+
+def test_not_found_counts_without_touching_poll_or_verify_times(
+    db_session: Session, board: AtsBoard
+) -> None:
+    board.last_polled_at = T0 - DAY
+    board.last_verified_at = T0 - 2 * DAY
+    assert record_board_not_found(db_session, board, now=T0) == "active"
+    assert (board.not_found_count, board.first_not_found_at) == (1, T0)
+    assert record_board_not_found(db_session, board, now=T0 + 11 * H) == "active"
+    assert (board.not_found_count, board.first_not_found_at) == (2, T0)
+    assert (board.last_polled_at, board.last_verified_at) == (T0 - DAY, T0 - 2 * DAY)
+    assert verify_items(db_session) == []
+    # Third 404, now >= 12h after the first of the streak: dead.
+    assert record_board_not_found(db_session, board, now=T0 + 12 * H) == "dead"
+    (item,) = verify_items(db_session)
+    assert item.payload == {
+        "board_id": board.id,
+        "vendor": "synthetic",
+        "identifier": "acme",
+        "reason": "not_found_twice",
+        "first_not_found_at": "2026-10-05T12:00:00+00:00",
+        "last_not_found_at": "2026-10-06T00:00:00+00:00",
+    }
+    assert (item.status, item.created_at) == ("open", T0 + 12 * H)
+
+
+def test_an_open_item_for_the_board_is_never_duplicated(
+    db_session: Session, board: AtsBoard
+) -> None:
+    db_session.add(
+        ReviewQueueItem(
+            kind="board_verify",
+            payload={"domain": "acme.test", "vendor": "synthetic", "identifier": "acme"},
+        )
+    )
+    db_session.flush()
+    record_board_not_found(db_session, board, now=T0)
+    assert record_board_not_found(db_session, board, now=T0 + 12 * H) == "dead"
+    assert len(verify_items(db_session)) == 1
+    # A 200 resolves only the item the 404 rule opens, never someone else's.
+    record_board_ok(db_session, board, now=T0 + 13 * H)
+    assert [i.status for i in verify_items(db_session)] == ["open"]
+
+
+def test_a_resolved_item_lets_a_still_dead_board_open_a_new_one(
+    db_session: Session, board: AtsBoard
+) -> None:
+    record_board_not_found(db_session, board, now=T0)
+    record_board_not_found(db_session, board, now=T0 + 12 * H)
+    (first,) = verify_items(db_session)
+    first.status = "resolved"
+    db_session.flush()
+    record_board_not_found(db_session, board, now=T0 + 18 * H)
+    assert [i.status for i in verify_items(db_session)] == ["resolved", "open"]
+
+
+def test_a_paused_board_keeps_its_status(db_session: Session, board: AtsBoard) -> None:
+    board.status = "paused"
+    record_board_not_found(db_session, board, now=T0)
+    assert record_board_not_found(db_session, board, now=T0 + DAY) == "paused"
+    assert board.not_found_count == 2
+    assert verify_items(db_session) == []
+
+
+def test_board_ok_resets_revives_and_resolves(db_session: Session, board: AtsBoard) -> None:
+    board.last_verified_at = T0 - DAY
+    record_board_not_found(db_session, board, now=T0)
+    record_board_not_found(db_session, board, now=T0 + 12 * H)
+    record_board_ok(db_session, board, now=T0 + 13 * H)
+    assert (board.status, board.not_found_count, board.first_not_found_at) == ("active", 0, None)
+    assert board.last_polled_at == T0 + 13 * H
+    assert board.last_verified_at == T0 - DAY
+    (item,) = verify_items(db_session)
+    assert (item.status, item.resolved_at) == ("resolved", T0 + 13 * H)
+
+
+def test_board_ok_on_a_healthy_board_only_stamps_the_poll(
+    db_session: Session, board: AtsBoard
+) -> None:
+    record_board_ok(db_session, board, now=T0)
+    assert (board.status, board.not_found_count, board.last_polled_at) == ("active", 0, T0)
+    assert board.last_verified_at is None
+
+
+def test_liveness_helpers_persist_transient_boards_and_need_aware_clocks(
+    db_session: Session,
+) -> None:
+    fresh = AtsBoard(vendor="synthetic", identifier="fresh", confidence=Decimal("0.60"))
+    assert record_board_not_found(db_session, fresh, now=T0) == "active"
+    assert fresh.id is not None
+    other = AtsBoard(vendor="synthetic", identifier="other", confidence=Decimal("0.60"))
+    record_board_ok(db_session, other, now=T0)
+    assert other.id is not None
+    naive = datetime(2026, 10, 5, 12, 0)  # deliberately naive
+    with pytest.raises(ValueError, match="timezone-aware"):
+        record_board_not_found(db_session, fresh, now=naive)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        record_board_ok(db_session, fresh, now=naive)
 
 
 # --- registration contract, exercised with a synthetic collector ----------------------------------

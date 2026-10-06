@@ -1,7 +1,8 @@
 """Schema parity: models == migration == the DDL in docs/SPEC.md section 5.
 
-Two recorded deviations: ``postings.version_marker`` (migration ``0002``, ADR 0013) and
-the ``company_feeds`` table (migration ``0003``, ADR 0014).
+Three recorded deviations: ``postings.version_marker`` (migration ``0002``, ADR 0013),
+the ``company_feeds`` table (migration ``0003``, ADR 0014) and the ``ats_boards`` 404
+streak columns ``not_found_count`` / ``first_not_found_at`` (migration ``0004``, ADR 0015).
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from tests.conftest import alembic_config
 
 pytestmark = pytest.mark.db
 
-HEAD_REVISION = "0003"
+HEAD_REVISION = "0004"
 
 # --- the spec, hardcoded -----------------------------------------------------------------
 
@@ -52,6 +53,8 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
         "status",
         "last_verified_at",
         "last_polled_at",
+        "not_found_count",  # ADR 0015, migration 0004
+        "first_not_found_at",  # ADR 0015, migration 0004
     ],
     "postings": [
         "id",
@@ -198,7 +201,13 @@ EXPECTED_INDEXES: dict[str, dict[str, tuple[list[str], dict[str, str]]]] = {
 EXPECTED_NULLABLE: dict[str, set[str]] = {
     "companies": {"legal_name", "cik", "hq_city", "hq_state", "hq_country", "github_org"},
     "company_aliases": set(),
-    "ats_boards": {"company_id", "discovered_from", "last_verified_at", "last_polled_at"},
+    "ats_boards": {
+        "company_id",
+        "discovered_from",
+        "last_verified_at",
+        "last_polled_at",
+        "first_not_found_at",
+    },
     "postings": {
         "department",
         "location",
@@ -226,6 +235,7 @@ EXPECTED_SERVER_DEFAULTS: dict[tuple[str, str], str] = {
     ("companies", "created_at"): "now()",
     ("companies", "updated_at"): "now()",
     ("ats_boards", "status"): "'active'",
+    ("ats_boards", "not_found_count"): "0",
     ("events", "magnitude"): "1",
     ("watchlists", "icp_profile"): "'default'",
     ("feedback", "created_at"): "now()",
@@ -244,6 +254,8 @@ EXPECTED_TYPES: dict[tuple[str, str], str] = {
     ("companies", "domain"): "TEXT",
     ("companies", "created_at"): "TIMESTAMP WITH TIME ZONE",
     ("ats_boards", "confidence"): "NUMERIC(3, 2)",
+    ("ats_boards", "not_found_count"): "INTEGER",
+    ("ats_boards", "first_not_found_at"): "TIMESTAMP WITH TIME ZONE",
     ("postings", "remote"): "BOOLEAN",
     ("postings", "version_marker"): "TEXT",
     ("events", "magnitude"): "NUMERIC",
