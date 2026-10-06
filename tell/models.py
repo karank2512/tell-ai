@@ -21,7 +21,9 @@ news collector discovers (spec section 3.7) and their conditional-request
 validators, which section 5 has nowhere to keep. ``ats_boards.not_found_count`` and
 ``ats_boards.first_not_found_at`` (migration ``0004``,
 ``docs/decisions/0015-ats-404-and-reverification.md``) carry the 404 streak that
-decides when a board is ``dead``.
+decides when a board is ``dead``. The ``posting_ghost_votes`` table (migration
+``0005``, ``docs/decisions/0017-posting-ghost-votes.md``) stores the job-seeker "this
+looks like a ghost job" votes spec section 7 counts; they stay inert until 500 votes.
 ``api_keys`` / ``api_usage`` arrive with Phase 9 in their own migration.
 """
 
@@ -396,6 +398,23 @@ class CompanyFeed(Base):
     )
 
 
+class PostingGhostVote(Base):
+    """One job-seeker "this looks like a ghost job" vote on a posting (ADR 0017, migration 0005).
+
+    Anonymous by design: no voter identity is stored, only when and through which
+    surface (``source``, e.g. ``site``) the vote arrived. Spec section 7 keeps the
+    count inert (it changes no weight) until there are 500 votes.
+    """
+
+    __tablename__ = "posting_ghost_votes"
+    __table_args__ = (Index(None, "posting_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    posting_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("postings.id"), nullable=False)
+    voted_at: Mapped[datetime] = mapped_column(_timestamptz(), nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 ALL_MODELS: tuple[type[Base], ...] = (
     Company,
     CompanyAlias,
@@ -411,5 +430,6 @@ ALL_MODELS: tuple[type[Base], ...] = (
     Run,
     ReviewQueueItem,
     CompanyFeed,
+    PostingGhostVote,
 )
 """Every mapped class, in DDL order then the recorded additions (tests, TRUNCATE lists)."""

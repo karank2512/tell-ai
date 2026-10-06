@@ -176,9 +176,10 @@ def test_hash_helpers() -> None:
     assert content_hash("a") != content_hash("b")
 
 
-def test_taxonomy_stubs_behave_as_documented() -> None:
-    assert taxonomy.normalize_title("  Senior   Account\tExecutive ") == "senior account executive"
-    assert isinstance(taxonomy.role_family("Account Executive", "Sales"), str)
+def test_taxonomy_hooks_used_by_the_state_machine() -> None:
+    # Phase 1 stubs replaced in Phase 6: seniority tokens are now stripped.
+    assert taxonomy.normalize_title("  Senior   Account\tExecutive ") == "account executive"
+    assert taxonomy.role_family("Account Executive", "Sales") == "sales"
     fp = taxonomy.fingerprint("account executive", "Sales", "NYC", False)
     assert re.fullmatch(r"[0-9a-f]{40}", fp)
     assert fp == taxonomy.fingerprint("account executive", "Sales", "NYC", False)
@@ -592,7 +593,8 @@ def test_reappearance_after_close_clears_closed_at(db_session: Session, board: A
     assert posting(db_session, board).closed_at is not None
 
     events, stats = poll(db_session, board, [obs("j1")], now=T0 + 2 * DAY)
-    assert events == []  # no second job_opened; Phase 6 adds job_reposted on top of this
+    # The same external_id coming back is the same posting reopened, not a repost (Phase 6).
+    assert events == []  # no second job_opened and no job_reposted
     assert stats.inserted == 0
     p = posting(db_session, board)
     assert p.closed_at is None
@@ -1025,3 +1027,189 @@ def test_discover_collectors_honours_tell_collectors_only(
 
     monkeypatch.setenv(base.COLLECTORS_ONLY_ENV, "nope")
     assert discover_collectors() == []
+
+
+# --- Phase 6: reposts, intern flags, tech keywords ---------------------------------------------------
+
+
+def test_job_payloads_carry_intern_and_repost_flags(db_session: Session, board: AtsBoard) -> None:
+    events, _ = poll(
+        db_session,
+        board,
+        [
+            obs("j1"),
+            obs("j2", title="Sales Intern"),
+            obs("j3", title="Data Engineer", extra={"commitment": "Contract"}),
+            obs("j4", title="Platform Engineer", extra={"employmentType": "FullTime"}),
+        ],
+        now=T0,
+    )
+    flags = {e.payload["posting_external_id"]: e.payload["is_intern"] for e in events}
+    assert flags == {"j1": False, "j2": True, "j3": True, "j4": False}
+    assert all(e.payload["repost_of_external_id"] is None for e in events)
+    assert all(e.payload["repost_reason"] is None for e in events)
+
+
+def test_observed_posting_commitment_and_keywords() -> None:
+    assert obs(extra={"type_of_employment": "Internship"}).commitment == "Internship"
+    assert obs(extra={"commitment": "  "}).commitment is None
+    assert obs().commitment is None
+    o = obs(description="We run Kubernetes, Snowflake and dbt.")
+    assert o.tech_keywords == ("kubernetes", "snowflake", "dbt")
+    assert o.description_plain is None
+    assert obs(description=None).tech_keywords == ()
+
+
+def test_new_external_id_after_close_within_30_days_is_a_repost(
+    db_session: Session, board: AtsBoard
+) -> None:
+    poll(db_session, board, [obs("j1")], now=T0)
+    poll(db_session, board, [], now=T0 + 6 * H)
+    events, _ = poll(db_session, board, [], now=T0 + 18 * H)
+    assert types_of(events) == ["job_closed"]
+
+    events, stats = poll(
+        db_session, board, [obs("j2", description="Reworded.", version="v9")], now=T0 + 10 * DAY
+    )
+    assert types_of(events) == ["job_reposted"]
+    assert stats.inserted == 1
+    reposted = events[0]
+    assert reposted.external_id == "synthetic:acme:j2"
+    assert reposted.version == iso_utc(T0 - 2 * DAY)
+    assert reposted.payload["repost_of_external_id"] == "j1"
+    assert reposted.payload["repost_reason"] == "closed_within_30d"
+    original = posting(db_session, board, "j1")
+    assert posting(db_session, board, "j2").repost_of == original.id
+    assert original.closed_at == T0 + 18 * H  # the original stays closed
+
+    # Later events about the repost keep naming the original.
+    events, _ = poll(db_session, board, [obs("j2", version="v10")], now=T0 + 11 * DAY)
+    assert types_of(events) == ["job_updated"]
+    assert events[0].payload["repost_of_external_id"] == "j1"
+    poll(db_session, board, [], now=T0 + 12 * DAY)
+    events, _ = poll(db_session, board, [], now=T0 + 13 * DAY)
+    assert types_of(events) == ["job_closed"]
+    assert events[0].payload["repost_of_external_id"] == "j1"
+    assert stored_types(db_session).count("job_opened") == 1
+
+
+def test_repost_prefers_the_closed_rule_and_the_latest_original(
+    db_session: Session, board: AtsBoard
+) -> None:
+    poll(db_session, board, [obs("a"), obs("b", title="Data Engineer")], now=T0)
+    poll(db_session, board, [obs("b", title="Data Engineer")], now=T0 + 6 * H)
+    poll(db_session, board, [obs("b", title="Data Engineer")], now=T0 + 18 * H)  # a closes
+    poll(db_session, board, [obs("c")], now=T0 + 2 * DAY)  # c reposts a
+    poll(db_session, board, [], now=T0 + 3 * DAY)
+    poll(db_session, board, [], now=T0 + 4 * DAY)  # b and c close
+    events, _ = poll(db_session, board, [obs("d")], now=T0 + 5 * DAY)
+    assert types_of(events) == ["job_reposted"]
+    assert events[0].payload["repost_of_external_id"] == "c"  # most recently closed
+
+
+def test_same_content_new_id_while_the_old_one_is_absent_is_a_repost(
+    db_session: Session, board: AtsBoard
+) -> None:
+    poll(db_session, board, [obs("j1")], now=T0)
+    events, _ = poll(db_session, board, [obs("j2")], now=T0 + DAY)
+    assert types_of(events) == ["job_reposted"]
+    assert events[0].payload["repost_reason"] == "same_content_within_7d"
+    # j2 stays listed, so j3 (same content) is not a repost of it; j1 is still absent
+    # and was seen within 7 days, so j3 reposts j1 (which closes in the same poll).
+    events, _ = poll(db_session, board, [obs("j2"), obs("j3")], now=T0 + 2 * DAY)
+    assert types_of(events) == ["job_reposted", "job_closed"]
+    assert events[0].payload["repost_of_external_id"] == "j1"
+    # While j1 stays closed (within 30 days) every new same-fingerprint id reposts it.
+    events, _ = poll(db_session, board, [obs("j2"), obs("j3"), obs("j4")], now=T0 + 3 * DAY)
+    assert types_of(events) == ["job_reposted"]
+    assert events[0].payload["repost_reason"] == "closed_within_30d"
+
+
+def tech_events(events: list[Event]) -> list[Event]:
+    return [e for e in events if e.type == "tech_mentioned_first_time"]
+
+
+def test_tech_keywords_first_time_per_board(db_session: Session, board: AtsBoard) -> None:
+    events, _ = poll(
+        db_session,
+        board,
+        [
+            obs("j1", description="Our stack: Kubernetes, Snowflake and dbt."),
+            obs("j2", title="Data Engineer", description="Snowflake, Airflow."),
+        ],
+        now=T0,
+    )
+    techs = tech_events(events)
+    assert [(e.external_id, e.version) for e in techs] == [
+        ("synthetic:acme:kubernetes", "j1"),
+        ("synthetic:acme:snowflake", "j1"),
+        ("synthetic:acme:dbt", "j1"),
+        ("synthetic:acme:airflow", "j2"),
+    ]
+    first = techs[0]
+    assert first.source == "synthetic"
+    assert first.url == "https://jobs.example.test/acme/j1"
+    assert first.occurred_at == T0 - 2 * DAY  # dated by the posting
+    assert first.company_id is None
+    assert first.payload == {
+        "keyword": "kubernetes",
+        "posting_title": "Account Executive",
+        "posting_external_id": "j1",
+        "vendor": "synthetic",
+        "board_identifier": "acme",
+        "scope": "synthetic:acme",
+    }
+    assert "Our stack" not in json.dumps([e.payload for e in events])
+
+    # Rerun and a later poll: nothing; a new posting with known keywords: nothing.
+    assert poll(db_session, board, [obs("j1"), obs("j2")], now=T0)[0] == []
+    events, _ = poll(
+        db_session,
+        board,
+        [obs("j1"), obs("j2"), obs("j3", title="SRE", description="Kubernetes on call.")],
+        now=T0 + 6 * H,
+    )
+    assert tech_events(events) == []
+
+    # A re-worded description bringing a new keyword: one event, dated now.
+    events, _ = poll(
+        db_session,
+        board,
+        [obs("j1", description="Now with Kubernetes and Terraform."), obs("j2"), obs("j3")],
+        now=T0 + 12 * H,
+    )
+    (terraform,) = tech_events(events)
+    assert (terraform.external_id, terraform.occurred_at) == (
+        "synthetic:acme:terraform",
+        T0 + 12 * H,
+    )
+
+
+def test_tech_keywords_are_scoped_by_company_across_boards(db_session: Session) -> None:
+    company = Company(domain="acme.test", name="Acme")
+    db_session.add(company)
+    db_session.flush()
+    first = AtsBoard(
+        vendor="synthetic", identifier="acme", confidence=Decimal("0.95"), company_id=company.id
+    )
+    second = AtsBoard(
+        vendor="synthetic", identifier="acme-eu", confidence=Decimal("0.95"), company_id=company.id
+    )
+    unresolved = AtsBoard(vendor="synthetic", identifier="loose", confidence=Decimal("0.50"))
+    db_session.add_all([first, second, unresolved])
+    db_session.flush()
+
+    events, _ = poll(db_session, first, [obs("j1", description="We use Rust, Go.")], now=T0)
+    assert [e.external_id for e in tech_events(events)] == [
+        f"{company.id}:rust",
+        f"{company.id}:go",
+    ]
+    assert all(e.company_id == company.id for e in tech_events(events))
+    events, _ = poll(db_session, second, [obs("k1", description="Rust and Kafka.")], now=T0)
+    assert [e.external_id for e in tech_events(events)] == [f"{company.id}:kafka"]
+    # A board with no company is its own scope.
+    events, _ = poll(db_session, unresolved, [obs("m1", description="Rust and Kafka.")], now=T0)
+    assert [e.external_id for e in tech_events(events)] == [
+        "synthetic:loose:kafka",  # table order
+        "synthetic:loose:rust",
+    ]

@@ -20,3 +20,4 @@ Template: [0000-template.md](0000-template.md). Each record covers one locked de
 | [0014](0014-company-feeds-table.md) | `company_feeds` keeps discovered company RSS/Atom feeds |
 | [0015](0015-ats-404-and-reverification.md) | One 404 / dead-board rule for every ATS collector |
 | [0016](0016-news-headline-redaction.md) | Leadership news headlines are stored with the person's name redacted (provisional, pending confirmation) |
+| [0017](0017-posting-ghost-votes.md) | `posting_ghost_votes` stores anonymous job-seeker ghost-job votes (inert until 500) |

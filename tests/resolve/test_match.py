@@ -1,0 +1,570 @@
+"""Rules R1-R6 (spec section 6): a positive and a negative case per rule, plus the resolver."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any
+
+import pytest
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from tell.models import AtsBoard, Company, CompanyAlias, EventRow, ReviewQueueItem
+from tell.resolve.match import (
+    CONFIDENCE,
+    AliasIndex,
+    Candidate,
+    MatchDecision,
+    add_aliases,
+    backfill_aliases,
+    match_name,
+    resolve_events,
+)
+from tell.resolve.review import apply_verdict
+
+NOW = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
+LATER = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
+
+
+def _company(session: Session, domain: str, name: str, **extra: Any) -> Company:
+    company = Company(domain=domain, name=name, **extra)
+    session.add(company)
+    session.flush()
+    return company
+
+
+@pytest.fixture
+def companies(db_session: Session) -> dict[str, Company]:
+    rows = {
+        "acme": _company(
+            db_session, "acme.com", "Acme", hq_city="San Francisco", hq_state="CA", hq_country="US"
+        ),
+        "robotics": _company(
+            db_session, "acmerobotics.com", "Acme Robotics", hq_city="New York", hq_state="NY"
+        ),
+        "zephyr": _company(
+            db_session, "zephyr.io", "Zephyr Technologies", hq_city="Austin", hq_state="TX"
+        ),
+        "beacon": _company(
+            db_session, "beaconhealth.com", "Beacon Health", hq_city="Boston", hq_state="MA"
+        ),
+    }
+    backfill_aliases(db_session)
+    return rows
+
+
+def _event(
+    session: Session,
+    event_id: str,
+    payload: dict[str, Any],
+    *,
+    source: str = "edgar",
+    type_: str = "form_d_filed",
+    company_id: int | None = None,
+) -> EventRow:
+    row = EventRow(
+        event_id=event_id,
+        company_id=company_id,
+        source=source,
+        type=type_,
+        occurred_at=NOW,
+        observed_at=NOW,
+        magnitude=Decimal(1),
+        url=f"https://example.test/{event_id}",
+        payload=payload,
+        run_id="test-run",
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _formd(name: str, state: str | None = "CA", **extra: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "accession_number": "0000000000-26-000001",
+        "cik": "0000012345",
+        "form_type": "D",
+        "issuer_name": name,
+        "issuer_city": "San Francisco",
+        "issuer_state": state,
+        "previous_names": [],
+        "amendments": [],
+    }
+    payload.update(extra)
+    return payload
+
+
+def _aliases(session: Session, company_id: int) -> dict[str, str]:
+    rows = session.execute(
+        select(CompanyAlias.alias, CompanyAlias.source).where(CompanyAlias.company_id == company_id)
+    )
+    return dict(rows.all())
+
+
+def _open_items(session: Session) -> list[ReviewQueueItem]:
+    stmt = select(ReviewQueueItem).where(
+        ReviewQueueItem.kind == "entity_match", ReviewQueueItem.status == "open"
+    )
+    return list(session.scalars(stmt))
+
+
+# --- backfill ----------------------------------------------------------------------------------
+
+
+def test_backfill_adds_names_domain_labels_and_board_slugs(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    acme = companies["acme"]
+    assert _aliases(db_session, acme.id) == {"acme": "manual"}
+    assert _aliases(db_session, companies["zephyr"].id) == {
+        "zephyr technologies": "manual",
+        "zephyr": "manual",
+    }
+    db_session.add(
+        AtsBoard(
+            company_id=acme.id,
+            vendor="greenhouse",
+            identifier="acme-widgets-inc",
+            confidence=Decimal("0.90"),
+        )
+    )
+    db_session.add(
+        AtsBoard(
+            company_id=acme.id, vendor="workday", identifier="wd5.acme", confidence=Decimal("0.90")
+        )
+    )
+    db_session.flush()
+    assert backfill_aliases(db_session) == 1
+    assert _aliases(db_session, acme.id) == {"acme": "manual", "acme widgets": "ats_board"}
+    # idempotent
+    assert backfill_aliases(db_session) == 0
+
+
+def test_add_aliases_rejects_unknown_source(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    with pytest.raises(ValueError, match="alias source"):
+        add_aliases(db_session, companies["acme"].id, ["x"], source="linkedin")
+    assert add_aliases(db_session, companies["acme"].id, ["", "..."], source="manual") == 0
+
+
+# --- rules -----------------------------------------------------------------------------------
+
+
+def test_r1_domain_wins_whatever_the_name(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    acme = companies["acme"]
+    decision = match_name(db_session, "Totally Unrelated Board Title", on_domain_company_id=acme.id)
+    assert (decision.rule, decision.confidence, decision.action) == ("R1", 0.98, "auto_link")
+    assert decision.company_id == acme.id
+    # R1 still logs what the name alone would have found.
+    assert all(isinstance(c, Candidate) for c in decision.candidates)
+
+
+def test_r1_negative_without_domain_evidence(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    decision = match_name(db_session, "Totally Unrelated Board Title")
+    assert decision.rule != "R1"
+    assert decision.company_id is None
+
+
+def test_r2_exact_alias(db_session: Session, companies: dict[str, Company]) -> None:
+    decision = match_name(db_session, "Acme, Inc.")
+    assert (decision.rule, decision.confidence, decision.action) == ("R2", 0.95, "auto_link")
+    assert decision.company_id == companies["acme"].id
+    assert decision.ratio == 100.0
+    assert decision.candidates[0].alias == "acme"
+
+
+def test_r2_matches_the_alt_form(db_session: Session, companies: dict[str, Company]) -> None:
+    decision = match_name(db_session, "Zephyr Tech Inc")
+    assert decision.rule == "R2"
+    assert decision.company_id == companies["zephyr"].id
+    # 3Scale-style digits: alias stored as "3scale", name spelled out, and vice versa.
+    three = _company(db_session, "3scale.net", "3Scale")
+    add_aliases(db_session, three.id, ["3Scale"], source="manual")
+    assert match_name(db_session, "ThreeScale, Inc.").company_id == three.id
+
+
+def test_r2_negative_shared_alias_is_ambiguous(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    add_aliases(db_session, companies["acme"].id, ["Shared Name"], source="manual")
+    add_aliases(db_session, companies["zephyr"].id, ["Shared Name"], source="manual")
+    decision = match_name(db_session, "Shared Name Inc")
+    assert decision.rule == "R5"
+    assert decision.company_id is None
+    assert {c.company_id for c in decision.candidates if c.ratio == 100.0} == {
+        companies["acme"].id,
+        companies["zephyr"].id,
+    }
+    # geography breaks the tie through R3
+    with_state = match_name(db_session, "Shared Name Inc", state="TX")
+    assert (with_state.rule, with_state.company_id) == ("R3", companies["zephyr"].id)
+
+
+def test_r3_name_plus_state(db_session: Session, companies: dict[str, Company]) -> None:
+    decision = match_name(db_session, "Beakon Health Inc", state="MA")
+    assert (decision.rule, decision.confidence, decision.action) == ("R3", 0.90, "auto_link")
+    assert decision.company_id == companies["beacon"].id
+    assert decision.ratio is not None
+    assert 92 <= decision.ratio < 95
+    # full state names fold to the Form D two-letter code
+    assert match_name(db_session, "Beakon Health Inc", state="Massachusetts").rule == "R3"
+
+
+def test_r3_city_when_state_missing(db_session: Session, companies: dict[str, Company]) -> None:
+    decision = match_name(db_session, "Beakon Health Inc", state=None, city="Boston")
+    assert (decision.rule, decision.company_id) == ("R3", companies["beacon"].id)
+    assert match_name(db_session, "Beakon Health Inc", state=None, city="Denver").rule != "R3"
+
+
+def test_r3_negative_wrong_state_falls_through(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    decision = match_name(db_session, "Beakon Health Inc", state="TX")
+    assert decision.rule == "R5"  # 92.3 with one candidate and no geography: review, not R3
+    assert decision.company_id is None
+    # a company without geography never satisfies R3
+    nogeo = _company(db_session, "nogeo.example", "Quartz Dynamics")
+    add_aliases(db_session, nogeo.id, ["Quartz Dynamics"], source="manual")
+    assert match_name(db_session, "Quartz Dynamix", state="CA").rule != "R3"
+
+
+def test_r4_unique_high_ratio(db_session: Session, companies: dict[str, Company]) -> None:
+    decision = match_name(db_session, "Beacon Health Systems LLC")
+    assert (decision.rule, decision.confidence, decision.action) == ("R4", 0.85, "auto_link")
+    assert decision.company_id == companies["beacon"].id
+    assert decision.ratio == 100.0
+
+
+def test_r4_negative_two_candidates_go_to_review(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    decision = match_name(db_session, "Acme Robotics Group")
+    assert (decision.rule, decision.confidence, decision.action) == ("R5", 0.60, "review")
+    assert decision.company_id is None
+    assert {c.company_id for c in decision.candidates[:2]} == {
+        companies["acme"].id,
+        companies["robotics"].id,
+    }
+
+
+def test_r5_single_candidate_between_85_and_91(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    decision = match_name(db_session, "Acmee Inc")
+    assert (decision.rule, decision.action) == ("R5", "review")
+    assert decision.ratio is not None
+    assert 85 <= decision.ratio <= 91
+    assert len([c for c in decision.candidates if c.ratio >= 85]) == 1
+
+
+def test_r5_negative_below_85_is_unlinked(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    decision = match_name(db_session, "Acq Inc")
+    assert decision.rule == "R6"
+    assert all(c.ratio < 85 for c in decision.candidates)
+
+
+def test_r6_nothing_close(db_session: Session, companies: dict[str, Company]) -> None:
+    decision = match_name(db_session, "Completely Different Enterprises")
+    assert (decision.rule, decision.confidence, decision.action) == ("R6", 0.0, "unlinked")
+    assert decision.company_id is None
+    assert all(c.ratio < 85 for c in decision.candidates)
+    assert len(decision.candidates) <= 5
+
+
+def test_r6_negative_a_close_name_does_not_land_in_r6(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    assert match_name(db_session, "Acme Inc").rule != "R6"
+    assert match_name(db_session, "Acmee Inc").rule != "R6"
+
+
+def test_empty_table_and_empty_name(db_session: Session) -> None:
+    decision = match_name(db_session, "Anyone")
+    assert decision.rule == "R6"
+    assert decision.candidates == []
+    _company(db_session, "acme.com", "Acme")
+    assert match_name(db_session, "...").rule == "R6"
+
+
+def test_candidates_capped_at_five_and_ranked(db_session: Session) -> None:
+    for n in range(8):
+        company = _company(db_session, f"acme{n}.example", f"Acme Group {n}")
+        add_aliases(db_session, company.id, [f"Acme Group {n}"], source="manual")
+    decision = match_name(db_session, "Acme Group Holdings")
+    assert len(decision.candidates) == 5
+    ratios = [c.ratio for c in decision.candidates]
+    assert ratios == sorted(ratios, reverse=True)
+    assert decision.rule == "R5"
+
+
+def test_confidence_table_is_the_spec_table() -> None:
+    assert CONFIDENCE == {"R1": 0.98, "R2": 0.95, "R3": 0.90, "R4": 0.85, "R5": 0.60, "R6": 0.0}
+
+
+def test_alias_index_reused_across_calls(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    index = AliasIndex.from_session(db_session)
+    size = len(index)
+    assert size >= 4
+    first = match_name(db_session, "Acme Inc", index=index)
+    index.add("brand new alias", companies["beacon"].id)
+    second = match_name(db_session, "Brand New Alias Inc", index=index)
+    assert (first.company_id, second.company_id) == (companies["acme"].id, companies["beacon"].id)
+    assert len(index) == size + 1
+    index.add("", companies["beacon"].id)
+    assert len(index) == size + 1
+
+
+def test_decision_audit_shape() -> None:
+    decision = MatchDecision(
+        rule="R4",
+        confidence=0.85,
+        company_id=7,
+        ratio=96.5,
+        candidates=[Candidate(7, "acme", 96.5)],
+        action="auto_link",
+    )
+    audit = decision.audit(now=NOW)
+    assert audit == {
+        "rule": "R4",
+        "ratio": 96.5,
+        "candidates": [{"company_id": 7, "alias": "acme", "ratio": 96.5}],
+        "confidence": 0.85,
+        "resolved_at": "2026-10-05T12:00:00+00:00",
+    }
+
+
+# --- resolve_events --------------------------------------------------------------------------
+
+
+def test_resolve_links_form_d_and_enriches_company(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    acme = companies["acme"]
+    _event(
+        db_session,
+        "ev-acme",
+        _formd("Acme, Inc.", previous_names=["Acme Widgets LLC", "Old Acme Holdings Inc"]),
+    )
+    stats = resolve_events(db_session, now=NOW)
+    assert stats.to_dict() == {
+        "scanned": 1,
+        "auto_linked": 1,
+        "review": 0,
+        "unlinked": 0,
+        "no_name": 0,
+        "rejected_skipped": 0,
+        "aliases_added": 2,
+        "by_rule": {"R2": 1},
+    }
+    event = db_session.get(EventRow, "ev-acme")
+    assert event is not None
+    assert event.company_id == acme.id
+    match = event.payload["match"]
+    assert match["rule"] == "R2"
+    assert match["confidence"] == 0.95
+    assert match["ratio"] == 100.0
+    assert match["resolved_at"] == "2026-10-05T12:00:00+00:00"
+    assert match["candidates"][0] == {"company_id": acme.id, "alias": "acme", "ratio": 100.0}
+    assert len(match["candidates"]) <= 5
+    # the original payload keys survive the merge
+    assert event.payload["issuer_name"] == "Acme, Inc."
+    db_session.refresh(acme)
+    assert acme.cik == "0000012345"
+    assert acme.legal_name == "Acme, Inc."
+    assert _aliases(db_session, acme.id) == {
+        "acme": "manual",
+        "acme widgets": "edgar",
+        "old acme": "edgar",
+    }
+
+
+def test_resolve_keeps_existing_cik_and_legal_name(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    beacon = companies["beacon"]
+    beacon.cik = "0000099999"
+    beacon.legal_name = "Beacon Health Corporation"
+    other = companies["zephyr"]
+    other.cik = "0000012345"
+    db_session.flush()
+    _event(db_session, "ev-beacon", _formd("Beacon Health Systems LLC", state="MA"))
+    _event(db_session, "ev-robotics", _formd("Acme Robotics Inc", state="NY", cik="0000012345"))
+    resolve_events(db_session, now=NOW)
+    db_session.refresh(beacon)
+    assert (beacon.cik, beacon.legal_name) == ("0000099999", "Beacon Health Corporation")
+    robotics = companies["robotics"]
+    db_session.refresh(robotics)
+    # CIK already belongs to another company: never duplicated (unique column)
+    assert robotics.cik is None
+    assert robotics.legal_name == "Acme Robotics Inc"
+
+
+def test_resolve_r5_opens_one_review_item_and_is_idempotent(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    _event(db_session, "ev-ambiguous", _formd("Acme Robotics Group", state="WA"))
+    _event(db_session, "ev-nothing", _formd("Completely Different Enterprises", state="WA"))
+    first = resolve_events(db_session, now=NOW)
+    assert (first.scanned, first.review, first.unlinked) == (2, 1, 1)
+    assert first.by_rule == {"R5": 1, "R6": 1}
+
+    items = _open_items(db_session)
+    assert len(items) == 1
+    payload = items[0].payload
+    assert payload["event_id"] == "ev-ambiguous"
+    assert payload["name"] == "Acme Robotics Group"
+    assert payload["state"] == "WA"
+    assert payload["city"] == "San Francisco"
+    assert {c["company_id"] for c in payload["candidates"][:2]} == {
+        companies["acme"].id,
+        companies["robotics"].id,
+    }
+    assert set(payload) == {"event_id", "name", "state", "city", "candidates"}
+
+    before = {row.event_id: row.payload for row in db_session.scalars(select(EventRow))}
+    alias_count = db_session.scalar(select(func.count()).select_from(CompanyAlias))
+
+    second = resolve_events(db_session, now=LATER)
+    assert second.scanned == 0
+    assert len(_open_items(db_session)) == 1
+    assert {row.event_id: row.payload for row in db_session.scalars(select(EventRow))} == before
+    assert db_session.scalar(select(func.count()).select_from(CompanyAlias)) == alias_count
+
+    # --retry re-evaluates but still never duplicates the open item
+    third = resolve_events(db_session, now=LATER, retry=True)
+    assert third.scanned == 2
+    assert len(_open_items(db_session)) == 1
+    unlinked = db_session.get(EventRow, "ev-nothing")
+    assert unlinked is not None
+    assert unlinked.company_id is None
+    assert unlinked.payload["match"]["rule"] == "R6"
+    assert unlinked.payload["match"]["resolved_at"] == "2026-10-06T12:00:00+00:00"
+
+
+def test_resolve_retry_picks_up_new_aliases(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    _event(db_session, "ev-later", _formd("Nimbus Analytics Inc", state="WA"))
+    assert resolve_events(db_session, now=NOW).by_rule == {"R6": 1}
+    add_aliases(db_session, companies["zephyr"].id, ["Nimbus Analytics"], source="manual")
+    assert resolve_events(db_session, now=LATER).scanned == 0
+    stats = resolve_events(db_session, now=LATER, retry=True)
+    assert stats.by_rule == {"R2": 1}
+    event = db_session.get(EventRow, "ev-later")
+    assert event is not None
+    assert event.company_id == companies["zephyr"].id
+
+
+def test_rejected_pair_does_not_come_back(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    _event(db_session, "ev-first", _formd("Acme Robotics Group", state="WA"))
+    resolve_events(db_session, now=NOW)
+    item = _open_items(db_session)[0]
+    apply_verdict(db_session, item.id, "reject", now=NOW)
+    assert _open_items(db_session) == []
+
+    _event(db_session, "ev-second", _formd("ACME ROBOTICS GROUP, INC.", state="WA"))
+    stats = resolve_events(db_session, now=LATER)
+    assert (stats.scanned, stats.rejected_skipped, stats.review, stats.unlinked) == (1, 1, 0, 1)
+    assert _open_items(db_session) == []
+    event = db_session.get(EventRow, "ev-second")
+    assert event is not None
+    assert event.company_id is None
+    assert event.payload["match"]["rule"] == "R5"
+    assert event.payload["match"]["rejected"] is True
+
+    # a different ambiguous name is still queued
+    _event(db_session, "ev-third", _formd("Acme Robotics Partners", state="WA"))
+    assert resolve_events(db_session, now=LATER).review == 1
+
+
+def test_resolve_limit_and_order(db_session: Session, companies: dict[str, Company]) -> None:
+    _event(db_session, "ev-b", _formd("Acme Inc"))
+    _event(db_session, "ev-a", _formd("Zephyr Technologies Inc", state="TX"))
+    stats = resolve_events(db_session, now=NOW, limit=1)
+    assert stats.scanned == 1
+    linked = [row.event_id for row in db_session.scalars(select(EventRow)) if row.company_id]
+    assert linked == ["ev-a"]
+    assert resolve_events(db_session, now=NOW).scanned == 1
+
+
+def test_resolve_skips_events_without_a_name(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    _event(
+        db_session, "ev-noname", {"accession_number": "x", "amendments": []}, type_="form_s1_filed"
+    )
+    _event(
+        db_session,
+        "ev-news-noq",
+        {"query": "https://news.example/rss", "match": {"rule": "news_query"}},
+        source="news",
+        type_="news_launch",
+    )
+    stats = resolve_events(db_session, now=NOW)
+    assert (stats.scanned, stats.no_name) == (2, 2)
+    event = db_session.get(EventRow, "ev-noname")
+    assert event is not None
+    assert "match" not in event.payload
+    # an unresolved event stays eligible for the next run
+    assert resolve_events(db_session, now=LATER).scanned == 2
+
+
+def test_resolve_news_event_by_query_name(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    payload = {
+        "title": "Acme launches a thing",
+        "query": "https://news.google.com/rss/search?q=%22Acme%22&hl=en-US",
+        "match": {"rule": "news_query", "note": "by name"},
+        "key": "news:abc",
+    }
+    _event(db_session, "ev-news", payload, source="news", type_="news_launch")
+    stats = resolve_events(db_session, now=NOW)
+    assert stats.by_rule == {"R2": 1}
+    event = db_session.get(EventRow, "ev-news")
+    assert event is not None
+    assert event.company_id == companies["acme"].id
+    assert event.payload["match"]["rule"] == "R2"
+    assert event.payload["match"]["source_rule"] == "news_query"
+    assert event.payload["title"] == "Acme launches a thing"
+    assert _aliases(db_session, companies["acme"].id) == {"acme": "manual"}
+
+
+def test_resolve_other_edgar_forms_use_company_name(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    _event(
+        db_session,
+        "ev-s1",
+        {"accession_number": "y", "cik": "0000055555", "company_name": "Beacon Health Systems"},
+        type_="form_s1_filed",
+    )
+    stats = resolve_events(db_session, now=NOW)
+    assert stats.by_rule == {"R4": 1}
+    beacon = companies["beacon"]
+    db_session.refresh(beacon)
+    assert (beacon.cik, beacon.legal_name) == ("0000055555", "Beacon Health Systems")
+    assert _aliases(db_session, beacon.id)["beacon health systems"] == "edgar"
+
+
+def test_resolve_leaves_linked_events_alone(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    _event(db_session, "ev-linked", _formd("Acme Inc"), company_id=companies["zephyr"].id)
+    stats = resolve_events(db_session, now=NOW)
+    assert stats.scanned == 0
+    event = db_session.get(EventRow, "ev-linked")
+    assert event is not None
+    assert event.company_id == companies["zephyr"].id

@@ -1,8 +1,9 @@
 """Schema parity: models == migration == the DDL in docs/SPEC.md section 5.
 
-Three recorded deviations: ``postings.version_marker`` (migration ``0002``, ADR 0013),
-the ``company_feeds`` table (migration ``0003``, ADR 0014) and the ``ats_boards`` 404
-streak columns ``not_found_count`` / ``first_not_found_at`` (migration ``0004``, ADR 0015).
+Four recorded deviations: ``postings.version_marker`` (migration ``0002``, ADR 0013),
+the ``company_feeds`` table (migration ``0003``, ADR 0014), the ``ats_boards`` 404
+streak columns ``not_found_count`` / ``first_not_found_at`` (migration ``0004``, ADR 0015)
+and the ``posting_ghost_votes`` table (migration ``0005``, ADR 0017).
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from tests.conftest import alembic_config
 
 pytestmark = pytest.mark.db
 
-HEAD_REVISION = "0004"
+HEAD_REVISION = "0005"
 
 # --- the spec, hardcoded -----------------------------------------------------------------
 
@@ -130,6 +131,8 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
         "last_modified",
         "created_at",
     ],
+    # ADR 0017, migration 0005
+    "posting_ghost_votes": ["id", "posting_id", "voted_at", "source"],
 }
 
 EXPECTED_PRIMARY_KEYS: dict[str, list[str]] = {
@@ -147,6 +150,7 @@ EXPECTED_PRIMARY_KEYS: dict[str, list[str]] = {
     "runs": ["run_id"],
     "review_queue": ["id"],
     "company_feeds": ["id"],
+    "posting_ghost_votes": ["id"],
 }
 
 EXPECTED_UNIQUES: dict[str, set[tuple[str, ...]]] = {
@@ -181,6 +185,7 @@ EXPECTED_FOREIGN_KEYS: dict[str, set[tuple[tuple[str, ...], str, tuple[str, ...]
         (("signal_id",), "signals", ("id",)),
     },
     "company_feeds": {(("company_id",), "companies", ("id",))},
+    "posting_ghost_votes": {(("posting_id",), "postings", ("id",))},
 }
 
 # name -> (columns, {column: sort})
@@ -195,6 +200,9 @@ EXPECTED_INDEXES: dict[str, dict[str, tuple[list[str], dict[str, str]]]] = {
             {"occurred_at": "desc"},
         ),
         "events_type_occurred_at_idx": (["type", "occurred_at"], {"occurred_at": "desc"}),
+    },
+    "posting_ghost_votes": {
+        "posting_ghost_votes_posting_id_idx": (["posting_id"], {}),
     },
 }
 
@@ -228,6 +236,7 @@ EXPECTED_NULLABLE: dict[str, set[str]] = {
     "runs": {"finished_at", "fetched", "inserted", "skipped", "errors", "notes"},
     "review_queue": {"resolved_at"},
     "company_feeds": {"discovered_from", "last_polled_at", "etag", "last_modified"},
+    "posting_ghost_votes": set(),
 }
 
 # Columns with a server default, with the default's leading token after cast stripping.
@@ -264,6 +273,8 @@ EXPECTED_TYPES: dict[tuple[str, str], str] = {
     ("scores", "as_of"): "DATE",
     ("runs", "notes"): "JSONB",
     ("company_feeds", "last_polled_at"): "TIMESTAMP WITH TIME ZONE",
+    ("posting_ghost_votes", "posting_id"): "BIGINT",
+    ("posting_ghost_votes", "voted_at"): "TIMESTAMP WITH TIME ZONE",
 }
 
 SERIAL_PRIMARY_KEYS = {
@@ -275,6 +286,7 @@ SERIAL_PRIMARY_KEYS = {
     "feedback",
     "review_queue",
     "company_feeds",
+    "posting_ghost_votes",
 }
 
 

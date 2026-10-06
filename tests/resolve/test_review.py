@@ -1,0 +1,282 @@
+"""Review workflow: CSV round trip for link / create / reject, verdict rules, password gate."""
+
+from __future__ import annotations
+
+import csv
+from datetime import UTC, datetime
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
+
+import pytest
+from pydantic import SecretStr
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from tell.models import Company, CompanyAlias, EventRow, ReviewQueueItem
+from tell.resolve import review, review_app
+from tell.resolve.match import backfill_aliases, resolve_events
+from tell.resolve.review import (
+    CSV_COLUMNS,
+    ReviewError,
+    apply_verdict,
+    check_password,
+    export_review_csv,
+    import_review_csv,
+    open_items,
+)
+
+NOW = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
+
+
+def _company(session: Session, domain: str, name: str, **extra: Any) -> Company:
+    company = Company(domain=domain, name=name, **extra)
+    session.add(company)
+    session.flush()
+    return company
+
+
+def _formd_event(session: Session, event_id: str, name: str, state: str = "WA") -> EventRow:
+    row = EventRow(
+        event_id=event_id,
+        source="edgar",
+        type="form_d_filed",
+        occurred_at=NOW,
+        observed_at=NOW,
+        magnitude=Decimal(1),
+        url=f"https://example.test/{event_id}",
+        payload={
+            "issuer_name": name,
+            "issuer_state": state,
+            "issuer_city": "Seattle",
+            "cik": "0000012345",
+            "previous_names": [],
+        },
+        run_id="test-run",
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+@pytest.fixture
+def queue(db_session: Session) -> dict[str, Any]:
+    """Two companies, three ambiguous Form D events, resolved once -> three open items."""
+    acme = _company(db_session, "acme.com", "Acme", hq_state="CA")
+    robotics = _company(db_session, "acmerobotics.com", "Acme Robotics", hq_state="NY")
+    backfill_aliases(db_session)
+    events = [
+        _formd_event(db_session, "ev-link", "Acme Robotics Group"),
+        _formd_event(db_session, "ev-create", "Acme Robotics Ventures"),
+        _formd_event(db_session, "ev-reject", "Acme Robotics Partners"),
+    ]
+    stats = resolve_events(db_session, now=NOW)
+    assert stats.review == 3
+    items = {item.payload["event_id"]: item for item in open_items(db_session)}
+    return {"acme": acme, "robotics": robotics, "events": events, "items": items}
+
+
+def _rows(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="", encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
+
+
+def _aliases(session: Session, company_id: int) -> dict[str, str]:
+    rows = session.execute(
+        select(CompanyAlias.alias, CompanyAlias.source).where(CompanyAlias.company_id == company_id)
+    )
+    return dict(rows.all())
+
+
+def test_export_writes_open_items_with_candidates(
+    db_session: Session, queue: dict[str, Any], tmp_path: Path
+) -> None:
+    path = tmp_path / "review.csv"
+    assert export_review_csv(db_session, path) == 3
+    rows = _rows(path)
+    assert list(rows[0]) == list(CSV_COLUMNS)
+    by_event = {row["event_id"]: row for row in rows}
+    row = by_event["ev-link"]
+    assert row["kind"] == "entity_match"
+    assert row["name"] == "Acme Robotics Group"
+    assert (row["state"], row["city"]) == ("WA", "Seattle")
+    ids = {row["candidate_1_id"], row["candidate_2_id"]}
+    assert ids == {str(queue["acme"].id), str(queue["robotics"].id)}
+    assert row["candidate_1_ratio"] == "100.0"
+    assert row["candidate_3_id"] == ""
+    assert (row["verdict"], row["company_id_or_domain"], row["new_company_name"]) == ("", "", "")
+
+
+def test_export_of_empty_queue_writes_header_only(db_session: Session, tmp_path: Path) -> None:
+    path = tmp_path / "empty.csv"
+    assert export_review_csv(db_session, path) == 0
+    assert path.read_text(encoding="utf-8").strip() == ",".join(CSV_COLUMNS)
+
+
+def test_csv_round_trip_link_create_reject(
+    db_session: Session, queue: dict[str, Any], tmp_path: Path
+) -> None:
+    path = tmp_path / "review.csv"
+    export_review_csv(db_session, path)
+    rows = _rows(path)
+    for row in rows:
+        if row["event_id"] == "ev-link":
+            row["verdict"] = "link"
+            row["company_id_or_domain"] = str(queue["robotics"].id)
+        elif row["event_id"] == "ev-create":
+            row["verdict"] = "create"
+            row["company_id_or_domain"] = "https://www.acme-ventures.com/about"
+            row["new_company_name"] = "Acme Ventures"
+        else:
+            row["verdict"] = "reject"
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(CSV_COLUMNS))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    stats = import_review_csv(db_session, path, now=NOW)
+    assert stats.to_dict() == {
+        "rows": 3,
+        "linked": 1,
+        "created": 1,
+        "rejected": 1,
+        "skipped": 0,
+        "errors": [],
+    }
+    assert open_items(db_session) == []
+
+    linked = db_session.get(EventRow, "ev-link")
+    assert linked is not None
+    assert linked.company_id == queue["robotics"].id
+    assert linked.payload["match"]["rule"] == "manual"
+    assert linked.payload["match"]["confidence"] == 1.0
+    assert linked.payload["match"]["review_id"] == queue["items"]["ev-link"].id
+    assert linked.payload["match"]["candidates"]  # the R5 audit trail is kept
+    assert _aliases(db_session, queue["robotics"].id)["acme robotics group"] == "manual"
+
+    created = db_session.scalars(select(Company).where(Company.domain == "acme-ventures.com")).one()
+    assert created.name == "Acme Ventures"
+    created_event = db_session.get(EventRow, "ev-create")
+    assert created_event is not None
+    assert created_event.company_id == created.id
+    assert _aliases(db_session, created.id) == {"acme robotics ventures": "manual"}
+
+    rejected = db_session.get(EventRow, "ev-reject")
+    assert rejected is not None
+    assert rejected.company_id is None
+    item = queue["items"]["ev-reject"]
+    db_session.refresh(item)
+    assert (item.status, item.payload["verdict"]) == ("rejected", "reject")
+    assert item.resolved_at == NOW
+
+    # the linked pair never returns: the same name now hits R2
+    _formd_event(db_session, "ev-again", "Acme Robotics Group, Inc.")
+    again = resolve_events(db_session, now=NOW)
+    assert again.by_rule == {"R2": 1}
+    assert open_items(db_session) == []
+
+
+def test_import_skips_blank_and_reports_errors(
+    db_session: Session, queue: dict[str, Any], tmp_path: Path
+) -> None:
+    path = tmp_path / "review.csv"
+    export_review_csv(db_session, path)
+    rows = _rows(path)
+    rows[0]["verdict"] = "link"  # no company given -> error
+    rows[1]["verdict"] = "maybe"  # unknown verdict -> error
+    rows[2]["verdict"] = ""  # blank -> skipped
+    rows.append({**rows[0], "id": "abc", "verdict": "reject"})
+    rows.append({**rows[0], "id": "999999", "verdict": "reject"})
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(CSV_COLUMNS))
+        writer.writeheader()
+        writer.writerows(rows)
+    stats = import_review_csv(db_session, path, now=NOW)
+    assert (stats.rows, stats.linked, stats.created, stats.rejected, stats.skipped) == (
+        5,
+        0,
+        0,
+        0,
+        1,
+    )
+    assert len(stats.errors) == 4
+    assert any("existing company id or domain" in e for e in stats.errors)
+    assert any("verdict must be one of" in e for e in stats.errors)
+    assert any("is not a review item id" in e for e in stats.errors)
+    assert any("no entity_match review item" in e for e in stats.errors)
+    assert len(open_items(db_session)) == 3
+
+
+def test_apply_verdict_rules(db_session: Session, queue: dict[str, Any]) -> None:
+    item = queue["items"]["ev-link"]
+    with pytest.raises(ReviewError, match="create needs a domain"):
+        apply_verdict(db_session, item.id, "create", company_id_or_domain="not a domain")
+    with pytest.raises(ReviewError, match="create needs a domain"):
+        apply_verdict(db_session, item.id, "create")
+    with pytest.raises(ReviewError, match="existing company"):
+        apply_verdict(db_session, item.id, "link", company_id_or_domain="nobody.example")
+    with pytest.raises(ReviewError, match="existing company"):
+        apply_verdict(db_session, item.id, "link", company_id_or_domain="424242")
+    # link by domain works and closes the item; a second verdict is refused
+    done = apply_verdict(db_session, item.id, "link", company_id_or_domain="acme.com", now=NOW)
+    assert (done.status, done.payload["company_id"]) == ("resolved", queue["acme"].id)
+    with pytest.raises(ReviewError, match="already resolved"):
+        apply_verdict(db_session, item.id, "reject")
+    # create on an existing domain links to that company instead of inserting a duplicate
+    other = queue["items"]["ev-create"]
+    apply_verdict(db_session, other.id, "create", company_id_or_domain="acmerobotics.com", now=NOW)
+    assert db_session.scalar(select(Company.id).where(Company.domain == "acmerobotics.com"))
+    assert len(list(db_session.scalars(select(Company)))) == 2
+    # create without a name falls back to the event name
+    third = queue["items"]["ev-reject"]
+    apply_verdict(db_session, third.id, "create", company_id_or_domain="acmeholdings.com", now=NOW)
+    created = db_session.scalars(select(Company).where(Company.domain == "acmeholdings.com")).one()
+    assert created.name == "Acme Robotics Partners"
+
+
+def test_apply_verdict_unknown_item_or_kind(db_session: Session) -> None:
+    with pytest.raises(ReviewError, match="no entity_match review item"):
+        apply_verdict(db_session, 12345, "reject")
+    board = ReviewQueueItem(kind="board_verify", payload={"domain": "x.example"})
+    db_session.add(board)
+    db_session.flush()
+    with pytest.raises(ReviewError, match="no entity_match review item"):
+        apply_verdict(db_session, board.id, "reject")
+
+
+def test_link_survives_a_missing_event(db_session: Session) -> None:
+    company = _company(db_session, "acme.com", "Acme")
+    item = ReviewQueueItem(
+        kind="entity_match",
+        payload={
+            "event_id": "gone",
+            "name": "Acme Inc",
+            "state": None,
+            "city": None,
+            "candidates": [],
+        },
+    )
+    db_session.add(item)
+    db_session.flush()
+    apply_verdict(db_session, item.id, "link", company_id_or_domain=str(company.id), now=NOW)
+    assert item.status == "resolved"
+    assert _aliases(db_session, company.id) == {"acme": "manual"}
+
+
+def test_check_password() -> None:
+    assert check_password("secret", SecretStr("secret")) is True
+    assert check_password("secret", "secret") is True
+    assert check_password("wrong", SecretStr("secret")) is False
+    assert check_password("", SecretStr("")) is False
+    assert check_password("anything", None) is False
+
+
+def test_review_app_imports_without_streamlit_display() -> None:
+    assert callable(review_app.main)
+    assert review_app.TITLE
+    text = review_app._candidates_text(
+        {"candidates": [{"company_id": 1, "alias": "acme", "ratio": 90}]}
+    )
+    assert text == "1: acme (90)"
+    assert review_app._candidates_text({}) == "(no candidates)"
+    assert review.VERDICTS == ("link", "create", "reject")
