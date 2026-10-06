@@ -1,0 +1,133 @@
+{
+  "slug": "pilot",
+  "name": "Pilot list",
+  "profile": "default",
+  "as_of": "2026-10-06",
+  "generated_by": "https://github.com/karank2512/tell-ai/commit/0123456789abcdef0123456789abcdef01234567",
+  "companies": [
+    {
+      "domain": "examplerobotics.example",
+      "name": "Example Robotics",
+      "as_of": "2026-10-06",
+      "profile": "default",
+      "score": 27.7,
+      "heat": 100,
+      "contributions": [
+        {
+          "type": "funding",
+          "contribution": 27.7,
+          "occurred_at": "2026-10-01",
+          "summary": "Form D: $18,000,000 offering, $12,500,000 sold",
+          "url": "https://www.sec.gov/Archives/edgar/data/9990001/000999000126000001/"
+        }
+      ],
+      "open_postings": 0,
+      "long_open_roles": 0,
+      "sources": {
+        "ats": "no_board",
+        "edgar_cik": "0009990001",
+        "news": false
+      },
+      "generated_by": "https://github.com/karank2512/tell-ai/commit/0123456789abcdef0123456789abcdef01234567",
+      "why_not_higher": []
+    },
+    {
+      "domain": "quillstone.example",
+      "name": "Quillstone Analytics",
+      "as_of": "2026-10-06",
+      "profile": "default",
+      "score": 7.5,
+      "heat": 50,
+      "contributions": [
+        {
+          "type": "leadership",
+          "contribution": 1.9,
+          "occurred_at": "2026-10-03",
+          "summary": "names as chief financial officer",
+          "url": "https://news.google.com/rss/articles/CBMiQUFVX3lxTFBxdWlsbHN0b25lLWNoaWVmLWZpbmFuY2lhbC1vZmZpY2VyLTAwNQ?oc=5"
+        },
+        {
+          "type": "leadership",
+          "contribution": 1.9,
+          "occurred_at": "2026-10-02",
+          "summary": "appoints new chief revenue officer",
+          "url": "https://news.google.com/rss/articles/CBMiQUFVX3lxTFBxdWlsbHN0b25lLWNoaWVmLXJldmVudWUtb2ZmaWNlci0wMDI?oc=5"
+        },
+        {
+          "type": "launch",
+          "contribution": 1.5,
+          "occurred_at": "2026-10-04",
+          "summary": "Quillstone Analytics unveils natural-language query assistant - The Data Desk",
+          "url": "https://news.google.com/rss/articles/CBMiQUFVX3lxTFBxdWlsbHN0b25lLXF1ZXJ5LWFzc2lzdGFudC0wMDY?oc=5"
+        },
+        {
+          "type": "launch",
+          "contribution": 1.3,
+          "occurred_at": "2026-09-29",
+          "summary": "Quillstone Analytics launches real-time anomaly alerts for retail teams - Retail Tech Wire",
+          "url": "https://news.google.com/rss/articles/CBMiQUFVX3lxTFBxdWlsbHN0b25lLWFub21hbHktYWxlcnRzLTAwMw?oc=5"
+        },
+        {
+          "type": "expansion",
+          "contribution": 0.9,
+          "occurred_at": "2026-09-30",
+          "summary": "Quillstone Analytics opens London office to serve European customers - Metro Business Review",
+          "url": "https://news.google.com/rss/articles/CBMiQUFVX3lxTFBxdWlsbHN0b25lLWxvbmRvbi1vZmZpY2UtMDA0?oc=5"
+        }
+      ],
+      "open_postings": 0,
+      "long_open_roles": 0,
+      "sources": {
+        "ats": "no_board",
+        "edgar_cik": null,
+        "news": true
+      },
+      "generated_by": "https://github.com/karank2512/tell-ai/commit/0123456789abcdef0123456789abcdef01234567",
+      "why_not_higher": []
+    },
+    {
+      "domain": "greenhouse-fixture.test",
+      "name": "Greenhouse Fixture",
+      "as_of": "2026-10-06",
+      "profile": "default",
+      "score": 2.7,
+      "heat": 0,
+      "contributions": [
+        {
+          "type": "hiring_velocity",
+          "role_family": "sales",
+          "contribution": 2.7,
+          "occurred_at": "2026-10-02",
+          "summary": "3 new sales roles in 7 days vs 0.5 baseline",
+          "url": "https://boards.greenhouse.io/tell-fixture",
+          "postings": [
+            {
+              "title": "Account Executive, Mid-Market",
+              "posted_at": "2026-09-30",
+              "url": "https://boards.greenhouse.io/tell-fixture/jobs/spike-0"
+            },
+            {
+              "title": "Enterprise Account Executive",
+              "posted_at": "2026-10-01",
+              "url": "https://boards.greenhouse.io/tell-fixture/jobs/spike-1"
+            },
+            {
+              "title": "Sales Development Representative",
+              "posted_at": "2026-10-02",
+              "url": "https://boards.greenhouse.io/tell-fixture/jobs/spike-2"
+            }
+          ]
+        }
+      ],
+      "open_postings": 5,
+      "long_open_roles": 2,
+      "sources": {
+        "ats": "greenhouse:tell-fixture",
+        "edgar_cik": null,
+        "news": false
+      },
+      "generated_by": "https://github.com/karank2512/tell-ai/commit/0123456789abcdef0123456789abcdef01234567",
+      "why_not_higher": []
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "week": "2026-W40",
+  "start": "2026-09-28",
+  "end": "2026-10-04",
+  "top_hiring": [
+    {
+      "domain": "greenhouse-fixture.test",
+      "name": "Greenhouse Fixture",
+      "velocity": 3,
+      "receipts": [
+        {
+          "occurred_at": "2026-10-02",
+          "url": "https://boards.greenhouse.io/tell-fixture",
+          "summary": "3 new sales roles in 7 days vs 0.5 baseline",
+          "postings": [
+            {
+              "title": "Account Executive, Mid-Market",
+              "posted_at": "2026-09-30",
+              "url": "https://boards.greenhouse.io/tell-fixture/jobs/spike-0"
+            },
+            {
+              "title": "Enterprise Account Executive",
+              "posted_at": "2026-10-01",
+              "url": "https://boards.greenhouse.io/tell-fixture/jobs/spike-1"
+            },
+            {
+              "title": "Sales Development Representative",
+              "posted_at": "2026-10-02",
+              "url": "https://boards.greenhouse.io/tell-fixture/jobs/spike-2"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "top_funding": [
+    {
+      "domain": "examplerobotics.example",
+      "name": "Example Robotics",
+      "amount_usd": 18000000,
+      "amount_sold_usd": 12500000,
+      "date_filed": "2026-10-01",
+      "url": "https://www.sec.gov/Archives/edgar/data/9990001/000999000126000001/"
+    },
+    {
+      "domain": "bluefin.example",
+      "name": "Bluefin Data Systems",
+      "amount_usd": null,
+      "amount_sold_usd": 2750000,
+      "date_filed": "2026-10-01",
+      "url": "https://www.sec.gov/Archives/edgar/data/9990002/000999000226000001/"
+    }
+  ],
+  "method_change": "Phase 7 scoring: tell/signals/scoring.py with build_signals (signals rows derived idempotently from events: hiring_velocity, funding, leadership, launch, expansion, tech_adoption), contribution() / score() exactly as spec section 8, scores.contributions JSONB with {signal_id,...",
+  "coverage": {
+    "companies_monitored": 3,
+    "boards_polled": 0,
+    "filings_read": 2
+  },
+  "repo_url": "https://github.com/karank2512/tell-ai",
+  "generated_by": "https://github.com/karank2512/tell-ai/commit/0123456789abcdef0123456789abcdef01234567"
+}

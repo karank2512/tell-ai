@@ -12,7 +12,7 @@ hand-written DDL in the spec and the migration name the same objects.
 
 Nothing here goes beyond the DDL except the allowed-value constants below (the
 spec documents them as comments next to the columns), a generic ``__repr__`` and
-three recorded deviations. ``postings.version_marker`` (migration ``0002``,
+the recorded deviations below. ``postings.version_marker`` (migration ``0002``,
 ``docs/decisions/0013-postings-version-marker.md``) holds the provider change
 marker last seen for a posting so ``job_updated`` does not depend on events that
 the 180-day prune removes. The ``company_feeds`` table (migration ``0003``,
@@ -24,7 +24,11 @@ validators, which section 5 has nowhere to keep. ``ats_boards.not_found_count`` 
 decides when a board is ``dead``. The ``posting_ghost_votes`` table (migration
 ``0005``, ``docs/decisions/0017-posting-ghost-votes.md``) stores the job-seeker "this
 looks like a ghost job" votes spec section 7 counts; they stay inert until 500 votes.
-``api_keys`` / ``api_usage`` arrive with Phase 9 in their own migration.
+``watchlists.slug`` and ``watchlists.is_public`` (migration ``0006``,
+``docs/decisions/0022-public-watchlists.md``) mark the lists spec section 9 publishes.
+The ``api_keys`` and ``api_usage`` tables (migration ``0007``,
+``docs/decisions/0024-api-keys-tables.md``) hold the FastAPI v1 service's bearer keys
+(SHA-256 at rest, never the raw key) and per-key daily call counts (spec section 10).
 """
 
 from __future__ import annotations
@@ -304,7 +308,12 @@ class Score(Base):
 
 
 class Watchlist(Base):
-    """A named list of companies for one owner and ICP profile."""
+    """A named list of companies for one owner and ICP profile.
+
+    ``slug`` and ``is_public`` (migration ``0006``, ADR 0022) decide whether and where
+    the list is published as ``api/v0/watchlists/{slug}.json``; private lists (the
+    default) are never published. ``owner`` is never published.
+    """
 
     __tablename__ = "watchlists"
 
@@ -312,6 +321,12 @@ class Watchlist(Base):
     owner: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     icp_profile: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'default'"))
+    slug: Mapped[str | None] = mapped_column(Text, unique=True)
+    """URL-safe name of a published list (ADR 0022); ``NULL`` for lists never published."""
+    is_public: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    """Publish this list as ``api/v0/watchlists/{slug}.json`` (ADR 0022)."""
 
 
 class WatchlistItem(Base):
@@ -415,6 +430,41 @@ class PostingGhostVote(Base):
     source: Mapped[str] = mapped_column(Text, nullable=False)
 
 
+class ApiKey(Base):
+    """A bearer key for the FastAPI v1 service (spec section 10, ADR 0024, migration 0007).
+
+    Only ``sha256(key)`` is stored (``key_hash``), plus the first 12 characters
+    (``key_prefix``) so an operator can tell keys apart. ``owner`` is a handle, never an
+    email. A key with ``revoked_at`` set never authenticates again.
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    key_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    key_prefix: Mapped[str] = mapped_column(Text, nullable=False)
+    owner: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        _timestamptz(), nullable=False, server_default=text("now()")
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(_timestamptz())
+    daily_quota: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1000, server_default=text("1000")
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(_timestamptz())
+
+
+class ApiUsage(Base):
+    """Calls per key per UTC day: the metering row upserted before each handler runs."""
+
+    __tablename__ = "api_usage"
+    __table_args__ = (PrimaryKeyConstraint("key_id", "day"),)
+
+    key_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("api_keys.id"), nullable=False)
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+
+
 ALL_MODELS: tuple[type[Base], ...] = (
     Company,
     CompanyAlias,
@@ -431,5 +481,7 @@ ALL_MODELS: tuple[type[Base], ...] = (
     ReviewQueueItem,
     CompanyFeed,
     PostingGhostVote,
+    ApiKey,
+    ApiUsage,
 )
 """Every mapped class, in DDL order then the recorded additions (tests, TRUNCATE lists)."""

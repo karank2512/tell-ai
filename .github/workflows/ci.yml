@@ -6,8 +6,9 @@ on:
     branches: [main]
   workflow_dispatch:
   schedule:
-    # Weekly dependency audit (Mondays 06:00 UTC); only the audit and secret-scan jobs run on this trigger.
-    - cron: "0 6 * * 1"
+    # Weekly dependency audit (Mondays 06:13 UTC, off the hour like every schedule here);
+    # only the audit and secret-scan jobs run on this trigger.
+    - cron: "13 6 * * 1"
 
 permissions:
   contents: read
@@ -65,16 +66,21 @@ jobs:
       - name: Migrate (alembic upgrade head)
         run: uv run alembic upgrade head
 
-      - name: Tests with coverage
-        run: uv run pytest --cov=tell --cov-report=json --cov-report=term-missing -q
+      # Includes tests/test_workflows.py, which parses every workflow in this directory and
+      # checks each `uv run tell ...` line against the CLI.
+      - name: Tests with coverage (overall floor 80)
+        run: uv run pytest -q --cov=tell --cov-fail-under=80 --cov-report=json --cov-report=term-missing
 
-      - name: Coverage floors
+      - name: Coverage floors (90 for collectors/, resolve/, signals/)
         run: uv run python scripts/check_coverage.py
 
   # Runs on its own so a lint or test failure never hides a leaked secret, and vice versa.
   secret-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read # gitleaks lists the PR's commits
     steps:
       - uses: actions/checkout@v4
         with:
@@ -84,7 +90,9 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false" # read-only token; findings fail the job instead
 
+  # Weekly dependency audit (SPEC section 12, "Security checks in CI").
   audit:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -98,4 +106,6 @@ jobs:
       - name: Install
         run: uv sync --frozen
       - name: pip-audit
-        run: uv run pip-audit
+        # The workspace packages (tell, tell-mcp) are editable installs; `tell` on PyPI is an
+        # unrelated project, so auditing it by name would be meaningless.
+        run: uv run pip-audit --skip-editable

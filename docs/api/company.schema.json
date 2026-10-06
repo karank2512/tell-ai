@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://karank2512.github.io/tell-data/api/v0/company.schema.json",
+  "title": "tell company (api/v0/companies/{domain}.json)",
+  "description": "The per-domain contract of docs/SPEC.md section 9, plus `why_not_higher` (signals whose contribution decayed to zero in the last 30 days). Dates are ISO 8601 calendar dates (YYYY-MM-DD). Money never appears as a field here; wherever the static API carries an amount (weekly top lists) it is an integer number of US dollars. Every contribution and every decayed signal carries a non-empty receipt `url`. `heat` is present only when the object is served through a watchlist (api/v0/watchlists/{slug}.json). `score` is the raw sum of decayed contributions rounded to one decimal; `contributions[].contribution` values are rounded to one decimal with largest-remainder apportionment so that they add up to `score` exactly.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "domain",
+    "name",
+    "as_of",
+    "profile",
+    "score",
+    "contributions",
+    "open_postings",
+    "long_open_roles",
+    "sources",
+    "generated_by",
+    "why_not_higher"
+  ],
+  "properties": {
+    "domain": {
+      "type": "string",
+      "description": "Registrable domain, lowercase, no www.",
+      "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"
+    },
+    "name": {"type": "string", "minLength": 1},
+    "as_of": {"$ref": "#/$defs/date"},
+    "profile": {"type": "string", "minLength": 1, "description": "ICP profile the score is computed under."},
+    "score": {"type": "number", "minimum": 0, "description": "Raw sum of decayed contributions, one decimal."},
+    "heat": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "Percentile rank of the raw score within the watchlist; only present when served through a watchlist."
+    },
+    "contributions": {
+      "type": "array",
+      "description": "One entry per signal with a positive decayed contribution, largest first.",
+      "items": {"$ref": "#/$defs/contribution"}
+    },
+    "open_postings": {"type": "integer", "minimum": 0, "description": "Open postings on the company's boards."},
+    "long_open_roles": {"type": "integer", "minimum": 0, "description": "Open postings older than 90 days."},
+    "sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ats", "edgar_cik", "news"],
+      "properties": {
+        "ats": {
+          "type": "string",
+          "description": "`vendor:identifier` of the active job board, or `no_board`.",
+          "pattern": "^(no_board|[a-z]+:.+)$"
+        },
+        "edgar_cik": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]{10}$",
+          "description": "10-digit zero-padded SEC CIK, or null."
+        },
+        "news": {"type": "boolean", "description": "A company feed or any news event is known."}
+      }
+    },
+    "generated_by": {
+      "type": "string",
+      "description": "URL of the code commit that produced the file, or `local` for a local build.",
+      "pattern": "^(local|https?://\\S+)$"
+    },
+    "why_not_higher": {
+      "type": "array",
+      "description": "Extension to the section 9 example: signals whose contribution decayed to zero in the last 30 days, most recently decayed first.",
+      "items": {"$ref": "#/$defs/decayed"}
+    }
+  },
+  "$defs": {
+    "date": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+    "url": {"type": "string", "minLength": 1, "pattern": "^https?://\\S+$"},
+    "usd": {"type": "integer", "minimum": 0, "description": "An amount in US dollars."},
+    "signal_type": {
+      "type": "string",
+      "enum": ["hiring_velocity", "funding", "leadership", "launch", "expansion", "tech_adoption"]
+    },
+    "contribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "contribution", "occurred_at", "summary", "url"],
+      "properties": {
+        "type": {"$ref": "#/$defs/signal_type"},
+        "role_family": {"type": "string", "minLength": 1},
+        "contribution": {"type": "number", "minimum": 0},
+        "occurred_at": {"$ref": "#/$defs/date"},
+        "summary": {"type": "string", "minLength": 1},
+        "url": {"$ref": "#/$defs/url"},
+        "postings": {
+          "type": "array",
+          "description": "The counted postings behind a hiring_velocity contribution.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["title", "posted_at", "url"],
+            "properties": {
+              "title": {"type": "string"},
+              "posted_at": {"$ref": "#/$defs/date"},
+              "url": {"$ref": "#/$defs/url"}
+            }
+          }
+        }
+      }
+    },
+    "decayed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "decayed_at", "url", "summary"],
+      "properties": {
+        "type": {"$ref": "#/$defs/signal_type"},
+        "role_family": {"type": "string", "minLength": 1},
+        "decayed_at": {"$ref": "#/$defs/date"},
+        "url": {"$ref": "#/$defs/url"},
+        "summary": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

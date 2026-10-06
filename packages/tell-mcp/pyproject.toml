@@ -6,12 +6,17 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 authors = [{ name = "Karan Kapur" }]
+keywords = ["mcp", "model-context-protocol", "buying-signals", "sales", "claude", "cursor"]
 classifiers = [
   "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
   "License :: OSI Approved :: Apache Software License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Topic :: Office/Business",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Typing :: Typed",
 ]
 dependencies = [
@@ -24,6 +29,9 @@ tell-mcp = "tell_mcp.server:main"
 
 [project.urls]
 Homepage = "https://github.com/karank2512/tell-ai"
+Documentation = "https://github.com/karank2512/tell-ai/blob/main/docs/mcp.md"
+Repository = "https://github.com/karank2512/tell-ai"
+Issues = "https://github.com/karank2512/tell-ai/issues"
 
 [build-system]
 requires = ["hatchling>=1.26"]

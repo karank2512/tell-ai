@@ -1,0 +1,58 @@
+# Publishes the tell-mcp distribution (packages/tell-mcp) to PyPI when a tag
+# tell-mcp-vX.Y.Z is pushed (ADR 0010, PLAN Phase 13 step 5). Uses PyPI trusted
+# publishing: no API token is stored anywhere. One-time setup:
+# docs/deploy/github-actions.md#publishing-tell-mcp-to-pypi.
+name: publish-mcp
+
+on:
+  push:
+    tags:
+      - "tell-mcp-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-mcp
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Tag matches the package version
+        run: |
+          tag_version="${GITHUB_REF_NAME#tell-mcp-v}"
+          pkg_version="$(python3 -c 'import tomllib; print(tomllib.load(open("packages/tell-mcp/pyproject.toml", "rb"))["project"]["version"])')"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match packages/tell-mcp version $pkg_version"
+            exit 1
+          fi
+      - name: Build sdist and wheel
+        run: uv build --package tell-mcp --out-dir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tell-mcp-dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: [build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/tell-mcp/
+    permissions:
+      id-token: write # PyPI trusted publishing (OIDC); nothing else is granted
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: tell-mcp-dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

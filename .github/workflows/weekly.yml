@@ -1,0 +1,128 @@
+# Monday edition (SPEC section 11): the weekly page, refreshed methods reports, and the
+# private weekly summary. Everything it writes goes to tell-data; it never commits to this
+# repo (ADR 0025). Setup: docs/deploy/github-actions.md.
+name: weekly
+
+on:
+  schedule:
+    - cron: "23 6 * * 1" # Mondays 06:23 UTC, off the hour
+  workflow_dispatch:
+    inputs:
+      week:
+        description: "'current' (last complete ISO week) or YYYY-Www"
+        required: false
+        default: current
+
+concurrency:
+  group: weekly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  DATABASE_URL: ${{ secrets.DATABASE_URL }}
+  SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+  TELL_HTTP_USER_AGENT: "tell/0.1 (+https://github.com/${{ github.repository }})"
+  TELL_DATA_REPO: ${{ vars.TELL_DATA_REPO }}
+  TELL_REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+  TELL_DATA_REPO_URL: ${{ github.server_url }}/${{ vars.TELL_DATA_REPO }}
+  TELL_BASE_URL: ${{ vars.TELL_BASE_URL }}
+  TELL_FEEDBACK_FORM_URL: ${{ vars.TELL_FEEDBACK_FORM_URL }}
+  TELL_INTAKE_FORM_URL: ${{ vars.TELL_INTAKE_FORM_URL }}
+  TELL_ENV: prod
+  UV_FROZEN: "1"
+  WEEK: ${{ inputs.week || 'current' }}
+
+jobs:
+  weekly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SLACK_WEEKLY_WEBHOOK_URL: ${{ secrets.SLACK_WEEKLY_WEBHOOK_URL }}
+    steps:
+      - name: Check configuration
+        run: |
+          missing=""
+          [ -n "$DATABASE_URL" ] || missing="$missing DATABASE_URL"
+          [ -n "$TELL_DATA_REPO" ] || missing="$missing TELL_DATA_REPO(variable)"
+          if [ -n "$missing" ]; then
+            echo "::error::missing Actions configuration:$missing (docs/deploy/github-actions.md)"
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.TELL_DATA_REPO }}
+          path: tell-data
+          token: ${{ secrets.TELL_DATA_PUSH_TOKEN }}
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen
+      - name: Weekly page
+        run: uv run tell weekly --week "$WEEK" --out tell-data
+      - name: Refresh methods reports into tell-data
+        # Dated reports land in tell-data/site/methods/ (rendered on github.com, served on
+        # Pages), never in this repo's docs/methods/ (ADR 0025).
+        run: uv run tell backtest refresh --out tell-data/site/methods
+      - name: Operations line
+        run: |
+          uv run tell runlog --week > "$RUNNER_TEMP/ops.json"
+          {
+            echo '```json'
+            cat "$RUNNER_TEMP/ops.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Commit and push tell-data
+        working-directory: tell-data
+        run: |
+          git config user.name tell-bot
+          git config user.email tell-bot@users.noreply.github.com
+          git add -A
+          git commit -m "weekly $(date -u +%FT%TZ)" || echo "nothing to commit"
+          git push || { git pull --rebase origin HEAD && git push; }
+      - name: Weekly summary to the private Slack channel
+        # Optional: skipped when SLACK_WEEKLY_WEBHOOK_URL is not set.
+        if: env.SLACK_WEEKLY_WEBHOOK_URL != ''
+        run: |
+          latest=tell-data/site/api/v0/weekly/latest.json
+          owner="${TELL_DATA_REPO%%/*}"
+          name="${TELL_DATA_REPO#*/}"
+          base="${TELL_BASE_URL:-https://${owner}.github.io/${name}}"
+          jq -n \
+            --slurpfile w "$latest" \
+            --slurpfile ops "$RUNNER_TEMP/ops.json" \
+            --arg base "$base" '
+            ($w[0]) as $w | ($ops[0]) as $o |
+            {text: ([
+              "*tell weekly \($w.week)* (\($w.start) to \($w.end))",
+              "Top sales-hiring velocity: " + ([$w.top_hiring[:5][] | "\(.name) (\(.velocity))"] | join(", ")),
+              "Top new Form D: " + ([$w.top_funding[:5][] | "\(.name) (\(.amount_usd // "undisclosed"))"] | join(", ")),
+              "Coverage: \($w.coverage.companies_monitored) companies, \($w.coverage.boards_polled) boards, \($w.coverage.filings_read) filings",
+              "Ops: \($o.summary)",
+              "Method change: \($w.method_change)",
+              "\($base)/weekly/\($w.week).html"
+            ] | join("\n"))}' > "$RUNNER_TEMP/weekly-slack.json"
+          curl -fsS -X POST -H 'Content-Type: application/json' \
+            --data @"$RUNNER_TEMP/weekly-slack.json" "$SLACK_WEEKLY_WEBHOOK_URL"
+
+  # GitHub disables a public repo's scheduled workflows after 60 days without activity in
+  # *this* repo; the tell-data commits do not count, because they land in another repo.
+  # Re-enabling through the API resets that timer without a commit, so no bot ever becomes
+  # a contributor here (ADR 0026).
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Re-enable the scheduled workflows
+        run: |
+          for wf in ingest.yml weekly.yml ci.yml; do
+            gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${wf}/enable"
+            echo "re-enabled ${wf}"
+          done

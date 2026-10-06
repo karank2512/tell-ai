@@ -1,0 +1,67 @@
+{
+  "domain": "northwind.example",
+  "name": "Northwind Example",
+  "as_of": "2026-10-06",
+  "profile": "default",
+  "score": 7.9,
+  "contributions": [
+    {
+      "type": "hiring_velocity",
+      "role_family": "sales",
+      "contribution": 4.2,
+      "occurred_at": "2026-10-04",
+      "summary": "4 new sales roles in 7 days vs 0.5 baseline",
+      "url": "https://jobs.lever.co/northwind-example",
+      "postings": [
+        {
+          "title": "Account Executive, Enterprise",
+          "posted_at": "2026-10-03",
+          "url": "https://jobs.lever.co/northwind-example/posting-sales-1"
+        },
+        {
+          "title": "Sales Development Representative",
+          "posted_at": "2026-10-04",
+          "url": "https://jobs.lever.co/northwind-example/posting-sales-2"
+        }
+      ]
+    },
+    {
+      "type": "hiring_velocity",
+      "role_family": "engineering",
+      "contribution": 2.1,
+      "occurred_at": "2026-10-01",
+      "summary": "3 new engineering roles in 7 days vs 1.0 baseline",
+      "url": "https://jobs.lever.co/northwind-example",
+      "postings": [
+        {
+          "title": "Senior Backend Engineer",
+          "posted_at": "2026-09-30",
+          "url": "https://jobs.lever.co/northwind-example/posting-eng-1"
+        }
+      ]
+    },
+    {
+      "type": "funding",
+      "contribution": 1.6,
+      "occurred_at": "2026-08-20",
+      "summary": "Form D: $6,000,000 offering, $6,000,000 sold",
+      "url": "https://www.sec.gov/Archives/edgar/data/9990009/000999000926000001/"
+    }
+  ],
+  "open_postings": 14,
+  "long_open_roles": 1,
+  "sources": {
+    "ats": "lever:northwind-example",
+    "edgar_cik": "0009990009",
+    "news": true
+  },
+  "generated_by": "local",
+  "why_not_higher": [
+    {
+      "type": "launch",
+      "decayed_at": "2026-09-26",
+      "url": "https://news.google.com/rss/articles/northwind-launch-001?oc=5",
+      "summary": "Northwind Example launches self-serve analytics tier"
+    }
+  ]
+}

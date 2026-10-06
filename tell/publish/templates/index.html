@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}tell: public buying signals with receipts{% endblock %}
+{% block content %}
+<h1>This week's top movers</h1>
+<p class="muted">Largest score increases over the 7 days to {{ as_of }} (profile <code>{{ profile }}</code>).</p>
+{% if movers %}
+<table class="list">
+  <thead><tr><th>Company</th><th class="num">Score</th><th class="num">Change</th><th>Top signal</th></tr></thead>
+  <tbody>
+  {% for m in movers %}
+  <tr>
+    <td><a href="companies/{{ m.domain }}.html">{{ m.name }}</a> <span class="muted">{{ m.domain }}</span></td>
+    <td class="num">{{ "%.1f"|format(m.score) }}</td>
+    <td class="num up">+{{ "%.1f"|format(m.change) }}</td>
+    <td>{% if m.top_url %}<a href="{{ m.top_url }}">{{ m.top_summary }}</a>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No company's score rose this week.</p>
+{% endif %}
+
+<h2>Weekly edition {{ weekly_label }}</h2>
+<div class="cols">
+  <section>
+    <h3>Sales hiring</h3>
+    {% if weekly.top_hiring %}
+    <ol>
+    {% for row in weekly.top_hiring[:excerpt] %}
+      <li>{{ row.name }} <span class="muted">{{ row.domain }}</span>: {{ row.velocity }} <a href="{{ row.receipts[0].url }}">receipt</a></li>
+    {% endfor %}
+    </ol>
+    {% else %}<p class="muted">No sales hiring spikes that week.</p>{% endif %}
+  </section>
+  <section>
+    <h3>New Form D filings</h3>
+    {% if weekly.top_funding %}
+    <ol>
+    {% for row in weekly.top_funding[:excerpt] %}
+      <li>{{ row.name }} <span class="muted">{{ row.domain }}</span>: {{ row.amount_text }} <a href="{{ row.url }}">filing</a></li>
+    {% endfor %}
+    </ol>
+    {% else %}<p class="muted">No new Form D filings by monitored companies that week.</p>{% endif %}
+  </section>
+</div>
+<p><a href="weekly/{{ weekly_label }}.html">The full weekly page</a></p>
+
+<h2>Methods</h2>
+<ul>
+{% for link in methods %}
+  <li><a href="{{ link.url }}">{{ link.title }}</a></li>
+{% endfor %}
+</ul>
+<p>Everything here is generated from public sources by open code: <a href="{{ repo_url }}">{{ repo_url }}</a>.
+Run health: <a href="health.html">health page</a>. Static API: <code>api/v0/companies/&lt;domain&gt;.json</code>.</p>
+{% endblock %}

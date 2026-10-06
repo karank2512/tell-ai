@@ -1,0 +1,82 @@
+{#- Base template for every `tell backtest` report (spec section 13 "Reporting rules").
+    Renders, in order: front matter, question, cohort and N, notices, the numbers, the query
+    or script, the caveats and the date. `r` is a tell.backtest.common.Report. Square brackets
+    never appear in the output (tell.backtest.common.render_report replaces them). -#}
+---
+report: {{ r.name }}
+title: "{{ r.title }}"
+as_of: {{ r.as_of.isoformat() }}
+generated_at: {{ r.generated_iso }}
+n: {{ r.n }}
+quotable: {{ "true" if r.quotable else "false" }}
+flagged_numbers: {{ r.flagged }}
+script: {{ r.script }}
+private: {{ "true" if r.private else "false" }}
+---
+
+# {{ r.title }}
+
+{% block intro %}
+Dated report written by `tell backtest {{ r.name }}`. Numbers are quoted from this file only, with their N; a number with N under 30 is marked "too small to quote".
+{% endblock %}
+
+{% if not r.quotable %}
+**Not quotable:** {{ r.not_quotable_reasons | join("; ") }}.
+{% endif %}
+
+## Question
+
+{{ r.question }}
+
+## Cohort
+
+{{ r.cohort }}
+
+Cohort N: {{ r.n }}.
+
+{% for line in r.notices %}
+**{{ line }}**
+
+{% endfor %}
+## Numbers
+
+{% for section in r.sections %}
+### {{ section.title }}
+
+{% if section.text %}
+{{ section.text }}
+
+{% endif %}
+{% for m in section.metrics %}
+- {{ m.label }}: {{ m.rendered }}
+{% endfor %}
+{% if section.metrics %}
+
+{% endif %}
+{% if section.table %}
+{{ section.table.markdown }}
+
+{% endif %}
+{% endfor %}
+## Query or script
+
+Script: `{{ r.script }}`.
+
+{% for q in r.queries %}
+{{ q.title }}:
+
+```{{ q.language }}
+{{ q.sql }}
+```
+
+{% endfor %}
+## Caveats
+
+{% for c in r.caveats %}
+- {{ c }}
+{% endfor %}
+
+## Date
+
+As of {{ r.as_of.isoformat() }}; generated {{ r.generated_iso }}.
+{% block footer %}{% endblock %}

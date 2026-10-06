@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}tell run health{% endblock %}
+{% block content %}
+{% if h.stale_sources %}
+<div class="banner stale">Stale: {{ h.stale_sources|join(", ") }} (no successful run in 24 hours).</div>
+{% else %}
+<div class="banner ok">All sources that run have succeeded in the last 24 hours.</div>
+{% endif %}
+<h1>Run health</h1>
+<p class="muted">Generated {{ h.generated_at }}. Freshness p95 across collectors: {{ fmt_hours(h.freshness_p95_h) }}.</p>
+<table class="list">
+  <thead><tr><th>Source</th><th>Status</th><th>Last successful run</th><th class="num">Success 7d</th><th class="num">Fetched 24h</th><th class="num">Inserted 24h</th><th class="num">Freshness p95</th></tr></thead>
+  <tbody>
+  {% for s in h.sources %}
+  <tr class="{{ s.status }}">
+    <td>{{ s.source }} <span class="muted">{{ s.kind }}</span></td>
+    <td>{{ s.status|replace("_", " ") }}</td>
+    <td>{{ s.last_ok_at or "never" }}</td>
+    <td class="num">{{ fmt_rate(s.success_rate_7d) }}</td>
+    <td class="num">{{ s.fetched_24h }}</td>
+    <td class="num">{{ s.inserted_24h }}</td>
+    <td class="num">{{ fmt_hours(s.freshness_p95_h) }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<p class="muted">Freshness is the 95th percentile of the delay between when something happened and when tell saw it, over the last 24 hours of events. JSON: <a href="api/v0/health.json">api/v0/health.json</a>.</p>
+{% endblock %}

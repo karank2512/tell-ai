@@ -1,0 +1,25 @@
+{
+  "domain": "examplerobotics.example",
+  "name": "Example Robotics",
+  "as_of": "2026-10-06",
+  "profile": "default",
+  "score": 27.7,
+  "contributions": [
+    {
+      "type": "funding",
+      "contribution": 27.7,
+      "occurred_at": "2026-10-01",
+      "summary": "Form D: $18,000,000 offering, $12,500,000 sold",
+      "url": "https://www.sec.gov/Archives/edgar/data/9990001/000999000126000001/"
+    }
+  ],
+  "open_postings": 0,
+  "long_open_roles": 0,
+  "sources": {
+    "ats": "no_board",
+    "edgar_cik": "0009990001",
+    "news": false
+  },
+  "generated_by": "https://github.com/karank2512/tell-ai/commit/0123456789abcdef0123456789abcdef01234567",
+  "why_not_higher": []
+}

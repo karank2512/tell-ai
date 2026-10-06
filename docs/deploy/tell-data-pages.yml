@@ -1,0 +1,40 @@
+# Copy to tell-data/.github/workflows/pages.yml at cutover (docs/deploy/github-actions.md).
+#
+# GitHub Pages can only serve a branch from its root or /docs, and tell's generator writes
+# the site to tell-data/site/. Rather than rename the generator output, Pages is deployed
+# from a workflow: every push to main (each ingest/weekly commit, made with the
+# TELL_DATA_PUSH_TOKEN PAT, which does trigger workflows) uploads site/ as the Pages
+# artifact. Settings -> Pages -> Source must be "GitHub Actions".
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths: ["site/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a newer push supersedes a queued one (the site is a snapshot).
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

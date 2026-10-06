@@ -18,16 +18,26 @@ rather than only in code.
    is about company size, not about what tell can see. Alternative rejected: storing 0 for
    out-of-band companies would break "every stored number is explainable from its parts".
 
-2. **Hysteresis = 7-day cooldown + 0.5 re-arm.** A crossing fires when the most recent stored
-   score before the day was below the threshold and today's is at or above it, *and* no
-   crossing for the company and profile fired in the last 7 days, *and* (once one has fired)
-   some stored score since it was below `threshold - 0.5`. "Previous score" is the most recent
-   stored day, not strictly yesterday, so a skipped run does not fabricate a crossing. A company
-   with no stored history counts as previously 0, so its first scored day above the threshold
-   fires: that is the alert a watchlist owner wants on day one.
+2. **Hysteresis = 7-day cooldown + 0.5 re-arm, measured in scored days.** A crossing fires
+   when the most recent stored score before the day was below the threshold and today's is at
+   or above it, *and* no crossing for the company and profile has a scored day
+   (`payload.as_of`) within the last 7 days of `as_of`, *and* (once one has fired) some stored
+   score since that crossing's `as_of` was below `threshold - 0.5`. Both comparisons read the
+   stored `as_of` dates, never `occurred_at`: a late backfill run stamps an old day's crossing
+   with today's instant, and hysteresis is about the days a company was scored, not about when
+   tell happened to run. "Previous score" is the most recent stored day, not strictly
+   yesterday, so a skipped run does not fabricate a crossing. A company with no stored history
+   counts as previously 0, so its first scored day above the threshold fires: that is the alert
+   a watchlist owner wants on day one.
 
-3. **Scoring instant = end of the `as_of` UTC day.** Every event of the day counts; decay
-   numbers depend only on `(as_of, starts_at)` and reruns reproduce them.
+3. **Scoring instant = end of the `as_of` UTC day; crossing events carry the run instant.**
+   Every event of the day counts; decay numbers depend only on `(as_of, starts_at)` and reruns
+   reproduce them. A `score_crossed_threshold` event, however, is something tell *observed*, so
+   its `occurred_at` and `observed_at` are both the run instant (`now`), never the end-of-day
+   scoring instant (which would date the event in the future relative to the run that wrote
+   it). The scored day lives in `version` (idempotency: a same-day rerun derives the same
+   `event_id`) and in `payload.as_of` (what item 2 compares). Earlier Phase 7 builds stamped
+   `occurred_at = 23:59:59.999999` of the scored day; that was reversed after review.
 
 4. **`default` scores everyone with an active signal; other profiles score their watchlists.**
    The spec says the daily job recomputes "every company on each watchlist". The public site and
@@ -46,9 +56,18 @@ rather than only in code.
    (section 5 DDL, unchanged). The keyword a `tech_keywords` list is matched against is read
    from the originating event's payload at scoring time.
 
-8. **A `funding` signal keeps its creation magnitude.** Amendments merge into the original
-   event's payload (section 5 rule 4); the signal row is not rewritten. The receipt URL still
-   opens the filing index, where the current amounts are.
+8. **A `funding` signal's magnitude follows the current payload amount.** Amendments merge
+   into the original event's payload (section 5 rule 4) and never create a second event or
+   signal. When a `D/A` changes `totalOfferingAmount`, the next `build_signals` rewrites the
+   existing signal's `magnitude` from the payload (`log10(amount)` capped at 8) and nothing
+   else: `weight`, `half_life_days`, `starts_at` and the row id stay, so stored contributions
+   keep pointing at the same signal. Rationale: the contribution summary is rendered from the
+   payload, so the number a reader sees and the amount beside it must come from the same
+   source, and `signals` must stay rebuildable from `events` (a rebuild from scratch would
+   otherwise disagree with the table it replaced). Alternative rejected: freezing the creation
+   magnitude (the first Phase 7 build did this) left "$400,000,000 offering" beside a
+   contribution computed from $18M. Only `funding` re-derives; every other type's magnitude is
+   fixed at its event's creation.
 
 9. **Idempotency of `signals` is enforced in code.** `(event_id, signal_type, role_family)` is
    unique, but `role_family` is NULL for every type except `hiring_velocity` and PostgreSQL does

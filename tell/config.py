@@ -88,6 +88,25 @@ class Settings(BaseSettings):
     tell_api_key: SecretStr | None = Field(
         default=None, description="Optional API key for the FastAPI service (tell-mcp client)."
     )
+    tell_repo_url: str = Field(
+        default="https://github.com/karank2512/tell-ai",
+        description="Public URL of the code repo; pages link to the commit that produced them.",
+    )
+    tell_data_repo_url: str = Field(
+        default="https://github.com/karank2512/tell-data",
+        description="Public URL of the tell-data repo (JSONL events, snapshots, the site).",
+    )
+    tell_feedback_form_url: str | None = Field(
+        default=None,
+        description=(
+            "Prefilled Google Form link for the account-page thumbs row and the CSV "
+            "rate_this_row column; {signal_id}, {domain} and {verdict} are substituted."
+        ),
+    )
+    tell_intake_form_url: str | None = Field(
+        default=None,
+        description="Google Form where people ask for domains to be watched (Slack footer).",
+    )
 
     # --- alerting ------------------------------------------------------------
     tell_alert_threshold: float = Field(
@@ -97,7 +116,10 @@ class Settings(BaseSettings):
         default="America/Los_Angeles", description="IANA timezone for the Slack digest."
     )
     tell_slack_digest_hour: int = Field(
-        default=8, ge=0, le=23, description="Local hour at which the digest run sends."
+        default=7,
+        ge=0,
+        le=23,
+        description="First ingest run at or after this local hour sends the digest.",
     )
 
     # --- review UI -----------------------------------------------------------

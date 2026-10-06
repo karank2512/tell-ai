@@ -1,0 +1,74 @@
+# The nightly intake reader (SPEC section 15.6, PLAN Phase 12). It runs in tell-private, the
+# only repo with customer input, so its logs and its commits stay private: copy this file to
+# tell-private/.github/workflows/intake.yml. It reads the intake form's published-as-CSV
+# sheet, creates or updates watchlists in the database, and commits the contact records
+# (tell-private/watchlists/<slug>.yaml) back here. Setup: docs/intake/google-form.md and
+# docs/deploy/github-actions.md ("Intake") in the code repo.
+name: intake
+
+on:
+  schedule:
+    - cron: "41 3 * * *" # nightly, 03:41 UTC, off the hour
+  workflow_dispatch:
+
+# One sync at a time: two runs would race on the same watchlist files.
+concurrency:
+  group: intake
+  cancel-in-progress: false
+
+# contents: write is for this private repo only (the watchlists/ commit below). The code
+# repo is checked out read-only.
+permissions:
+  contents: write
+
+env:
+  DATABASE_URL: ${{ secrets.DATABASE_URL }}
+  TELL_INTAKE_CSV_URL: ${{ secrets.TELL_INTAKE_CSV_URL }}
+  TELL_ENV: prod
+  UV_FROZEN: "1"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check configuration
+        run: |
+          missing=""
+          [ -n "$DATABASE_URL" ] || missing="$missing DATABASE_URL"
+          [ -n "$TELL_INTAKE_CSV_URL" ] || missing="$missing TELL_INTAKE_CSV_URL"
+          if [ -n "$missing" ]; then
+            echo "::error::missing Actions secrets:$missing (docs/intake/google-form.md)"
+            exit 1
+          fi
+      # This repo (tell-private): watchlists/ and profiles/ are read and watchlists/ is written.
+      - uses: actions/checkout@v4
+        with:
+          path: tell-private
+      # The code. tell-ai is public after cutover (PLAN Phase 13 step 1), so no token is needed.
+      - uses: actions/checkout@v4
+        with:
+          repository: karank2512/tell-ai
+          ref: main
+          path: tell
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "tell/uv.lock"
+      - run: uv sync --frozen
+        working-directory: tell
+      - name: Sync new submissions into watchlists
+        # Prints one JSON line of counts and rejected row numbers; never a contact, a
+        # company, a webhook or the sheet URL (ADR 0027). Exit 1 when the sheet cannot be
+        # read or its columns drifted.
+        working-directory: tell
+        run: uv run tell intake sync --private-dir ../tell-private
+      - name: Commit the private watchlist records
+        # Contacts and webhooks live only here. The commit message carries no field value.
+        working-directory: tell-private
+        run: |
+          git config user.name tell-bot
+          git config user.email tell-bot@users.noreply.github.com
+          git add watchlists
+          git commit -m "intake $(date -u +%FT%TZ)" || echo "nothing to commit"
+          git push

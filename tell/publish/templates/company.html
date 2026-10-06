@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}{{ c.name }} ({{ c.domain }}): tell{% endblock %}
+{% block content %}
+<h1>{{ c.name }} <span class="muted">{{ c.domain }}</span></h1>
+<p class="score">Score <strong>{{ "%.1f"|format(c.score) }}</strong>
+{% for h in heats %}<span class="heat">heat {{ h.heat }} in <a href="../api/v0/watchlists/{{ h.slug }}.json">{{ h.name }}</a></span>{% endfor %}
+</p>
+<p class="muted">Profile <code>{{ c.profile }}</code>, as of {{ c.as_of }}. The score is the sum of the contributions below. Open postings: {{ c.open_postings }}. Job board: {{ c.sources.ats }}{% if c.sources.edgar_cik %}; SEC CIK {{ c.sources.edgar_cik }}{% endif %}{% if c.sources.news %}; news watched{% endif %}.
+<a href="../api/v0/companies/{{ c.domain }}.json">JSON</a></p>
+
+<h2>Contributions</h2>
+{% if bars %}
+<ul class="bars">
+{% for b in bars %}
+  <li class="bar-row">
+    <div class="bar-label">
+      <span class="type">{{ b.type }}{% if b.role_family %} ({{ b.role_family }}){% endif %}</span>
+      <span class="value">{{ "%.1f"|format(b.contribution) }}</span>
+    </div>
+    <div class="bar"><span style="width: {{ b.width }}%"></span></div>
+    <div class="receipt">{{ b.occurred_at }}: <a href="{{ b.url }}">{{ b.summary }}</a></div>
+    {% if b.postings %}
+    <ul class="postings">
+      {% for p in b.postings %}<li><a href="{{ p.url }}">{{ p.title }}</a> <span class="muted">posted {{ p.posted_at }}</span></li>{% endfor %}
+    </ul>
+    {% endif %}
+    <div class="thumbs">Was this useful? <a href="{{ b.useful }}">yes</a> · <a href="{{ b.not_useful }}">no</a> · <a href="{{ b.already_knew }}">already knew</a></div>
+  </li>
+{% endfor %}
+</ul>
+{% else %}
+<p>No signal contributes to the score today.</p>
+{% endif %}
+
+{% if long_open %}
+<h2>Long-open roles</h2>
+<ul class="long-open">
+{% for r in long_open %}<li><a href="{{ r.url }}">{{ r.title }}</a> <span>open {{ r.days_open }} days, weight {{ "%.2f"|format(r.weight) }}</span></li>{% endfor %}
+</ul>
+{% endif %}
+
+<h2>Why not higher</h2>
+{% if c.why_not_higher %}
+<ul class="decayed">
+{% for d in c.why_not_higher %}<li>{{ d.type }}{% if d.role_family %} ({{ d.role_family }}){% endif %} decayed to zero on {{ d.decayed_at }}: <a href="{{ d.url }}">{{ d.summary }}</a></li>{% endfor %}
+</ul>
+{% else %}
+<p class="muted">No signal decayed to zero in the last 30 days.</p>
+{% endif %}
+<p class="muted"><a href="{{ feedback }}">Feedback on this page</a></p>
+{% endblock %}

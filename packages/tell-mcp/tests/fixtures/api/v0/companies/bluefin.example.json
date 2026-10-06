@@ -1,0 +1,25 @@
+{
+  "domain": "bluefin.example",
+  "name": "Bluefin Data Systems",
+  "as_of": "2026-10-06",
+  "profile": "default",
+  "score": 22.9,
+  "contributions": [
+    {
+      "type": "funding",
+      "contribution": 22.9,
+      "occurred_at": "2026-10-01",
+      "summary": "Form D: indefinite offering, $2,750,000 sold",
+      "url": "https://www.sec.gov/Archives/edgar/data/9990002/000999000226000001/"
+    }
+  ],
+  "open_postings": 0,
+  "long_open_roles": 0,
+  "sources": {
+    "ats": "no_board",
+    "edgar_cik": "0009990002",
+    "news": false
+  },
+  "generated_by": "https://github.com/karank2512/tell-ai/commit/0123456789abcdef0123456789abcdef01234567",
+  "why_not_higher": []
+}

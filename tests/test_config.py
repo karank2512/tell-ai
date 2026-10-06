@@ -27,6 +27,10 @@ EXPECTED_ENV_VARS = {
     "TELL_DISCOVERY_RPS",
     "TELL_BASE_URL",
     "TELL_API_KEY",
+    "TELL_REPO_URL",
+    "TELL_DATA_REPO_URL",
+    "TELL_FEEDBACK_FORM_URL",
+    "TELL_INTAKE_FORM_URL",
     "TELL_ALERT_THRESHOLD",
     "TELL_SLACK_TZ",
     "TELL_SLACK_DIGEST_HOUR",
@@ -72,7 +76,11 @@ def test_defaults() -> None:
     assert s.tell_api_key is None
     assert s.tell_alert_threshold == 6.0
     assert s.tell_slack_tz == "America/Los_Angeles"
-    assert s.tell_slack_digest_hour == 8
+    assert s.tell_slack_digest_hour == 7
+    assert s.tell_repo_url == "https://github.com/karank2512/tell-ai"
+    assert s.tell_data_repo_url == "https://github.com/karank2512/tell-data"
+    assert s.tell_feedback_form_url is None
+    assert s.tell_intake_form_url is None
     assert s.tell_review_password is None
     assert s.tell_http_timeout_s == 20.0
     assert s.tell_env == "dev"

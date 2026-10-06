@@ -45,8 +45,17 @@ existing keys of the candidate events first and skips them. A rerun inserts zero
 the receipt); Form D amendments (`D/A` merges into the original event's payload upstream and
 never creates a second event; an unlinked `D/A` is stored as `form_d_amendment`, which no
 rule reads); `form_8k_filed` without Item 5.02; non-flagship GitHub releases; events whose
-company is unknown. A `funding` signal keeps the magnitude of the filing it was created from:
-an amendment that raises the amount later does not change it.
+company is unknown.
+
+**Amended amounts.** A `D/A` that changes the offering amount is merged into the original
+`form_d_filed` payload by the collector. The next `build_signals` notices that the payload now
+derives a different magnitude and rewrites the existing `funding` signal's `magnitude` in
+place (nothing else on the row changes, and no second signal is ever created). So a Form D at
+$18,000,000 (`7.2553`) amended to $400,000,000 becomes `8` (`log10(4e8) = 8.6`, capped), the
+next day's contribution is computed from `8`, and the summary beside it reads
+`"Form D: $400,000,000 offering"`: the number and its receipt always come from the same payload,
+and `signals` stays rebuildable from `events`
+(`test_amended_offering_amount_rewrites_the_funding_magnitude_in_place`, ADR 0021 item 8).
 
 ## 2. ICP profiles (`profiles.py`)
 
@@ -159,18 +168,26 @@ band: the filter is about company size, not about what tell can see.
 `tell score run --profile X --as-of D` does one profile. Both then run crossing detection.
 
 A `score_crossed_threshold` event (`source="tell"`, `type="score_crossed_threshold"`,
-`external_id=f"{company_id}:{profile}"`, `version` = the `as_of` ISO date, `occurred_at` = the
-scoring instant, `url` = the top contribution's URL, `magnitude` = the score, payload
-`{profile, as_of, score, previous_score, previous_as_of, threshold, top_contributions[:2]}`)
-is written when all of the following hold:
+`external_id=f"{company_id}:{profile}"`, `version` = the `as_of` ISO date, `occurred_at` =
+`observed_at` = the run instant, `url` = the top contribution's URL, `magnitude` = the score,
+payload `{profile, as_of, score, previous_score, previous_as_of, threshold,
+top_contributions[:2]}`) is written when all of the following hold:
 
 1. the company is in the profile's size band and has at least one contribution;
 2. today's score is at or above `alert_threshold`;
 3. the most recent stored score before `as_of` for this company and profile was below the
    threshold (no earlier score counts as 0, so a company's first scored day can fire);
-4. **cooldown**: no crossing event for this company and profile in the last 7 days;
-5. **re-arm**: if a crossing ever fired, some stored score since it was below
-   `threshold - 0.5`.
+4. **cooldown**: no crossing event for this company and profile whose scored day
+   (`payload.as_of`) is within the last 7 days of `as_of`;
+5. **re-arm**: if a crossing ever fired, some stored score since that crossing's `as_of` was
+   below `threshold - 0.5`.
+
+The crossing is something tell observed, so the event is stamped with the instant the run
+wrote it, never with the end-of-day scoring instant (which would place it in the future). The
+scored day travels in `version` and `payload.as_of`; the cooldown and the re-arm compare those
+dates and ignore `occurred_at`, so a late backfill of an old day neither suppresses nor
+fabricates a crossing on a later day
+(`test_crossing_defaults_to_the_wall_clock_and_cooldown_compares_scored_days`).
 
 The deterministic `event_id` makes a same-day rerun a no-op. A score oscillating around 6.0 by
 less than 0.5 therefore fires once, on the first upward crossing, and never again until it has

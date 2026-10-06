@@ -248,8 +248,10 @@ suffix the spec list does not know is an extra token, which is exactly what the 
 refuses. The international suffix list makes those names exact aliases (R2), which is why
 R2 grew from 254 to 283 positive cases and R3 shrank from 38 to 9.
 
-Gates: names precision >= 0.97 and recall >= 0.85 pass on both sets. The numbers go into the
-README verbatim once the gold set has been spot-checked.
+Gates: names precision >= 0.97 and recall >= 0.85 pass on both sets. The README quotes
+these numbers with the caveat that the gold set is a draft a person has not yet
+spot-checked; the caveat comes off, and the numbers may be quoted elsewhere, once the
+spot-check is done.
 
 ## Deliberately not done
 

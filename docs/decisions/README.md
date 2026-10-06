@@ -25,3 +25,9 @@ Template: [0000-template.md](0000-template.md). Each record covers one locked de
 | [0019](0019-velocity-cold-start-and-reposts.md) | Hiring velocity: first-poll events flagged and never counted, `vanished_within_30d` repost rule, capped walk-back marks the whole episode |
 | [0020](0020-taxonomy-interpretations.md) | Role-family taxonomy interpretations: keyword masking, shared department hints, stale-weighted small-company count, non-English stop words, short-keyword suffixes, location code collision kept |
 | [0021](0021-scoring-interpretations.md) | Scoring interpretations: size band gates alerts not storage, 7-day cooldown + 0.5 re-arm hysteresis, end-of-day scoring instant, `default` scores every active company, `news_funding` and first-poll tech events carry no weight, heat ties count half |
+| [0022](0022-public-watchlists.md) | `watchlists.slug` and `watchlists.is_public` mark the lists published as `api/v0/watchlists/{slug}.json` |
+| [0023](0023-publishing-interpretations.md) | Publishing interpretations: rounding that adds up, heat only through public watchlists, code-commit `generated_by`, weekly edition = last complete ISO week, first-poll events out of freshness, `never_run` sources, digest hour 7 |
+| [0024](0024-api-keys-tables.md) | `api_keys` and `api_usage` back the FastAPI v1 service: SHA-256 keys with prefix and revocation, metering before the handler, v1 route interpretations |
+| [0025](0025-weekly-reports-published-to-tell-data.md) | `weekly.yml` publishes refreshed methods reports to `tell-data/site/methods/` and never commits to `tell-ai` |
+| [0026](0026-workflow-keepalive-via-api.md) | Scheduled workflows are kept alive by re-enabling them through the API, not by commits |
+| [0027](0027-intake-contact-storage.md) | Intake contacts and webhooks live only in tell-private; the DB keeps a random per-watchlist owner handle and a company+profile slug |

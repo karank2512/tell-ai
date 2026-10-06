@@ -1,0 +1,474 @@
+"""The GitHub Actions workflows (SPEC sections 11 and 12; PLAN Phase 10).
+
+Every workflow under ``.github/workflows`` is parsed with PyYAML and checked for the
+shape the spec fixes (schedules, matrix, concurrency, failure policy, secrets wiring),
+and every ``uv run tell ...`` line is resolved against the real typer app, sub-apps and
+options included, so a renamed command or flag fails here rather than in a 02:17 cron.
+No network, no database.
+"""
+
+from __future__ import annotations
+
+import re
+import shlex
+from functools import cache
+from pathlib import Path
+from typing import Any
+
+import pytest
+import typer.main
+import yaml
+
+from tell.cli import Source, app
+from tell.ops.deadman import SCHEDULED_SOURCES
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
+EXPECTED_WORKFLOWS = {"ci.yml", "ingest.yml", "weekly.yml", "publish-mcp.yml"}
+TEMPLATE_WORKFLOWS = {
+    "tell-data-pages.yml": REPO_ROOT / "docs" / "deploy" / "tell-data-pages.yml",
+    "tell-private-intake.yml": REPO_ROOT / "docs" / "deploy" / "tell-private-intake.yml",
+}
+"""Workflows copied into the other repos at cutover; parsed and checked like the local ones."""
+ATS_VENDORS = ["greenhouse", "lever", "ashby", "smartrecruiters"]
+
+_EXPR = re.compile(r"\$\{\{.*?\}\}")
+_SHELL_OPERATORS = {"||", "&&", "|", ";", ">", ">>", "2>&1", "&"}
+_TELL_CALL = re.compile(r"\buv run tell\b(?P<rest>.*)")
+
+
+# --- helpers ----------------------------------------------------------------------------
+
+
+def _load(name: str) -> dict[Any, Any]:
+    path = TEMPLATE_WORKFLOWS.get(name, WORKFLOWS_DIR / name)
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert isinstance(data, dict), f"{name} is not a mapping"
+    return data
+
+
+def _workflow_paths() -> list[Path]:
+    return [*sorted(WORKFLOWS_DIR.glob("*.yml")), *TEMPLATE_WORKFLOWS.values()]
+
+
+def _on(workflow: dict[Any, Any]) -> dict[str, Any]:
+    """The ``on:`` block (PyYAML reads the bare key ``on`` as boolean True)."""
+    raw: dict[Any, Any] = workflow
+    block = raw["on"] if "on" in raw else raw[True]
+    assert isinstance(block, dict)
+    return block
+
+
+def _steps(workflow: dict[str, Any], job: str) -> list[dict[str, Any]]:
+    steps = workflow["jobs"][job]["steps"]
+    assert isinstance(steps, list)
+    return steps
+
+
+def _run_scripts(workflow: dict[str, Any]) -> list[tuple[str, str]]:
+    """``(job, run script)`` for every ``run:`` step in the workflow."""
+    return [
+        (job_name, str(step["run"]))
+        for job_name, job in workflow["jobs"].items()
+        for step in job.get("steps", [])
+        if "run" in step
+    ]
+
+
+def _index(steps: list[dict[str, Any]], needle: str) -> int:
+    """Index of the first step whose ``run`` contains ``needle``."""
+    for i, step in enumerate(steps):
+        if needle in str(step.get("run", "")):
+            return i
+    pytest.fail(f"no step runs {needle!r}")
+
+
+def _tell_invocations() -> list[tuple[str, list[str]]]:
+    """Every ``uv run tell ...`` call in every workflow: (label, argv after ``tell``)."""
+    calls: list[tuple[str, list[str]]] = []
+    for path in _workflow_paths():
+        workflow = _load(path.name)
+        for job, script in _run_scripts(workflow):
+            for line in script.splitlines():
+                for match in _TELL_CALL.finditer(line):
+                    rest = _EXPR.sub("EXPR", match.group("rest"))
+                    argv: list[str] = []
+                    for token in shlex.split(rest, comments=True):
+                        if token in _SHELL_OPERATORS:
+                            break
+                        argv.append(token)
+                    calls.append((f"{path.name}:{job}: tell {' '.join(argv)}", argv))
+    return calls
+
+
+@cache
+def _root() -> Any:
+    """The click command tree of ``tell`` (typer vendors click, so this is duck-typed)."""
+    return typer.main.get_command(app)
+
+
+def _is_group(command: Any) -> bool:
+    return hasattr(command, "commands")
+
+
+def _resolve(argv: list[str]) -> tuple[Any, list[str]]:
+    """Walk ``argv`` through the command tree; return the command reached and the rest."""
+    command = _root()
+    rest = list(argv)
+    while _is_group(command) and rest and not rest[0].startswith("-"):
+        name = rest.pop(0)
+        sub = command.commands.get(name)
+        if sub is None:
+            pytest.fail(
+                f"`{command.name} {name}` is not a command; known: {sorted(command.commands)}"
+            )
+        command = sub
+    if command is _root():
+        pytest.fail("`tell` called without a command")
+    if _is_group(command) and not command.invoke_without_command:
+        pytest.fail(f"`{command.name}` needs a sub-command; known: {sorted(command.commands)}")
+    return command, rest
+
+
+def _option_names(command: Any) -> set[str]:
+    names: set[str] = set()
+    for param in command.params:
+        if param.param_type_name == "option":
+            names.update(param.opts)
+            names.update(param.secondary_opts)
+    return names
+
+
+# --- every workflow ---------------------------------------------------------------------
+
+
+def test_expected_workflows_exist_and_parse() -> None:
+    present = {p.name for p in WORKFLOWS_DIR.glob("*.yml")}
+    assert present >= EXPECTED_WORKFLOWS
+    for name in present:
+        workflow = _load(name)
+        assert workflow["name"]
+        assert workflow["jobs"]
+        _on(workflow)
+
+
+@pytest.mark.parametrize("name", sorted(EXPECTED_WORKFLOWS))
+def test_every_job_has_a_timeout(name: str) -> None:
+    for job_name, job in _load(name)["jobs"].items():
+        assert isinstance(job.get("timeout-minutes"), int), f"{name}:{job_name} has no timeout"
+
+
+@pytest.mark.parametrize("name", sorted(EXPECTED_WORKFLOWS))
+def test_default_token_is_read_only(name: str) -> None:
+    assert _load(name)["permissions"] == {"contents": "read"}
+
+
+def test_no_dropped_vendor_anywhere() -> None:
+    """ADR 0003: the dropped collectors are never scheduled or mentioned."""
+    for path in _workflow_paths():
+        text = path.read_text(encoding="utf-8").lower()
+        assert "workday" not in text, path.name
+        assert "oracle" not in text, path.name
+
+
+def test_every_schedule_avoids_the_top_of_the_hour() -> None:
+    """SPEC section 11: GitHub delays cron runs at :00, so no schedule here uses it."""
+    schedules = 0
+    for path in _workflow_paths():
+        for entry in _on(_load(path.name)).get("schedule", []):
+            minute = str(entry["cron"]).split()[0]
+            assert minute.isdigit(), f"{path.name}: cron {entry['cron']!r}"
+            assert int(minute) != 0, f"{path.name}: cron {entry['cron']!r} runs at :00"
+            schedules += 1
+    assert schedules >= 4  # ingest, weekly, ci audit, intake
+
+
+def test_workflows_find_tell_invocations() -> None:
+    labels = [label for label, _ in _tell_invocations()]
+    assert len(labels) >= 12
+    joined = "\n".join(labels)
+    for needle in ("tell ingest", "tell resolve", "tell deadman", "tell weekly", "tell backtest"):
+        assert needle in joined
+
+
+@pytest.mark.parametrize(
+    ("label", "argv"), _tell_invocations(), ids=[label for label, _ in _tell_invocations()]
+)
+def test_tell_invocation_exists_in_cli(label: str, argv: list[str]) -> None:
+    command, rest = _resolve(argv)
+    known = _option_names(command)
+    for token in rest:
+        if token.startswith("--"):
+            flag = token.split("=", 1)[0]
+            assert flag in known, f"{label}: {flag} is not an option of `{command.name}`"
+    if command.name == "ingest" and "--source" in rest:
+        value = rest[rest.index("--source") + 1]
+        if value != "EXPR":
+            choices = next(p.type.choices for p in command.params if p.name == "source")
+            assert value in choices, label
+
+
+# --- ingest.yml -------------------------------------------------------------------------
+
+
+def test_ingest_triggers_and_concurrency() -> None:
+    wf = _load("ingest.yml")
+    on = _on(wf)
+    assert on["schedule"] == [{"cron": "17 2,8,14,20 * * *"}]
+    assert "source" in on["workflow_dispatch"]["inputs"]
+    assert on["workflow_dispatch"]["inputs"]["source"]["required"] is False
+    assert wf["concurrency"] == {"group": "ingest", "cancel-in-progress": False}
+
+
+def test_ingest_env_wiring() -> None:
+    env = _load("ingest.yml")["env"]
+    assert env["DATABASE_URL"] == "${{ secrets.DATABASE_URL }}"
+    assert env["SEC_USER_AGENT"] == "${{ secrets.SEC_USER_AGENT }}"
+    assert env["TELL_HTTP_USER_AGENT"] == "tell/0.1 (+https://github.com/${{ github.repository }})"
+    assert env["TELL_DATA_REPO"] == "${{ vars.TELL_DATA_REPO }}"
+
+
+def test_ingest_marks_manual_runs() -> None:
+    """SPEC 13.4: a workflow_dispatch run is the intervention 'weeks unattended' counts from."""
+    env = _load("ingest.yml")["env"]
+    assert env["TELL_RUN_MANUAL"] == "${{ github.event_name == 'workflow_dispatch' }}"
+    for name in ("weekly.yml", "ci.yml", "publish-mcp.yml"):
+        assert "TELL_RUN_MANUAL" not in _load(name).get("env", {}), name
+
+
+def test_ingest_ats_matrix() -> None:
+    ats = _load("ingest.yml")["jobs"]["ats"]
+    assert ats["strategy"]["matrix"]["vendor"] == ATS_VENDORS
+    assert ats["strategy"]["fail-fast"] is False
+    assert ats["timeout-minutes"] == 90
+    assert set(ATS_VENDORS) <= {s.value for s in Source}
+    runs = [str(s.get("run", "")) for s in ats["steps"]]
+    assert "uv run tell ingest --source ${{ matrix.vendor }}" in runs
+    summary = next(r for r in runs if "tell runlog --source ${{ matrix.vendor }}" in r)
+    assert "$GITHUB_STEP_SUMMARY" in summary
+
+
+def test_ingest_discovery_job_feeds_ats() -> None:
+    jobs = _load("ingest.yml")["jobs"]
+    discover = jobs["discover"]
+    assert discover["timeout-minutes"] == 30
+    batch = next(
+        str(s["run"]) for s in discover["steps"] if "tell discover batch" in str(s.get("run"))
+    )
+    assert "--limit 300" in batch
+    assert "--rps 4" in batch
+    assert jobs["ats"]["needs"] == ["discover"]
+    # A failed discovery pass never blocks polling.
+    assert "cancelled()" in jobs["ats"]["if"]
+
+
+def test_ingest_filings_edgar_then_news() -> None:
+    filings = _load("ingest.yml")["jobs"]["filings"]
+    assert filings["timeout-minutes"] == 30
+    steps = filings["steps"]
+    assert _index(steps, "tell ingest --source edgar") < _index(steps, "tell ingest --source news")
+
+
+def test_ingest_scheduled_sources_match_deadman() -> None:
+    """The dead-man checks exactly the sources ingest.yml schedules."""
+    assert set(SCHEDULED_SOURCES) == {*ATS_VENDORS, "edgar", "news"}
+
+
+def test_resolve_score_publish_order_and_policy() -> None:
+    wf = _load("ingest.yml")
+    job = wf["jobs"]["resolve_score_publish"]
+    assert job["needs"] == ["ats", "filings"]
+    assert job["if"] == "always()"
+    assert job["timeout-minutes"] == 45
+    steps = job["steps"]
+    order = [
+        _index(steps, "uv run tell resolve"),
+        _index(steps, "uv run tell score --all-profiles"),
+        _index(steps, "uv run tell publish --out tell-data"),
+        _index(steps, "uv run tell prune --out tell-data"),
+        _index(steps, "git push"),
+        _index(steps, "uv run tell notify --slack"),
+        _index(steps, "uv run tell deadman"),
+    ]
+    assert order == sorted(order)
+    assert len(set(order)) == len(order)
+    notify = steps[_index(steps, "uv run tell notify --slack")]
+    assert notify["env"]["SLACK_WEBHOOK_URL"] == "${{ secrets.SLACK_WEBHOOK_URL }}"
+    # The dead-man must be the last step so it judges the whole run.
+    assert _index(steps, "uv run tell deadman") == len(steps) - 1
+
+
+def test_resolve_score_publish_tell_data_checkout_and_commit() -> None:
+    steps = _load("ingest.yml")["jobs"]["resolve_score_publish"]["steps"]
+    checkouts = [s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@")]
+    assert len(checkouts) == 2
+    data = checkouts[1]["with"]
+    assert data == {
+        "repository": "${{ vars.TELL_DATA_REPO }}",
+        "path": "tell-data",
+        "token": "${{ secrets.TELL_DATA_PUSH_TOKEN }}",
+    }
+    commit = steps[_index(steps, "git push")]
+    assert commit["working-directory"] == "tell-data"
+    script = str(commit["run"])
+    assert "git config user.name tell-bot" in script
+    assert "git config user.email tell-bot@users.noreply.github.com" in script
+    assert 'git commit -m "ingest $(date -u +%FT%TZ)" || echo "nothing to commit"' in script
+
+
+def test_ingest_dispatch_source_skips_other_legs() -> None:
+    jobs = _load("ingest.yml")["jobs"]
+    assert "inputs.source" in jobs["discover"]["if"]
+    assert "inputs.source" in jobs["ats"]["if"]
+    assert "inputs.source == matrix.vendor" in jobs["ats"]["env"]["RUN_LEG"]
+    assert "inputs.source" in jobs["filings"]["if"]
+    filings = jobs["filings"]["steps"]
+    assert "'edgar'" in filings[_index(filings, "--source edgar")]["if"]
+    assert "'news'" in filings[_index(filings, "--source news")]["if"]
+
+
+# --- weekly.yml -------------------------------------------------------------------------
+
+
+def test_weekly_schedule_and_steps() -> None:
+    wf = _load("weekly.yml")
+    on = _on(wf)
+    assert on["schedule"] == [{"cron": "23 6 * * 1"}]
+    assert "workflow_dispatch" in on
+    steps = _steps(wf, "weekly")
+    order = [
+        _index(steps, "uv run tell weekly --week"),
+        _index(steps, "uv run tell backtest"),
+        _index(steps, "git push"),
+    ]
+    assert order == sorted(order)
+    slack = steps[-1]
+    assert "SLACK_WEEKLY_WEBHOOK_URL" in str(slack["if"])
+    assert wf["jobs"]["weekly"]["env"]["SLACK_WEEKLY_WEBHOOK_URL"] == (
+        "${{ secrets.SLACK_WEEKLY_WEBHOOK_URL }}"
+    )
+
+
+def test_weekly_never_commits_to_the_code_repo() -> None:
+    """ADR 0025: reports go to tell-data; only tell-bot commits, only there."""
+    for name in ("weekly.yml", "ingest.yml"):
+        for job, script in _run_scripts(_load(name)):
+            if "git push" in script or "git commit" in script:
+                steps = _steps(_load(name), job)
+                step = steps[_index(steps, "git push")]
+                assert step.get("working-directory") == "tell-data", f"{name}:{job}"
+    steps = _steps(_load("weekly.yml"), "weekly")
+    backtest = str(steps[_index(steps, "uv run tell backtest")]["run"])
+    assert "--out tell-data/" in backtest
+
+
+# --- ci.yml -----------------------------------------------------------------------------
+
+
+def test_ci_service_container_and_gates() -> None:
+    wf = _load("ci.yml")
+    on = _on(wf)
+    assert "pull_request" in on
+    assert on["push"]["branches"] == ["main"]
+    test = wf["jobs"]["test"]
+    assert test["services"]["postgres"]["image"] == "postgres:16"
+    steps = test["steps"]
+    for needle in (
+        "uv sync --frozen",
+        "uv run ruff check .",
+        "uv run ruff format --check .",
+        "uv run mypy --strict tell",
+        "uv run alembic upgrade head",
+        "--cov-fail-under=80",
+        "scripts/check_coverage.py",
+    ):
+        _index(steps, needle)
+    assert _index(steps, "alembic upgrade head") < _index(steps, "--cov-fail-under=80")
+
+
+def test_ci_security_jobs() -> None:
+    wf = _load("ci.yml")
+    assert _on(wf)["schedule"] == [{"cron": "13 6 * * 1"}]
+    scan = wf["jobs"]["secret-scan"]
+    assert any(
+        str(s.get("uses", "")).startswith("gitleaks/gitleaks-action@") for s in scan["steps"]
+    )
+    assert "if" not in scan  # every trigger, PRs included
+    audit = wf["jobs"]["audit"]
+    assert "schedule" in audit["if"]
+    _index(audit["steps"], "pip-audit")
+
+
+# --- publish-mcp.yml --------------------------------------------------------------------
+
+
+def test_publish_mcp_trusted_publishing() -> None:
+    wf = _load("publish-mcp.yml")
+    assert _on(wf) == {"push": {"tags": ["tell-mcp-v*"]}}
+    build = wf["jobs"]["build"]
+    _index(build["steps"], "uv build --package tell-mcp")
+    publish = wf["jobs"]["publish"]
+    assert publish["permissions"] == {"id-token": "write"}
+    assert publish["environment"]["name"] == "pypi"
+    assert any(
+        str(s.get("uses", "")).startswith("pypa/gh-action-pypi-publish@") for s in publish["steps"]
+    )
+    # No long-lived token: trusted publishing only.
+    assert "password" not in (WORKFLOWS_DIR / "publish-mcp.yml").read_text(encoding="utf-8")
+
+
+def test_weekly_keepalive_reenables_scheduled_workflows() -> None:
+    """ADR 0026: the 60-day inactivity timer is reset through the API, never by a commit."""
+    keepalive = _load("weekly.yml")["jobs"]["keepalive"]
+    assert keepalive["permissions"] == {"actions": "write"}
+    script = str(keepalive["steps"][0]["run"])
+    assert "/enable" in script
+    for name in ("ingest.yml", "weekly.yml"):
+        assert name in script
+    assert "git " not in script
+
+
+# --- tell-data Pages workflow (copied into tell-data at cutover) --------------------------
+
+
+def test_tell_data_pages_workflow() -> None:
+    path = REPO_ROOT / "docs" / "deploy" / "tell-data-pages.yml"
+    wf = yaml.safe_load(path.read_text(encoding="utf-8"))
+    on = _on(wf)
+    assert on["push"]["branches"] == ["main"]
+    assert "workflow_dispatch" in on
+    assert wf["permissions"] == {"contents": "read", "pages": "write", "id-token": "write"}
+    steps = wf["jobs"]["deploy"]["steps"]
+    upload = next(s for s in steps if str(s.get("uses", "")).startswith("actions/upload-pages-"))
+    assert upload["with"]["path"] == "site"
+    assert any(str(s.get("uses", "")).startswith("actions/deploy-pages@") for s in steps)
+
+
+# --- tell-private intake workflow (copied into tell-private at cutover) ------------------
+
+
+def test_tell_private_intake_workflow() -> None:
+    """SPEC 15.6: the nightly reader runs where logs are private and commits only there."""
+    wf = _load("tell-private-intake.yml")
+    on = _on(wf)
+    assert on["schedule"] == [{"cron": "41 3 * * *"}]
+    assert "workflow_dispatch" in on
+    assert wf["permissions"] == {"contents": "write"}
+    assert wf["concurrency"] == {"group": "intake", "cancel-in-progress": False}
+    assert wf["env"]["DATABASE_URL"] == "${{ secrets.DATABASE_URL }}"
+    assert wf["env"]["TELL_INTAKE_CSV_URL"] == "${{ secrets.TELL_INTAKE_CSV_URL }}"
+    job = wf["jobs"]["sync"]
+    assert isinstance(job["timeout-minutes"], int)
+    steps = job["steps"]
+    checkouts = [s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@")]
+    assert [c["with"]["path"] for c in checkouts] == ["tell-private", "tell"]
+    assert checkouts[1]["with"]["repository"] == "karank2512/tell-ai"
+    sync = steps[_index(steps, "uv run tell intake sync")]
+    assert sync["working-directory"] == "tell"
+    assert "--private-dir ../tell-private" in str(sync["run"])
+    commit = steps[_index(steps, "git push")]
+    assert commit["working-directory"] == "tell-private"
+    assert "git add watchlists" in str(commit["run"])
+    assert _index(steps, "uv run tell intake sync") < _index(steps, "git push")
+    text = TEMPLATE_WORKFLOWS["tell-private-intake.yml"].read_text(encoding="utf-8")
+    assert "tell-data" not in text  # nothing public is written by this job

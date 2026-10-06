@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}tell weekly {{ w.week }}{% endblock %}
+{% block content %}
+<h1>tell weekly {{ w.week }}</h1>
+<p class="muted">{{ w.start }} to {{ w.end }} (UTC). Every number links to its public receipt.</p>
+
+<h2>Top {{ w.top_hiring|length }} by sales-hiring velocity</h2>
+{% if w.top_hiring %}
+<ol class="ranked">
+{% for row in w.top_hiring %}
+  <li>
+    <strong>{% if row.page %}<a href="../companies/{{ row.domain }}.html">{{ row.name }}</a>{% else %}{{ row.name }}{% endif %}</strong> <span class="muted">{{ row.domain }}</span>: velocity {{ row.velocity }}
+    <ul>
+    {% for r in row.receipts %}
+      <li>{{ r.occurred_at }}: <a href="{{ r.url }}">{{ r.summary }}</a>
+      {% if r.postings %}<ul class="postings">{% for p in r.postings %}<li><a href="{{ p.url }}">{{ p.title }}</a> <span class="muted">posted {{ p.posted_at }}</span></li>{% endfor %}</ul>{% endif %}
+      </li>
+    {% endfor %}
+    </ul>
+  </li>
+{% endfor %}
+</ol>
+{% else %}
+<p>No sales hiring spikes this week.</p>
+{% endif %}
+
+<h2>Top {{ w.top_funding|length }} new Form D filings by amount</h2>
+{% if w.top_funding %}
+<table class="list">
+  <thead><tr><th>Company</th><th class="num">Offering</th><th class="num">Sold</th><th>Filed</th><th>Filing</th></tr></thead>
+  <tbody>
+  {% for row in w.top_funding %}
+  <tr>
+    <td>{% if row.page %}<a href="../companies/{{ row.domain }}.html">{{ row.name }}</a>{% else %}{{ row.name }}{% endif %} <span class="muted">{{ row.domain }}</span></td>
+    <td class="num">{{ row.amount_text }}</td>
+    <td class="num">{{ row.sold_text }}</td>
+    <td>{{ row.date_filed }}</td>
+    <td><a href="{{ row.url }}">sec.gov</a></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No new Form D filings by monitored companies this week.</p>
+{% endif %}
+
+<h2>What changed in the method</h2>
+<p>{{ w.method_change }}</p>
+
+<h2>Coverage</h2>
+<ul>
+  <li>Companies monitored: {{ w.coverage.companies_monitored }}</li>
+  <li>Boards polled: {{ w.coverage.boards_polled }}</li>
+  <li>Filings read: {{ w.coverage.filings_read }}</li>
+</ul>
+<p>Code and methods: <a href="{{ w.repo_url }}">{{ w.repo_url }}</a>. JSON: <a href="../api/v0/weekly/latest.json">api/v0/weekly/latest.json</a> (latest edition).</p>
+{% endblock %}

@@ -28,6 +28,7 @@ from tell.collectors.base import (
     FIRST_POLL_KEY,
     TECH_MENTIONED_FIRST_TIME,
     Event,
+    update_event_payload,
     write_events,
 )
 from tell.db import SessionLocal
@@ -567,14 +568,69 @@ def test_crossing_event_shape_and_idempotency(db_session: Session, default: Prof
     assert event.payload["score"] == results[0].score
     assert event.payload["previous_score"] == 0.0
     assert event.payload["threshold"] == 6.0
+    assert event.payload["as_of"] == D0.isoformat()
     assert len(event.payload["top_contributions"]) == 2
     assert event.payload["top_contributions"][0]["signal_type"] == "funding"
+    # the crossing is something tell observed: stamped with the run instant, never in the future
+    assert event.occurred_at == T0
+    assert event.observed_at == T0
+    [stored] = _crossings(db_session)
+    assert stored.occurred_at == T0
+    assert stored.observed_at == T0
+    assert stored.occurred_at <= T0 < score_instant(D0)
     # same day again: same event_id, nothing new; next day: already above, nothing new
     _, again = score_profile(db_session, default, D0, now=T0, run_id=RUN)
     assert again == []
     assert len(_crossings(db_session)) == 1
     _, next_day = score_profile(db_session, default, D0 + DAY, now=T0 + DAY, run_id=RUN)
     assert next_day == []
+
+
+def test_crossing_defaults_to_the_wall_clock_and_cooldown_compares_scored_days(
+    db_session: Session, default: Profile
+) -> None:
+    company = _company(db_session, 1)
+    # A late backfill: the crossing for D0-10 is written by a run at T0 (ten days later).
+    _store(db_session, _result(company, D0 - 11 * DAY, 5.0))
+    _store(db_session, _result(company, D0 - 10 * DAY, 6.2))
+    [first] = emit_crossings(
+        db_session, default, D0 - 10 * DAY, [_result(company, D0 - 10 * DAY, 6.2)]
+    )
+    assert first.occurred_at == T0  # no ``now`` given: the frozen wall clock
+    assert first.observed_at == T0
+    assert first.version == (D0 - 10 * DAY).isoformat()
+    # Re-armed (5.0 stored) and 7 scored days have passed: fires although the previous
+    # crossing's occurred_at is "now". Comparing occurred_at would wrongly block it.
+    _store(db_session, _result(company, D0 - 5 * DAY, 5.0))
+    _store(db_session, _result(company, D0 - 3 * DAY, 6.2))
+    [second] = emit_crossings(
+        db_session,
+        default,
+        D0 - 3 * DAY,
+        [_result(company, D0 - 3 * DAY, 6.2)],
+        now=T0 - DAY,  # written by an earlier run than the backfill above
+    )
+    assert second.payload["as_of"] == (D0 - 3 * DAY).isoformat()
+    assert second.occurred_at == T0 - DAY
+    # Two scored days later, re-armed again, but inside the cooldown of the D0-3 crossing:
+    # blocked. The latest crossing is the one with the latest scored day (D0-3), not the one
+    # with the latest occurred_at (the D0-10 backfill), which would have let this fire.
+    _store(db_session, _result(company, D0 - 2 * DAY, 5.0))
+    _store(db_session, _result(company, D0 - 1 * DAY, 6.2))
+    assert (
+        emit_crossings(
+            db_session,
+            default,
+            D0 - 1 * DAY,
+            [_result(company, D0 - 1 * DAY, 6.2)],
+            now=T0 - 30 * DAY,  # a skewed clock: occurred_at well in the past changes nothing
+        )
+        == []
+    )
+    assert sorted(e.payload["as_of"] for e in _crossings(db_session)) == [
+        (D0 - 10 * DAY).isoformat(),
+        (D0 - 3 * DAY).isoformat(),
+    ]
 
 
 def test_crossing_uses_the_most_recent_stored_score_before_as_of(
@@ -663,6 +719,78 @@ def test_build_signals_funding_cases_and_amendments(db_session: Session, default
     assert magnitudes == sorted([math.log10(18_000_000), 8.0, 6.0, math.log10(2_500_000)])
     assert all(float(r.weight) == 4.0 and r.half_life_days == 90 for r in rows)
     assert all(r.role_family is None for r in rows)
+
+
+def test_amended_offering_amount_rewrites_the_funding_magnitude_in_place(
+    db_session: Session, default: Profile
+) -> None:
+    """D at $18M, then a D/A to $400M merged into the same event: one signal, new magnitude."""
+    company = _company(db_session, 1)
+    filed = T0 - 10 * DAY
+    original = _event(
+        db_session,
+        company,
+        FORM_D_FILED,
+        occurred_at=filed,
+        payload={
+            "is_amendment": False,
+            "total_offering_amount": 18_000_000,
+            "total_amount_sold": 5_000_000,
+            "amendments": [],
+        },
+        external_id="0000000001-26-000001",
+        url="https://www.sec.gov/Archives/edgar/data/1/000000000126000001/",
+        source="edgar",
+    )
+    assert build_signals(db_session, now=T0, profile=default) == 1
+    [before] = db_session.scalars(select(Signal)).all()
+    assert float(before.magnitude) == pytest.approx(math.log10(18_000_000))
+    [first] = score_companies(db_session, default, D0, [company.id])
+    assert first.contributions[0]["summary"] == "Form D: $18,000,000 offering, $5,000,000 sold"
+
+    # The D/A arrives: the collector patches the original payload's amounts (section 5 rule 4).
+    assert update_event_payload(
+        db_session,
+        original.event_id,
+        {
+            "total_offering_amount": 400_000_000,
+            "total_amount_sold": 400_000_000,
+            "last_amended_on": (D0 - DAY).isoformat(),
+            "amendments": [
+                {
+                    "accession_number": "0000000001-26-000002",
+                    "date_filed": (D0 - DAY).isoformat(),
+                    "total_offering_amount": 400_000_000,
+                    "total_amount_sold": 400_000_000,
+                }
+            ],
+        },
+    )
+    assert build_signals(db_session, now=T0, profile=default) == 0  # nothing inserted
+    db_session.expire_all()
+    [after] = db_session.scalars(select(Signal)).all()
+    assert after.id == before.id  # the same row, never a second funding signal
+    assert float(after.magnitude) == 8.0  # log10(4e8) = 8.6 capped at 8
+    assert float(after.weight) == 4.0  # untouched
+    assert after.half_life_days == 90
+    assert after.starts_at == filed
+    assert after.event_id == original.event_id
+    assert db_session.execute(select(func.count()).select_from(Signal)).scalar_one() == 1
+
+    [second] = score_companies(db_session, default, D0, [company.id])
+    assert second.contributions[0]["summary"] == "Form D: $400,000,000 offering, $400,000,000 sold"
+    assert second.contributions[0]["signal_id"] == before.id
+    age = (score_instant(D0) - filed).total_seconds() / 86400
+    assert second.score == pytest.approx(4.0 * 8.0 * 0.5 ** (age / 90))
+    assert second.score > first.score
+
+    # a third build is a no-op: the magnitude already matches the current payload
+    assert build_signals(db_session, now=T0, profile=default) == 0
+    db_session.expire_all()
+    [third] = db_session.scalars(select(Signal)).all()
+    assert third.id == before.id
+    assert float(third.magnitude) == 8.0
+    assert db_session.execute(select(func.count()).select_from(Signal)).scalar_one() == 1
 
 
 def test_build_signals_is_idempotent_including_null_role_family(

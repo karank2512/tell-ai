@@ -33,8 +33,11 @@ Each row is stamped with the ``default`` profile's weight and half-life at creat
 is ``(event_id, signal_type, role_family)``; because ``role_family`` is NULL for
 ``tech_adoption`` (and NULLs never collide in a unique constraint) existing keys are
 read first and skipped, so a rerun inserts nothing. Form D amendments merge into the
-original event's payload upstream and never reach this table; a ``funding`` signal
-keeps the magnitude of the filing it was created from.
+original event's payload upstream and never reach this table as events; when a D/A
+changed the offering amount, the next build rewrites the existing ``funding`` signal's
+``magnitude`` (and nothing else) from the current payload, so the stored number always
+agrees with the receipt and with a rebuild from events (ADR 0021 item 8). There is never
+a second funding signal for one filing (spec section 5 rule 4).
 
 Scoring
 =======
@@ -63,9 +66,13 @@ Threshold crossings
 external id ``f"{company_id}:{profile}"``, version = the ``as_of`` ISO date) when the
 most recent stored score before ``as_of`` was below the profile's ``alert_threshold``
 and today's is at or above it, and hysteresis allows: no crossing event for the same
-company and profile in the last 7 days, and, once a crossing has fired, the score
-must have been stored below ``threshold - 0.5`` on some day since it (re-arm). A
-score oscillating around 6.0 by less than 0.5 therefore fires at most once.
+company and profile whose scored day (``payload.as_of``) is within the last 7 days of
+``as_of``, and, once a crossing has fired, the score must have been stored below
+``threshold - 0.5`` on some day since that crossing's ``as_of`` (re-arm). A score
+oscillating around 6.0 by less than 0.5 therefore fires at most once. The event's
+``occurred_at`` and ``observed_at`` are both the run instant (the crossing is something
+tell observed, never a timestamp in the future); the scored day lives in ``version``
+and ``payload.as_of``, which is what the cooldown and re-arm compare.
 
 Heat
 ----
@@ -86,7 +93,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from tell.collectors.base import (
@@ -95,6 +102,7 @@ from tell.collectors.base import (
     Event,
     iso_utc,
     new_run_id,
+    utcnow,
     write_events,
 )
 from tell.db import upsert
@@ -333,15 +341,22 @@ def _derive(row: EventRow) -> _Derived | None:
     return deriver(row, row.payload or {}) if deriver is not None else None
 
 
-def _existing_keys(session: Session, event_ids: Sequence[str]) -> set[tuple[str, str, str | None]]:
-    keys: set[tuple[str, str, str | None]] = set()
+_SignalKey = tuple[str, str, str | None]
+
+
+def _existing_signals(
+    session: Session, event_ids: Sequence[str]
+) -> dict[_SignalKey, tuple[int, Decimal]]:
+    """``{(event_id, signal_type, role_family): (id, magnitude)}`` for rows already present."""
+    rows: dict[_SignalKey, tuple[int, Decimal]] = {}
     for start in range(0, len(event_ids), 500):
         chunk = event_ids[start : start + 500]
-        stmt = select(Signal.event_id, Signal.signal_type, Signal.role_family).where(
-            Signal.event_id.in_(chunk)
-        )
-        keys.update((str(r[0]), str(r[1]), r[2]) for r in session.execute(stmt))
-    return keys
+        stmt = select(
+            Signal.event_id, Signal.signal_type, Signal.role_family, Signal.id, Signal.magnitude
+        ).where(Signal.event_id.in_(chunk))
+        for event_id, signal_type, family, signal_id, magnitude in session.execute(stmt):
+            rows[(str(event_id), str(signal_type), family)] = (int(signal_id), Decimal(magnitude))
+    return rows
 
 
 def _decimal(value: float) -> Decimal:
@@ -352,9 +367,12 @@ def build_signals(session: Session, *, now: datetime, profile: Profile | None = 
     """Create ``signals`` rows from events (see the module table). Returns rows inserted.
 
     Reads every event of a signal-bearing type that is linked to a company and
-    occurred at or before ``now``; skips keys already present. ``weight`` and
-    ``half_life_days`` are the ``default`` profile's (``profile`` overrides it, for
-    tests). Flushes; never commits.
+    occurred at or before ``now``; skips keys already present. An existing ``funding``
+    signal whose event payload now derives a different magnitude (a Form D amendment
+    changed the offering amount) has its ``magnitude`` rewritten in place; nothing
+    else on the row changes and such updates are not counted in the return value.
+    ``weight`` and ``half_life_days`` are the ``default`` profile's (``profile``
+    overrides it, for tests). Flushes; never commits.
     """
     _require_aware(now, "now")
     stamp = profile or default_profile()
@@ -370,17 +388,24 @@ def build_signals(session: Session, *, now: datetime, profile: Profile | None = 
     rows = list(session.scalars(stmt))
     if not rows:
         return 0
-    existing = _existing_keys(session, [r.event_id for r in rows])
+    existing = _existing_signals(session, [r.event_id for r in rows])
     values: list[dict[str, Any]] = []
+    amended: list[dict[str, Any]] = []
     for row in rows:
         derived = _derive(row)
         if derived is None or row.company_id is None:
             continue
         signal_type, family, magnitude = derived
         key = (row.event_id, signal_type, family)
-        if key in existing:
+        present = existing.get(key)
+        if present is not None:
+            signal_id, stored = present
+            # Only funding re-derives: its event payload is the one that changes after the
+            # fact (D/A amounts merge into the original filing, spec section 5 rule 4).
+            if signal_type == FUNDING and stored != _decimal(magnitude):
+                amended.append({"id": signal_id, "magnitude": _decimal(magnitude)})
             continue
-        existing.add(key)
+        existing[key] = (0, _decimal(magnitude))
         view = SignalView(
             id=0,
             company_id=row.company_id,
@@ -413,6 +438,10 @@ def build_signals(session: Session, *, now: datetime, profile: Profile | None = 
             Signal,
             values[start : start + 500],
             conflict_columns=["event_id", "signal_type", "role_family"],
+        )
+    for change in amended:  # rare (one per amended filing); ORM update keeps loaded rows in sync
+        session.execute(
+            update(Signal).where(Signal.id == change["id"]).values(magnitude=change["magnitude"])
         )
     session.flush()
     return inserted
@@ -753,27 +782,27 @@ def _previous_scores(
 
 def _last_crossings(
     session: Session, profile_name: str, company_ids: Sequence[int]
-) -> dict[int, tuple[datetime, date]]:
-    """Latest ``score_crossed_threshold`` per company: ``(occurred_at, as_of date)``."""
+) -> dict[int, date]:
+    """The most recent scored day (``payload.as_of``) with a crossing, per company.
+
+    Compared by the scored day, not by ``occurred_at``: a late backfill run stamps an
+    old day's crossing with today's instant, and hysteresis is about scored days.
+    """
     if not company_ids:
         return {}
-    stmt = (
-        select(EventRow.company_id, EventRow.occurred_at, EventRow.payload)
-        .where(
-            EventRow.source == SCORE_SOURCE,
-            EventRow.type == SCORE_CROSSED_THRESHOLD,
-            EventRow.company_id.in_(list(company_ids)),
-            EventRow.payload.contains({"profile": profile_name}),
-        )
-        .order_by(EventRow.company_id, EventRow.occurred_at.desc())
+    stmt = select(EventRow.company_id, EventRow.occurred_at, EventRow.payload).where(
+        EventRow.source == SCORE_SOURCE,
+        EventRow.type == SCORE_CROSSED_THRESHOLD,
+        EventRow.company_id.in_(list(company_ids)),
+        EventRow.payload.contains({"profile": profile_name}),
     )
-    out: dict[int, tuple[datetime, date]] = {}
+    out: dict[int, date] = {}
     for company_id, occurred_at, payload in session.execute(stmt):
-        if company_id in out:
-            continue
         as_of_text = (payload or {}).get("as_of")
         as_of = date.fromisoformat(str(as_of_text)) if as_of_text else occurred_at.date()
-        out[int(company_id)] = (occurred_at, as_of)
+        known = out.get(int(company_id))
+        if known is None or as_of > known:
+            out[int(company_id)] = as_of
     return out
 
 
@@ -806,13 +835,14 @@ def emit_crossings(
 ) -> list[Event]:
     """Write ``score_crossed_threshold`` events for ``results`` (see the module docstring).
 
-    ``results`` must be the scores of ``as_of``. Events have ``occurred_at`` at the
-    scoring instant and ``observed_at = now`` (default: the same instant). Flushes;
-    never commits. Returns the events written; a same-day rerun derives the same
-    ``event_id`` for each one, finds it present and returns nothing.
+    ``results`` must be the scores of ``as_of``. Events have ``occurred_at`` and
+    ``observed_at`` both equal to ``now`` (default: the wall clock), the instant tell
+    observed the crossing; ``version`` and ``payload.as_of`` carry the scored day, so a
+    same-day rerun derives the same ``event_id``, finds it present and returns nothing.
+    The 7-day cooldown and the re-arm compare scored days, never ``occurred_at``.
+    Flushes; never commits. Returns the events written.
     """
-    t = score_instant(as_of)
-    observed = now or t
+    observed = now or utcnow()
     _require_aware(observed, "now")
     threshold = profile.alert_threshold
     candidates = [r for r in results if r.in_band and r.score >= threshold and r.contributions]
@@ -827,10 +857,9 @@ def emit_crossings(
         prev_as_of, prev_score = previous.get(result.company_id, (None, 0.0))
         if not prev_score < threshold:
             continue
-        crossed = last.get(result.company_id)
-        if crossed is not None:
-            crossed_at, crossed_as_of = crossed
-            if crossed_at > t - _DAY * CROSSING_COOLDOWN_DAYS:
+        crossed_as_of = last.get(result.company_id)
+        if crossed_as_of is not None:
+            if crossed_as_of > as_of - _DAY * CROSSING_COOLDOWN_DAYS:
                 continue
             if not _rearmed(session, profile, result.company_id, crossed_as_of, as_of):
                 continue
@@ -840,7 +869,7 @@ def emit_crossings(
                 type=SCORE_CROSSED_THRESHOLD,
                 external_id=f"{result.company_id}:{profile.name}",
                 version=as_of.isoformat(),
-                occurred_at=t,
+                occurred_at=observed,
                 observed_at=observed,
                 url=result.top_url or "",
                 magnitude=result.score,

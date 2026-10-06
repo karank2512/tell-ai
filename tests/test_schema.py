@@ -3,7 +3,9 @@
 Four recorded deviations: ``postings.version_marker`` (migration ``0002``, ADR 0013),
 the ``company_feeds`` table (migration ``0003``, ADR 0014), the ``ats_boards`` 404
 streak columns ``not_found_count`` / ``first_not_found_at`` (migration ``0004``, ADR 0015)
-and the ``posting_ghost_votes`` table (migration ``0005``, ADR 0017).
+the ``posting_ghost_votes`` table (migration ``0005``, ADR 0017) and the public-watchlist
+columns ``watchlists.slug`` / ``watchlists.is_public`` (migration ``0006``, ADR 0022) and
+the FastAPI v1 ``api_keys`` / ``api_usage`` tables (migration ``0007``, ADR 0024).
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from tests.conftest import alembic_config
 
 pytestmark = pytest.mark.db
 
-HEAD_REVISION = "0005"
+HEAD_REVISION = "0007"
 
 # --- the spec, hardcoded -----------------------------------------------------------------
 
@@ -103,7 +105,14 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
         "starts_at",
     ],
     "scores": ["company_id", "icp_profile", "as_of", "score", "contributions"],
-    "watchlists": ["id", "owner", "name", "icp_profile"],
+    "watchlists": [
+        "id",
+        "owner",
+        "name",
+        "icp_profile",
+        "slug",  # ADR 0022, migration 0006
+        "is_public",  # ADR 0022, migration 0006
+    ],
     "watchlist_items": ["watchlist_id", "company_id"],
     "feedback": ["id", "watchlist_id", "signal_id", "verdict", "note", "created_at"],
     "runs": [
@@ -133,6 +142,18 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
     ],
     # ADR 0017, migration 0005
     "posting_ghost_votes": ["id", "posting_id", "voted_at", "source"],
+    # ADR 0024, migration 0007 (spec section 10)
+    "api_keys": [
+        "id",
+        "key_hash",
+        "key_prefix",
+        "owner",
+        "created_at",
+        "last_used_at",
+        "daily_quota",
+        "revoked_at",
+    ],
+    "api_usage": ["key_id", "day", "calls"],
 }
 
 EXPECTED_PRIMARY_KEYS: dict[str, list[str]] = {
@@ -151,6 +172,8 @@ EXPECTED_PRIMARY_KEYS: dict[str, list[str]] = {
     "review_queue": ["id"],
     "company_feeds": ["id"],
     "posting_ghost_votes": ["id"],
+    "api_keys": ["id"],
+    "api_usage": ["key_id", "day"],
 }
 
 EXPECTED_UNIQUES: dict[str, set[tuple[str, ...]]] = {
@@ -159,6 +182,8 @@ EXPECTED_UNIQUES: dict[str, set[tuple[str, ...]]] = {
     "postings": {("board_id", "external_id")},
     "signals": {("event_id", "signal_type", "role_family")},
     "company_feeds": {("feed_url",)},
+    "watchlists": {("slug",)},  # ADR 0022
+    "api_keys": {("key_hash",)},  # ADR 0024
 }
 
 # (constrained columns, referred table, referred columns)
@@ -186,6 +211,7 @@ EXPECTED_FOREIGN_KEYS: dict[str, set[tuple[tuple[str, ...], str, tuple[str, ...]
     },
     "company_feeds": {(("company_id",), "companies", ("id",))},
     "posting_ghost_votes": {(("posting_id",), "postings", ("id",))},
+    "api_usage": {(("key_id",), "api_keys", ("id",))},
 }
 
 # name -> (columns, {column: sort})
@@ -230,13 +256,15 @@ EXPECTED_NULLABLE: dict[str, set[str]] = {
     "events": {"company_id", "raw_ref"},
     "signals": {"role_family"},
     "scores": set(),
-    "watchlists": set(),
+    "watchlists": {"slug"},
     "watchlist_items": set(),
     "feedback": {"note"},
     "runs": {"finished_at", "fetched", "inserted", "skipped", "errors", "notes"},
     "review_queue": {"resolved_at"},
     "company_feeds": {"discovered_from", "last_polled_at", "etag", "last_modified"},
     "posting_ghost_votes": set(),
+    "api_keys": {"last_used_at", "revoked_at"},
+    "api_usage": set(),
 }
 
 # Columns with a server default, with the default's leading token after cast stripping.
@@ -247,6 +275,7 @@ EXPECTED_SERVER_DEFAULTS: dict[tuple[str, str], str] = {
     ("ats_boards", "not_found_count"): "0",
     ("events", "magnitude"): "1",
     ("watchlists", "icp_profile"): "'default'",
+    ("watchlists", "is_public"): "false",
     ("feedback", "created_at"): "now()",
     ("runs", "fetched"): "0",
     ("runs", "inserted"): "0",
@@ -256,6 +285,9 @@ EXPECTED_SERVER_DEFAULTS: dict[tuple[str, str], str] = {
     ("review_queue", "created_at"): "now()",
     ("company_feeds", "status"): "'active'",
     ("company_feeds", "created_at"): "now()",
+    ("api_keys", "created_at"): "now()",
+    ("api_keys", "daily_quota"): "1000",
+    ("api_usage", "calls"): "0",
 }
 
 EXPECTED_TYPES: dict[tuple[str, str], str] = {
@@ -275,6 +307,17 @@ EXPECTED_TYPES: dict[tuple[str, str], str] = {
     ("company_feeds", "last_polled_at"): "TIMESTAMP WITH TIME ZONE",
     ("posting_ghost_votes", "posting_id"): "BIGINT",
     ("posting_ghost_votes", "voted_at"): "TIMESTAMP WITH TIME ZONE",
+    ("watchlists", "slug"): "TEXT",
+    ("watchlists", "is_public"): "BOOLEAN",
+    ("api_keys", "id"): "BIGINT",
+    ("api_keys", "key_hash"): "TEXT",
+    ("api_keys", "created_at"): "TIMESTAMP WITH TIME ZONE",
+    ("api_keys", "last_used_at"): "TIMESTAMP WITH TIME ZONE",
+    ("api_keys", "daily_quota"): "INTEGER",
+    ("api_keys", "revoked_at"): "TIMESTAMP WITH TIME ZONE",
+    ("api_usage", "key_id"): "BIGINT",
+    ("api_usage", "day"): "DATE",
+    ("api_usage", "calls"): "INTEGER",
 }
 
 SERIAL_PRIMARY_KEYS = {
@@ -287,6 +330,7 @@ SERIAL_PRIMARY_KEYS = {
     "review_queue",
     "company_feeds",
     "posting_ghost_votes",
+    "api_keys",
 }
 
 

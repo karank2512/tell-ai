@@ -169,10 +169,10 @@ markers = [
 filterwarnings = ["error::DeprecationWarning:tell.*"]
 
 [tool.coverage.run]
-source = ["tell"]
+# tell_mcp is a separate distribution (packages/tell-mcp); its tests live in tests/mcp so the
+# root run collects them and measures the package alongside tell (Phase 9 wiring).
+source = ["tell", "tell_mcp"]
 branch = true
-# tell_mcp is a separate distribution (packages/tell-mcp) and has its own tests.
-omit = ["tell/mcp/*"]
 
 [tool.coverage.report]
 show_missing = true

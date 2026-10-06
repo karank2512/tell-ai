@@ -1,0 +1,85 @@
+# Maps every {{ placeholder }} used in docs/launch/*.md to the methods-report line it comes from.
+# Rules (SPEC section 13, "Reporting rules"):
+#   - A draft ships only when every placeholder below it uses is filled from a DATED report.
+#   - A number with N under 30 is quoted with its N beside it, and never in a resume bullet.
+#   - `tell backtest refresh --out tell-data/site/methods` (re)generates the reports; weekly.yml
+#     runs it every Monday and commits them to tell-data (ADR 0025). Until a renderer exists,
+#     fill the drafts by hand (see docs/launch/README.md).
+#
+# `report` is the dated file in tell-data/site/methods/ (published at
+# https://github.com/karank2512/tell-data/tree/main/site/methods and served from Pages). Use the
+# newest file the date glob matches; `<name>-latest.md` is a convenience copy, never the source
+# a quote cites. `field` is the exact label of the line or table cell in that report that
+# carries the number (tests/backtest/test_launch_numbers.py checks every label against the
+# report code). `status` is `pending soak` while no dated report with a real N exists.
+
+reports:
+  speed_vs_press:                       # SPEC 13.1
+    report: tell-data/site/methods/speed-vs-press-[0-9]*.md
+    n:
+      # The rounds behind the median: filings with press, not the whole cohort.
+      field: "Filings with any press within the window (the N behind the lag numbers)"
+      used_in: [linkedin-post.md]
+      status: pending soak
+    median_lead_days:
+      # Negative means the press came first; quote the absolute value only when the median is
+      # below zero, and say "after" instead of "before" when it is not.
+      field: "Median of first_press_at - filing_date, days"
+      used_in: [linkedin-post.md]
+      status: pending soak
+  velocity_lead:                        # SPEC 13.2 (quote the prospective study once it exists)
+    report: tell-data/site/methods/velocity-lead-[0-9]*.md
+    spike_share_pct:
+      field: "Prospective: share of filings preceded by a spike in the 8 weeks before"
+      used_in: [linkedin-post.md]
+      status: pending soak
+    n:
+      field: "Prospective: filings in the cohort"
+      used_in: [linkedin-post.md]
+      status: pending soak
+  ops:                                  # SPEC 13.4
+    report: tell-data/site/methods/ops-[0-9]*.md
+    weeks_live:
+      field: "Weeks since collection started (period covered by the report)"
+      used_in: [linkedin-post.md]
+      status: pending soak
+    companies_monitored:
+      field: "Companies monitored (active board or a CIK)"
+      used_in: [linkedin-post.md, show-hn.md]
+      status: pending soak
+    postings_tracked:
+      field: "Postings tracked (closed_at is null)"
+      used_in: [linkedin-post.md, show-hn.md]
+      status: pending soak
+    freshness_p95_h:
+      field: "Freshness p95, hours (SPEC section 12 definition)"
+      used_in: [linkedin-post.md, show-hn.md]
+      status: pending soak
+    success_rate_pct:
+      field: "Success rate ok / (ok + failed), percent, overall"
+      used_in: [show-hn.md]
+      status: pending soak
+    weeks_unattended:
+      field: "Weeks unattended (days since the last manual intervention needed to keep ingest green, divided by 7)"
+      used_in: [show-hn.md]
+      status: pending soak
+  noise:                                # SPEC 13.3
+    report: tell-data/site/methods/noise-[0-9]*.md
+    repost_share_pct:
+      field: "Share of postings that are reposts (first seen in the last 90 days), percent"
+      used_in: [show-hn.md]
+      status: pending soak
+    stale_board_share_pct:
+      field: "Share of boards with at least one posting open more than 180 days, percent"
+      used_in: [show-hn.md]
+      status: pending soak
+
+# Not report numbers: filled per send or per post, never from a report.
+inputs:
+  links.repo:        {value: "https://github.com/karank2512/tell-ai"}
+  links.methods:     {value: "link to the dated report in tell-data/site/methods/ (the github.com file view renders it; the Pages copy is plain text); must resolve before sending"}
+  recipient.first_name: {value: "the recipient's first name, typed by hand at send time; never stored in this repo"}
+  warm.one_thing:    {value: "one sentence about the one thing this person told Karan in their own earlier conversation (never a detail from someone else's)"}
+  delivery.company:  {value: "the top-scored company on this recipient's CSV"}
+  delivery.why_now:  {value: "one sentence, with the receipt link, taken from that company's top contribution (summary + url in the CSV)"}
+  delivery.methods_link: {value: "same as links.methods"}
