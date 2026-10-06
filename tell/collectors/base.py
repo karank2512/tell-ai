@@ -70,8 +70,10 @@ Conventions every collector follows
   board by ``vendor`` + ``board_identifier``, never by the database-internal id.
 * Reposts (spec section 7): a *new* ``external_id`` whose requisition fingerprint
   matches a posting on the same board that closed within 30 days, or that has the same
-  fingerprint and ``content_hash`` as a posting seen (open or closed) within 7 days,
-  gets ``postings.repost_of`` and emits ``job_reposted`` instead of ``job_opened``.
+  fingerprint and ``content_hash`` as a posting seen (open or closed) within 7 days, or
+  whose fingerprint matches an open posting that vanished from the board within 30 days
+  (its close not yet recorded; ADR 0019), gets ``postings.repost_of`` and emits
+  ``job_reposted`` instead of ``job_opened``.
   Every job event payload carries ``is_intern`` and ``repost_of_external_id`` so
   velocity can exclude interns and reposts from the payload alone.
 * Tech keywords: a keyword found in a new (or newly re-worded) posting's description
@@ -129,6 +131,7 @@ __all__ = [
     "EXCLUDED_AFTER",
     "EXTRA_MAX_CHARS",
     "EXTRA_TEXT_KEYS",
+    "FIRST_POLL_KEY",
     "JOB_CLOSED",
     "JOB_OPENED",
     "JOB_REPOSTED",
@@ -137,6 +140,7 @@ __all__ = [
     "NOT_FOUND_DEAD_GAP",
     "NOT_FOUND_REASON",
     "PII_KEYS",
+    "R1_MATCH",
     "REPOST_CLOSED_WINDOW",
     "REPOST_SAME_CONTENT_WINDOW",
     "STALE_AFTER",
@@ -157,6 +161,7 @@ __all__ = [
     "iso_utc",
     "new_run_id",
     "parse_iso",
+    "r1_match",
     "record_board_not_found",
     "record_board_ok",
     "sha256_hex",
@@ -225,6 +230,28 @@ SmartRecruiters), read by :func:`tell.signals.taxonomy.is_intern`."""
 
 _REPOST_CLOSED = "closed_within_30d"
 _REPOST_SAME_CONTENT = "same_content_within_7d"
+_REPOST_VANISHED = "vanished_within_30d"
+
+R1_MATCH: Mapping[str, Any] = {
+    "rule": "R1",
+    "ratio": None,
+    "candidates": [],
+    "confidence": 0.98,
+    "via": "ats_board",
+}
+"""``payload["match"]`` of every event linked by copying ``board.company_id`` (spec section 6:
+every decision writes an audit record; R1 is the domain rule, confidence 0.98)."""
+
+
+def r1_match() -> dict[str, Any]:
+    """A fresh copy of :data:`R1_MATCH` (its ``candidates`` list is never shared)."""
+    return {**R1_MATCH, "candidates": []}
+
+
+FIRST_POLL_KEY = "first_poll"
+"""Payload flag on ``job_opened`` / ``tech_mentioned_first_time`` events emitted by a board's
+first poll (ADR 0019): the postings were already open when tell started watching, so
+velocity neither counts them in ``new7`` nor lets them inflate ``base``."""
 
 COLLECTORS_ONLY_ENV = "TELL_COLLECTORS_ONLY"
 """Comma-separated collector module names that :func:`discover_collectors` limits itself to."""
@@ -667,6 +694,8 @@ def _job_event(
     commitment: str | None,
     repost_of_external_id: str | None,
     repost_reason: str | None = None,
+    is_intern_flag: bool | None = None,
+    first_poll: bool = False,
 ) -> Event:
     # The board is named by vendor + identifier, never by its database-internal id,
     # so payloads stay meaningful in the JSONL archive and across database rebuilds.
@@ -687,11 +716,17 @@ def _job_event(
         "fingerprint": posting.fingerprint,
         "content_hash": posting.content_hash,
         "version_marker": marker,
-        "is_intern": is_intern(posting.title, commitment),
+        "is_intern": (
+            is_intern(posting.title, commitment) if is_intern_flag is None else is_intern_flag
+        ),
         "repost_of_external_id": repost_of_external_id,
         "repost_reason": repost_reason,
         "extra": dict(extra),
     }
+    if first_poll:
+        payload[FIRST_POLL_KEY] = True
+    if board.company_id is not None:
+        payload["match"] = r1_match()
     return Event(
         source=board.vendor,
         type=type_,
@@ -748,10 +783,17 @@ def _repost_original(
     :data:`REPOST_CLOSED_WINDOW` of ``now``; the most recently closed wins. Rule 2
     (``same_content_within_7d``): same fingerprint and the same non-null
     ``content_hash``, ``last_seen_at`` within :data:`REPOST_SAME_CONTENT_WINDOW`, open
-    or closed; the most recently seen wins. Rule 1 is tried first.
+    or closed; the most recently seen wins. Rule 3 (``vanished_within_30d``): same
+    fingerprint, not closed yet, last listed within :data:`REPOST_CLOSED_WINDOW` and
+    absent from this poll, i.e. the old listing vanished (at the latest in the very poll
+    the new one appeared) but its close is not recorded yet, because closing needs two
+    absences 12h apart. It is the pattern rule 1 describes, caught before the close is
+    written; without it a reworded twin that replaces a requisition older than 30 days
+    in one poll would count as new (ADR 0019). Rules are tried in order.
     """
     closed: list[Posting] = []
     same_content: list[Posting] = []
+    vanished: list[Posting] = []
     for candidate in candidates:
         if candidate.external_id in seen or candidate.fingerprint != posting.fingerprint:
             continue
@@ -763,12 +805,16 @@ def _repost_original(
             and now - candidate.last_seen_at <= REPOST_SAME_CONTENT_WINDOW
         ):
             same_content.append(candidate)
+        elif candidate.closed_at is None and now - candidate.last_seen_at <= REPOST_CLOSED_WINDOW:
+            vanished.append(candidate)
     if closed:
         return max(closed, key=lambda p: (p.closed_at or now, p.external_id)), _REPOST_CLOSED
     if same_content:
         return max(
             same_content, key=lambda p: (p.last_seen_at, p.external_id)
         ), _REPOST_SAME_CONTENT
+    if vanished:
+        return max(vanished, key=lambda p: (p.last_seen_at, p.external_id)), _REPOST_VANISHED
     return None
 
 
@@ -854,8 +900,20 @@ def _repost_external_ids(existing: Mapping[str, Posting]) -> dict[int, str]:
 
 
 def _opened_events(
-    board: AtsBoard, opened: Sequence[_Pair], *, run_id: str, now: datetime
+    board: AtsBoard,
+    opened: Sequence[_Pair],
+    *,
+    run_id: str,
+    now: datetime,
+    first_poll: bool = False,
 ) -> list[Event]:
+    """``job_opened`` per new posting; ``first_poll`` flags a board's first observation.
+
+    On a board's first poll every open posting is "new" to tell but not to the company:
+    requisitions that already closed are invisible, so the postings that survived would
+    read as a spike against an empty baseline. The flag lets velocity leave them out of
+    ``new7`` and ``base`` (ADR 0019) while the events still exist as receipts.
+    """
     return [
         _job_event(
             board,
@@ -869,6 +927,7 @@ def _opened_events(
             extra=obs.extra,
             commitment=obs.commitment,
             repost_of_external_id=None,
+            first_poll=first_poll,
         )
         for posting, obs in opened
     ]
@@ -934,6 +993,7 @@ def _updated_events(
 
 
 def _closed_events(
+    session: Session,
     board: AtsBoard,
     existing: Mapping[str, Posting],
     seen: Mapping[str, ObservedPosting],
@@ -945,17 +1005,25 @@ def _closed_events(
 ) -> list[Event]:
     """Close postings absent now and at the previous poll, when the polls are >= 12h apart.
 
-    No observation is at hand for a closed posting, so its payload's ``is_intern`` is
-    decided from the title alone (the provider's employment type is not stored).
+    No observation is at hand for a closed posting (the provider's employment type is
+    not stored), so ``is_intern`` is copied from the posting's own ``job_opened`` /
+    ``job_reposted`` payload, found by its deterministic ``event_id``; when that event
+    is gone (pruned) the title alone decides.
     """
     if previous_poll is None or now - previous_poll < CLOSE_GAP:
         return []
+    closing = [
+        posting
+        for external_id, posting in existing.items()
+        if external_id not in seen
+        and posting.closed_at is None
+        and posting.last_seen_at < previous_poll  # absent at the previous poll too
+    ]
+    if not closing:
+        return []
+    intern_flags = _opened_intern_flags(session, board, closing)
     events: list[Event] = []
-    for external_id, posting in existing.items():
-        if external_id in seen or posting.closed_at is not None:
-            continue
-        if posting.last_seen_at >= previous_poll:
-            continue  # it was present at the previous poll: first absence only
+    for posting in closing:
         posting.closed_at = now
         events.append(
             _job_event(
@@ -970,9 +1038,33 @@ def _closed_events(
                 extra={},
                 commitment=None,
                 repost_of_external_id=names.get(posting.repost_of) if posting.repost_of else None,
+                is_intern_flag=intern_flags.get(posting.external_id),
             )
         )
     return events
+
+
+def _opened_intern_flags(
+    session: Session, board: AtsBoard, postings: Sequence[Posting]
+) -> dict[str, bool]:
+    """``external_id -> is_intern`` from each posting's ``job_opened`` / ``job_reposted`` event.
+
+    Both share the key ``sha256(vendor|vendor:identifier:external_id|opened version)``,
+    so one ``IN`` query finds them; postings whose event is missing are left out.
+    """
+    ids = {
+        _event_id(
+            board.vendor, _posting_key(board, p.external_id), _opened_version(p)
+        ): p.external_id
+        for p in postings
+    }
+    flag = EventRow.payload["is_intern"]
+    stmt = select(EventRow.event_id, flag).where(
+        EventRow.event_id.in_(sorted(ids)), EventRow.type.in_((JOB_OPENED, JOB_REPOSTED))
+    )
+    return {
+        ids[event_id]: value for event_id, value in session.execute(stmt) if isinstance(value, bool)
+    }
 
 
 def _tech_scope(board: AtsBoard) -> str:
@@ -988,13 +1080,15 @@ def _known_tech_keywords(session: Session, board: AtsBoard, keywords: Iterable[s
     stmt = select(keyword).where(
         EventRow.type == TECH_MENTIONED_FIRST_TIME, keyword.in_(sorted(set(keywords)))
     )
+    board_scope = (EventRow.company_id.is_(None)) & EventRow.payload.contains(
+        {"scope": f"{board.vendor}:{board.identifier}"}
+    )
     if board.company_id is not None:
-        stmt = stmt.where(EventRow.company_id == board.company_id)
+        # Events this board emitted before it was resolved to the company count too, so
+        # resolving a board never makes its keywords "first" a second time.
+        stmt = stmt.where((EventRow.company_id == board.company_id) | board_scope)
     else:
-        stmt = stmt.where(
-            EventRow.company_id.is_(None),
-            EventRow.payload.contains({"scope": _tech_scope(board)}),
-        )
+        stmt = stmt.where(board_scope)
     return set(session.scalars(stmt))
 
 
@@ -1005,8 +1099,14 @@ def _tech_events(
     *,
     run_id: str,
     now: datetime,
+    first_poll: bool = False,
 ) -> list[Event]:
     """``tech_mentioned_first_time`` for keywords this scope has never had an event for.
+
+    A board's first poll can emit one event per table keyword found anywhere on the
+    board (a baseline, not news); those events carry ``first_poll: true`` so consumers
+    can tell the baseline from a keyword that actually appeared later. Linked boards
+    stamp :data:`R1_MATCH` like every job event.
 
     ``external_id = f"{scope}:{keyword}"`` and ``version`` is the posting's external
     id, where the scope is the company id, or ``vendor:identifier`` for a board not yet
@@ -1025,29 +1125,37 @@ def _tech_events(
         return []
     known = _known_tech_keywords(session, board, receipts)
     scope = _tech_scope(board)
-    return [
-        Event(
-            source=board.vendor,
-            type=TECH_MENTIONED_FIRST_TIME,
-            external_id=f"{scope}:{keyword}",
-            version=posting.external_id,
-            occurred_at=dated,
-            observed_at=now,
-            url=posting.url,
-            payload={
-                "keyword": keyword,
-                "posting_title": posting.title,
-                "posting_external_id": posting.external_id,
-                "vendor": board.vendor,
-                "board_identifier": board.identifier,
-                "scope": scope,
-            },
-            company_id=board.company_id,
-            run_id=run_id,
+    events: list[Event] = []
+    for keyword, (posting, dated) in receipts.items():
+        if keyword in known:
+            continue
+        payload: dict[str, Any] = {
+            "keyword": keyword,
+            "posting_title": posting.title,
+            "posting_external_id": posting.external_id,
+            "vendor": board.vendor,
+            "board_identifier": board.identifier,
+            "scope": scope,
+        }
+        if first_poll:
+            payload[FIRST_POLL_KEY] = True
+        if board.company_id is not None:
+            payload["match"] = r1_match()
+        events.append(
+            Event(
+                source=board.vendor,
+                type=TECH_MENTIONED_FIRST_TIME,
+                external_id=f"{scope}:{keyword}",
+                version=posting.external_id,
+                occurred_at=dated,
+                observed_at=now,
+                url=posting.url,
+                payload=payload,
+                company_id=board.company_id,
+                run_id=run_id,
+            )
         )
-        for keyword, (posting, dated) in receipts.items()
-        if keyword not in known
-    ]
+    return events
 
 
 def sync_board_postings(
@@ -1072,6 +1180,9 @@ def sync_board_postings(
       a second ``job_opened``; ``job_closed`` only when a posting is absent now, was
       absent at the previous poll too, and ``now - previous poll >= 12h`` (no closes
       on a first poll).
+    * ``job_opened`` events of a board's first poll carry ``first_poll: true`` (ADR
+      0019) and every event of a board linked to a company carries
+      ``payload["match"] = R1_MATCH`` (spec section 6 audit record).
     * A new ``external_id`` that reposts an earlier requisition (spec section 7; see
       :func:`_repost_original`) gets ``repost_of`` and emits ``job_reposted`` (same key
       a ``job_opened`` would have had) instead of ``job_opened``. The same
@@ -1096,6 +1207,7 @@ def sync_board_postings(
     for obs in observed:
         seen.setdefault(obs.external_id, obs)
 
+    first_poll = previous_poll is None
     done = _reconcile_postings(session, board, seen, now)
     existing = done.existing
     _record_observations(
@@ -1103,13 +1215,15 @@ def sync_board_postings(
     )
     names = _repost_external_ids(existing)
 
-    events = _opened_events(board, done.opened, run_id=run_id, now=now)
+    events = _opened_events(board, done.opened, run_id=run_id, now=now, first_poll=first_poll)
     events += _reposted_events(board, done.reposted, run_id=run_id, now=now)
     events += _updated_events(board, done.changed, names, run_id=run_id, now=now)
     events += _closed_events(
-        board, existing, seen, names, previous_poll=previous_poll, run_id=run_id, now=now
+        session, board, existing, seen, names, previous_poll=previous_poll, run_id=run_id, now=now
     )
-    events += _tech_events(session, board, done.worded, run_id=run_id, now=now)
+    events += _tech_events(
+        session, board, done.worded, run_id=run_id, now=now, first_poll=first_poll
+    )
 
     board.last_polled_at = now
     session.flush()

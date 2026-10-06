@@ -10,6 +10,13 @@ Definitions (``docs/methods/hiring-velocity.md`` is the prose version):
   (spec: "two postings with the same fingerprint on one board within 30 days are
   one requisition"; chained, so a fingerprint re-listed every 25 days stays one
   requisition).
+* **Cold start (ADR 0019).** ``job_opened`` events flagged ``first_poll`` were emitted
+  by a board's first poll: the postings were already open when tell started watching,
+  requisitions that had already closed are invisible, and postings without
+  ``posted_at`` are all dated to that poll. They are never counted (not in ``new7``,
+  so not in ``base`` either) but they stay in the same-requisition chain, so a
+  same-fingerprint posting that follows one of them within 30 days is still one
+  requisition.
 * ``new7(c, f, t)``: counted postings with ``occurred_at`` in ``(t - 7d, t]``.
 * ``base(c, f, t)``: mean of ``new7`` at ``t - 7d``, ``t - 14d``, ``t - 21d`` and
   ``t - 28d`` (the four non-overlapping 7-day windows covering ``(t - 35d, t - 7d]``),
@@ -30,7 +37,10 @@ Episodes: :func:`emit_velocity_events` writes one ``hiring_velocity`` event per
 (company, family) spike episode. An episode is a run of days on which the condition
 fires, ending once it has been false for 7 consecutive days; the event's ``version``
 is the ISO date of the episode's first firing day, so a rerun on any later day of the
-same episode derives the same ``event_id`` and is skipped on conflict.
+same episode derives the same ``event_id`` and is skipped on conflict. When the
+walk-back reaches :data:`EPISODE_LOOKBACK_DAYS` without finding a 7-day gap, the
+episode is older than the walk-back can see and any earlier ``hiring_velocity`` event
+for the pair marks it (so a company firing continuously never gets a second event).
 
 Ghost votes: anonymous job-seeker "ghost job" votes per posting
 (``posting_ghost_votes``, ADR 0017). Inert: nothing here reads them into a weight
@@ -50,6 +60,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from tell.collectors.base import (
+    FIRST_POLL_KEY,
     JOB_OPENED,
     STALE_AFTER,
     Event,
@@ -148,6 +159,8 @@ class CountedPosting:
     board_identifier: str
     fingerprint: str
     occurred_at: datetime
+    first_poll: bool = False
+    """Emitted by the board's first poll: anchors the same-requisition chain, never counted."""
 
     def receipt(self) -> dict[str, Any]:
         """``{title, posted_at, url, external_id}`` as the event payload lists it."""
@@ -215,6 +228,7 @@ def _counted(row_occurred_at: datetime, url: str, payload: dict[str, Any]) -> Co
         board_identifier=str(payload.get("board_identifier") or ""),
         fingerprint=str(payload.get("fingerprint") or ""),
         occurred_at=row_occurred_at,
+        first_poll=payload.get(FIRST_POLL_KEY) is True,
     )
 
 
@@ -233,7 +247,7 @@ def _net_new(items: Iterable[CountedPosting]) -> list[CountedPosting]:
 
 
 def _in_window(items: Sequence[CountedPosting], t: datetime) -> list[CountedPosting]:
-    return [item for item in items if t - WINDOW < item.occurred_at <= t]
+    return [item for item in items if not item.first_poll and t - WINDOW < item.occurred_at <= t]
 
 
 def _fires(family: str, new: int, ratio: float, open_count: float) -> bool:
@@ -323,8 +337,13 @@ class _Series:
             postings=[item.receipt() for item in counted],
         )
 
-    def episode_start(self, now: datetime) -> datetime:
-        """First firing instant of the episode ``now`` belongs to (``now`` must fire)."""
+    def episode_start(self, now: datetime) -> tuple[datetime, bool]:
+        """First firing instant of the episode ``now`` belongs to (``now`` must fire).
+
+        Returns ``(start, capped)``; ``capped`` is true when the walk-back reached
+        :data:`EPISODE_LOOKBACK_DAYS` without a 7-day false run, so the episode may have
+        begun earlier than ``start``.
+        """
         start = now
         false_run = 0
         for k in range(1, EPISODE_LOOKBACK_DAYS + 1):
@@ -335,8 +354,8 @@ class _Series:
                 continue
             false_run += 1
             if false_run >= EPISODE_GAP_DAYS:
-                break
-        return start
+                return start, False
+        return start, True
 
 
 def _open_weight(postings: Iterable[Posting], t: datetime) -> float:
@@ -420,12 +439,14 @@ def _candidates(session: Session, now: datetime) -> list[tuple[int, str]]:
 
 
 def _already_emitted(
-    session: Session, company_id: int, family: str, episode_start: datetime
+    session: Session, company_id: int, family: str, episode_start: datetime, *, capped: bool
 ) -> bool:
     """A ``hiring_velocity`` event for this company and family already marks this episode.
 
     Any such event at or after ``episode_start - 7d`` belongs to this episode: an
-    earlier episode's last firing day is more than 7 days before this one's first.
+    earlier episode's last firing day is more than 7 days before this one's first. When
+    the walk-back was ``capped`` (no 7-day gap within :data:`EPISODE_LOOKBACK_DAYS`) the
+    episode may be older than ``episode_start``, so any earlier event counts too.
     """
     stmt = (
         select(func.count())
@@ -434,9 +455,10 @@ def _already_emitted(
             EventRow.type == HIRING_VELOCITY,
             EventRow.company_id == company_id,
             EventRow.payload.contains({"role_family": family}),
-            EventRow.occurred_at >= episode_start - _DAY * EPISODE_GAP_DAYS,
         )
     )
+    if not capped:
+        stmt = stmt.where(EventRow.occurred_at >= episode_start - _DAY * EPISODE_GAP_DAYS)
     return session.execute(stmt).scalar_one() > 0
 
 
@@ -458,8 +480,9 @@ def emit_velocity_events(
     posted_at, url, external_id}]}`` (the receipt).
 
     Nothing is written when an event for the same company and family already marks
-    the episode (:func:`_already_emitted`); the deterministic ``event_id`` makes a
-    same-day rerun a no-op as well. Returns the events handed to ``write_events``.
+    the episode (:func:`_already_emitted`; any earlier event when the walk-back hit its
+    cap without finding a gap); the deterministic ``event_id`` makes a same-day rerun a
+    no-op as well. Returns the events handed to ``write_events``.
     Flushes; never commits.
     """
     run = run_id or new_run_id(VELOCITY_SOURCE, now)
@@ -469,8 +492,8 @@ def emit_velocity_events(
         result = series.evaluate(now)
         if not result.fires:
             continue
-        start = series.episode_start(now)
-        if _already_emitted(session, company_id, family, start):
+        start, capped = series.episode_start(now)
+        if _already_emitted(session, company_id, family, start, capped=capped):
             continue
         events.append(
             Event(

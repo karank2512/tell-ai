@@ -1,0 +1,19 @@
+# The `job-seeker` ICP profile: a new CS graduate looking for an engineering job.
+#
+# Target families are the ones a graduate applies to (engineering, ml_ai, data);
+# a spike in any of them is the whole point, so they weigh 1.0 and every other
+# family 0.3. Funding matters (new money means new headcount) but less than for a
+# seller, so 2.0 rather than 4.0; a launch or a new office is a modest sign of
+# growth (1.0); a leadership change says little about entry-level hiring (0.5).
+# tech_adoption weighs 0.5 with an empty keyword list: any new tool a company starts
+# naming in its postings is mildly interesting to someone who will work with it.
+# The size band is wide (3 to 2000 open postings): a graduate applies to startups
+# and to large companies alike, only the very largest are out of scope.
+name: job-seeker
+target_families: [engineering, ml_ai, data]
+other_families_weight: 0.3
+weights: { funding: 2.0, leadership: 0.5, launch: 1.0, expansion: 1.0, tech_adoption: 0.5 }
+half_life_days: { hiring_velocity: 30, funding: 90, leadership: 60, launch: 45, expansion: 60, tech_adoption: 90 }
+tech_keywords: []
+size_band: { min_open_postings: 3, max_open_postings: 2000 }
+alert_threshold: 6.0

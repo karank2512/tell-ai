@@ -5,11 +5,16 @@ Every name is normalized before any comparison, in this order:
 1. Unicode NFKC, casefold, strip accents.
 2. Remove legal suffixes at the **end** only (``inc``, ``inc.``, ``incorporated``,
    ``llc``, ``l.l.c.``, ``ltd``, ``limited``, ``corp``, ``corporation``, ``co``,
-   ``company``, ``plc``, ``gmbh``, ``s.a.``, ``pbc``, ``holdings``) and ``labs`` only
+   ``company``, ``plc``, ``gmbh``, ``s.a.``, ``pbc``, ``holdings``) plus the common
+   non-US forms in :data:`INTERNATIONAL_SUFFIXES` (``pte``, ``pty``, ``pvt``,
+   ``private``, ``ltda``, ``sas``, ``sarl``, ``ag``, ``ab``, ``as``, ``aps``, ``bv``,
+   ``nv``, ``oy``, ``srl``, ``s.l.``, ``llp``, ``lp``, ...; ADR 0018), and ``labs`` only
    when another word precedes it (``Acme Labs`` -> ``acme``; ``Labs`` stays).
-   Stripping repeats, so ``Acme Holdings, Inc.`` -> ``acme``; the last remaining word is
-   never stripped.
+   Stripping repeats, so ``Acme Holdings, Inc.`` -> ``acme`` and ``Acme Private
+   Limited`` -> ``acme``; the last remaining word is never stripped.
 3. Remove punctuation except internal hyphens; collapse whitespace; drop a leading ``the``.
+   Brackets and quotes are cut *before* step 2 tokenises the name, so a suffix glued to
+   one (``Acme (Inc.)``, ``"Acme Inc"``) is still recognised as a suffix.
 4. :func:`normalize_name_alt`: a second form with digits spelled out (``3`` -> ``three``)
    and ``tech`` / ``technology`` / ``technologies`` unified to ``technologies``; ``ai`` is kept.
 5. :func:`domain_label`: ``tldextract(domain).domain`` with the same punctuation rules.
@@ -25,14 +30,16 @@ import unicodedata
 from tell.discovery import domain_label as _registrable_label
 
 __all__ = [
+    "INTERNATIONAL_SUFFIXES",
     "LEGAL_SUFFIXES",
+    "SPEC_SUFFIXES",
     "domain_label",
     "normalize_name",
     "normalize_name_alt",
     "slug_words",
 ]
 
-LEGAL_SUFFIXES: frozenset[str] = frozenset(
+SPEC_SUFFIXES: frozenset[str] = frozenset(
     {
         "inc",
         "incorporated",
@@ -51,7 +58,67 @@ LEGAL_SUFFIXES: frozenset[str] = frozenset(
         "holdings",
     }
 )
-"""Legal suffixes removed from the end of a name (compared after trailing ``.``/``,`` are cut)."""
+"""The spec section 6 step 2 list (compared after trailing ``.``/``,`` are cut)."""
+
+INTERNATIONAL_SUFFIXES: frozenset[str] = frozenset(
+    {
+        # Singapore / Australia / India / Malaysia
+        "pte",
+        "pty",
+        "pvt",
+        "private",
+        "sdn",
+        "bhd",
+        # Latin America / Iberia / France / Italy
+        "ltda",
+        "s.a.p.i",
+        "s.a.b",
+        "c.v",
+        "de",  # only ever reached as the tail of "S.A.P.I. de C.V." once "c.v" is cut
+        "s.l",
+        "sl",
+        "s.r.l",
+        "srl",
+        "sas",
+        "s.a.s",
+        "sarl",
+        "s.a.r.l",
+        "s.p.a",
+        # Germanic / Nordic / Benelux
+        "ag",
+        "ug",
+        "ab",
+        "as",
+        "a/s",
+        "aps",
+        "oy",
+        "oyj",
+        "bv",
+        "b.v",
+        "nv",
+        "n.v",
+        # Japan
+        "kk",
+        "k.k",
+        # partnerships
+        "llp",
+        "l.l.p",
+        "lp",
+        "l.p",
+    }
+)
+"""Non-US legal forms stripped like the spec's list (ADR 0018).
+
+The spec names ``gmbh`` and ``s.a.``; Form D issuers and YC companies also file as
+``Pte. Ltd.``, ``Private Limited``, ``SAS``, ``ApS``, ``AG``, ``AB``, ``AS``, ``Ltda.``,
+``S.L.`` and so on, and a suffix left in the name reads as an extra token that the
+superset guard (rightly) refuses to auto-link. Only forms that are not ordinary English
+words are listed (``spa`` and ``se`` are not), and like every suffix they are cut from
+the end only and never as the last remaining word.
+"""
+
+LEGAL_SUFFIXES: frozenset[str] = SPEC_SUFFIXES | INTERNATIONAL_SUFFIXES
+"""Every legal suffix removed from the end of a name."""
 
 CONDITIONAL_SUFFIXES: frozenset[str] = frozenset({"labs"})
 """Suffixes removed only when another word precedes them."""
@@ -77,6 +144,9 @@ TOKEN_SYNONYMS: dict[str, str] = {
 """Step 4 token unification; ``ai`` is deliberately absent (kept as is)."""
 
 _APOSTROPHES = re.compile("[\u0027\u2019\u02bc`]")  # ASCII, curly and modifier apostrophes
+_BRACKETS_QUOTES = re.compile(
+    '[()\\[\\]{}"\u201c\u201d\u00ab\u00bb,]'
+)  # cut before suffix stripping
 _NON_WORD = re.compile(r"[^\w\s-]", re.UNICODE)
 _LOOSE_HYPHEN = re.compile(r"(?<!\w)-+|-+(?!\w)")
 _WHITESPACE = re.compile(r"\s+")
@@ -115,7 +185,7 @@ def _punctuation(text: str) -> str:
 def normalize_name(name: str) -> str:
     """Steps 1-3 of the spec's normalization; ``""`` for an empty or punctuation-only name."""
     folded = _fold(name)
-    tokens = _strip_suffixes(folded.replace(",", " ").split())
+    tokens = _strip_suffixes(_BRACKETS_QUOTES.sub(" ", folded).split())
     cleaned = _punctuation(" ".join(tokens))
     words = cleaned.split()
     if len(words) > 1 and words[0] == "the":

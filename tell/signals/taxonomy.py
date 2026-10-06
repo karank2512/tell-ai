@@ -10,7 +10,9 @@ becomes one space, and the result is matched against the ordered keyword lists i
 * A keyword matches on word boundaries, with an optional plural / agent / gerund
   suffix (``s``, ``es``, ``ing``, ``er``, ``ers``): ``ae`` matches "Senior AE" and
   "AEs" but never "aerospace"; ``design`` matches "Designer"; ``software engineer``
-  matches "Software Engineering Manager".
+  matches "Software Engineering Manager". Keywords of three letters or fewer (``ae``,
+  ``sdr``, ``bi``, ``hr``, ...) take only the plural ``s``, and ``hr`` takes none
+  ("20 hrs" is hours, not HR).
 * A handful of spelling variants (:data:`KEYWORD_VARIANTS`, e.g. "front end" for
   ``frontend``, "business development representative" for ``business development
   rep``, "svp" for ``vp``) count as the spec keyword they spell.
@@ -28,8 +30,11 @@ becomes one space, and the result is matched against the ordered keyword lists i
   shared by two families in the spec table (``marketing``: gtm_ops and marketing;
   ``data``: ml_ai and data); a department alone cannot tell the ops or ML variant from
   the core function, so the hint goes to the broader family (``marketing``, ``data``).
-* Titles in a non-Latin script (:func:`is_non_english`) are ``other`` until a
-  translation table exists; so is anything that matches nothing.
+* Titles in a non-Latin script, or carrying one of a short list of unmistakably
+  non-English role words (:data:`NON_ENGLISH_WORDS`: "développeur", "ingeniero",
+  "responsable", ...; :func:`is_non_english`), are ``other`` until a translation table
+  exists; so is anything that matches nothing. English titles with a German gender
+  marker ("Software Engineer (m/w/d)") are English and matched normally.
 
 ``intern`` / ``contract`` postings are tagged by :func:`is_intern` and excluded from
 velocity (the role family itself is unaffected).
@@ -61,6 +66,7 @@ __all__ = [
     "FAMILY_KEYWORDS",
     "INTERN_TOKENS",
     "KEYWORD_VARIANTS",
+    "NON_ENGLISH_WORDS",
     "OTHER",
     "SENIORITY_TOKENS",
     "TARGET_FAMILIES_DEFAULT",
@@ -323,13 +329,90 @@ COUNTRY_ALIASES: Mapping[str, str] = {
 }
 """Country spellings folded to one code. Unknown countries are kept as written (lower-cased)."""
 
+NON_ENGLISH_WORDS: frozenset[str] = frozenset(
+    {
+        # French
+        "développeur",
+        "developpeur",
+        "développeuse",
+        "ingénieur",
+        "ingénieure",
+        "responsable",
+        "chargé",
+        "chargée",
+        "stagiaire",
+        "alternance",
+        "alternant",
+        "comptable",
+        "juriste",
+        "commerciale",
+        # Spanish / Portuguese
+        "ingeniero",
+        "ingeniera",
+        "desarrollador",
+        "desarrolladora",
+        "desenvolvedor",
+        "desenvolvedora",
+        "engenheiro",
+        "engenheira",
+        "gerente",
+        "analista",
+        "vendedor",
+        "responsável",
+        "estagiário",
+        "estagiária",
+        # German
+        "entwickler",
+        "entwicklerin",
+        "ingenieur",
+        "ingenieurin",
+        "leiter",
+        "leiterin",
+        "mitarbeiter",
+        "mitarbeiterin",
+        "vertrieb",
+        "vertriebsmitarbeiter",
+        "kundenbetreuer",
+        "praktikant",
+        "praktikantin",
+        "praktikum",
+        "werkstudent",
+        "werkstudentin",
+        "sachbearbeiter",
+        "buchhalter",
+        # Italian
+        "sviluppatore",
+        "sviluppatrice",
+        "ingegnere",
+        "responsabile",
+        "addetto",
+        "addetta",
+        "impiegato",
+    }
+)
+"""Latin-script words that mark a title as not English (ADR 0020).
+
+A handful of role nouns and function words from French, Spanish, Portuguese, German and
+Italian job titles; any one of them as a whole word sends the title to ``other``, as
+the spec asks for non-English titles. Deliberately short: a word is listed only when
+it is not also an English word ("commercial", "director", "manager" are not listed).
+"""
+
 _REMOTE_WORDS = frozenset({"remote", "anywhere", "distributed"})
 _WORK_MODE_WORDS = re.compile(r"\b(?:hybrid|on ?site|in office|in person|office)\b")
 _NON_TOKEN = re.compile(r"[^a-z0-9&]+")
 _WHITESPACE = re.compile(r"\s+")
 _PAREN = re.compile(r"\([^)]*\)|\[[^\]]*\]")
-_SEGMENT_SPLIT = re.compile(r";|\||\s+or\s+")
+_SEGMENT_SPLIT = re.compile(r";|\||(?<![,\s])\s+or\s+")
+"""Several locations in one string. " or " splits only when the word before it is not
+followed by a comma, so "Portland, OR 97201" and "Eugene, OR - Hybrid" keep their state."""
 _SUFFIX = r"(?:s|es|ing|er|ers)?"
+_SHORT_SUFFIX = r"s?"
+_SHORT_KEYWORD = 3
+"""Keywords this short take only the plural suffix (``ae`` -> "AEs", never "aeing")."""
+_NO_SUFFIX_KEYWORDS: frozenset[str] = frozenset({"hr"})
+"""``hr`` + ``s`` is "hrs" (hours): "Barista (20 hrs)" is not an HR role."""
+_WORD_SPLIT = re.compile(r"[^\w]+", re.UNICODE)
 
 
 def _render(text: str) -> str:
@@ -339,7 +422,13 @@ def _render(text: str) -> str:
 
 def _keyword_pattern(phrase: str) -> re.Pattern[str]:
     words = r"\s".join(re.escape(word) for word in phrase.split())
-    return re.compile(rf"(?<![a-z0-9]){words}{_SUFFIX}(?![a-z0-9])")
+    if phrase in _NO_SUFFIX_KEYWORDS:
+        suffix = ""
+    elif len(phrase) <= _SHORT_KEYWORD:
+        suffix = _SHORT_SUFFIX
+    else:
+        suffix = _SUFFIX
+    return re.compile(rf"(?<![a-z0-9]){words}{suffix}(?![a-z0-9])")
 
 
 _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
@@ -366,16 +455,21 @@ _FAMILY_ORDER: Mapping[str, int] = {family: index for index, family in enumerate
 
 
 def is_non_english(title: str) -> bool:
-    """True when ``title`` has no ASCII letters or mostly non-Latin letters.
+    """True when ``title`` has no ASCII letters, mostly non-Latin letters, or a listed word.
 
-    "Mostly" means fewer than half of the letters are ASCII. Accented Latin titles
-    ("Développeur") are not flagged; Cyrillic, CJK, Arabic, Hebrew and so on are.
+    "Mostly" means fewer than half of the letters are ASCII (Cyrillic, CJK, Arabic,
+    Hebrew and so on). Latin-script titles are flagged only when a whole word is in
+    :data:`NON_ENGLISH_WORDS` ("Développeur Backend", "Ingeniero de Software"); an
+    accented word alone is not enough ("Zoë's Café Manager" is English).
     """
     letters = [char for char in title if char.isalpha()]
     if not letters:
         return True
     ascii_letters = sum(1 for char in letters if char.isascii())
-    return ascii_letters * 2 < len(letters)
+    if ascii_letters * 2 < len(letters):
+        return True
+    words = {w for w in _WORD_SPLIT.split(title.casefold()) if w}
+    return bool(words & NON_ENGLISH_WORDS)
 
 
 def normalize_title(title: str) -> str:
@@ -482,15 +576,20 @@ def normalize_location(location: str | None) -> str:
     """Reduce a provider location to ``"city, country"`` (either part may be missing).
 
     Only the first of several locations counts (split on ``;``, ``|`` and a
-    space-delimited " or ", so "Portland, OR" keeps its state code). Parenthesised notes and work-mode words ("Hybrid", "On-site") are dropped
-    and postal codes removed. Then:
+    space-delimited " or " that does not follow a comma, so "Portland, OR 97201" and
+    "Eugene, OR - Hybrid" keep their state code). Parenthesised notes and work-mode
+    words ("Hybrid", "On-site") are dropped and postal codes removed. Then:
 
     * any segment naming ``remote`` / ``anywhere`` / ``distributed`` -> city
       ``remote`` plus whatever country is left ("Remote - US", "US (Remote)",
       "Remote, United States" are all ``"remote, us"``);
     * ``"City, Region, ..., Country"`` -> first and last part;
     * ``"City, XX"`` -> ``us`` when ``XX`` is a US state code, ``ca`` when it is a
-      Canadian province code, else ``XX`` read as a country;
+      Canadian province code, else ``XX`` read as a country. A two-letter country code
+      that is also a state or province code ("Toronto, CA", "Berlin, DE", "Bangalore,
+      IN") is read as the state: ATS boards write "City, ST" far more often than
+      "City, CC", each board formats its locations consistently, and the fingerprint
+      only needs to be stable per board (ADR 0020 records the collision);
     * a single part -> a country when it is a known country spelling, else a city.
 
     Countries fold through :data:`COUNTRY_ALIASES` ("USA", "United States" -> ``us``).

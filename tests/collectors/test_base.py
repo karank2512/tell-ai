@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from tell.collectors import base
 from tell.collectors.base import (
+    R1_MATCH,
     CollectorSpec,
     Event,
     ObservedPosting,
@@ -685,6 +686,46 @@ def test_events_carry_board_company(db_session: Session) -> None:
     events, _ = poll(db_session, board, [obs("j1", extra={"team": "GTM"})], now=T0)
     assert events[0].company_id == company.id
     assert events[0].payload["extra"] == {"team": "GTM"}
+    # every R1 link is auditable (spec section 6): the same record on each event type
+    assert events[0].payload["match"] == dict(R1_MATCH)
+    assert events[0].payload["match"] is not R1_MATCH
+    assert events[0].payload["first_poll"] is True
+    events, _ = poll(
+        db_session, board, [obs("j1", version="v2", extra={"team": "GTM"})], now=T0 + H
+    )
+    assert types_of(events) == ["job_updated"]
+    assert events[0].payload["match"]["rule"] == "R1"
+    assert "first_poll" not in events[0].payload
+
+
+def test_unlinked_board_events_carry_no_match_record(db_session: Session, board: AtsBoard) -> None:
+    events, _ = poll(db_session, board, [obs("j1")], now=T0)
+    assert events[0].company_id is None
+    assert "match" not in events[0].payload
+    assert events[0].payload["first_poll"] is True
+    events, _ = poll(db_session, board, [obs("j1"), obs("j2")], now=T0 + H)
+    assert types_of(events) == ["job_opened"]
+    assert "first_poll" not in events[0].payload
+
+
+def test_job_closed_copies_is_intern_from_the_opening_event(
+    db_session: Session, board: AtsBoard
+) -> None:
+    """An intern tagged only through the provider's employment type stays an intern on close."""
+    poll(
+        db_session,
+        board,
+        [
+            obs("j1", title="Data Engineer", extra={"commitment": "Internship"}),
+            obs("j2", title="Platform Engineer"),
+        ],
+        now=T0,
+    )
+    poll(db_session, board, [], now=T0 + 6 * H)
+    events, _ = poll(db_session, board, [], now=T0 + 18 * H)
+    flags = {e.payload["posting_external_id"]: e.payload["is_intern"] for e in events}
+    assert types_of(events) == ["job_closed", "job_closed"]
+    assert flags == {"j1": True, "j2": False}
 
 
 # --- board liveness (ADR 0015) -----------------------------------------------------------------
@@ -1158,6 +1199,7 @@ def test_tech_keywords_first_time_per_board(db_session: Session, board: AtsBoard
         "vendor": "synthetic",
         "board_identifier": "acme",
         "scope": "synthetic:acme",
+        "first_poll": True,  # a baseline: the keywords were already on the board
     }
     assert "Our stack" not in json.dumps([e.payload for e in events])
 
@@ -1183,6 +1225,8 @@ def test_tech_keywords_first_time_per_board(db_session: Session, board: AtsBoard
         "synthetic:acme:terraform",
         T0 + 12 * H,
     )
+    assert "first_poll" not in terraform.payload
+    assert "match" not in terraform.payload  # the board is not linked to a company
 
 
 def test_tech_keywords_are_scoped_by_company_across_boards(db_session: Session) -> None:
@@ -1213,3 +1257,19 @@ def test_tech_keywords_are_scoped_by_company_across_boards(db_session: Session) 
         "synthetic:loose:kafka",  # table order
         "synthetic:loose:rust",
     ]
+    assert all("match" not in e.payload for e in events)
+    # Once that board is resolved to a company, its board-scope events still count as
+    # "seen": the same keywords do not fire a second time, only new ones do.
+    other = Company(domain="loose.test", name="Loose")
+    db_session.add(other)
+    db_session.flush()
+    unresolved.company_id = other.id
+    db_session.flush()
+    events, _ = poll(
+        db_session,
+        unresolved,
+        [obs("m1", description="Rust, Kafka and now Terraform.")],
+        now=T0 + 6 * H,
+    )
+    assert [e.external_id for e in tech_events(events)] == [f"{other.id}:terraform"]
+    assert tech_events(events)[0].payload["match"]["rule"] == "R1"

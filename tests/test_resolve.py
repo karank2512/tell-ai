@@ -6,21 +6,29 @@ every row with a supported board, an ``ats_boards`` row linked to the company th
 discovery links it. Then:
 
 * every legal name is fed through :func:`match_name` as a Form D issuer (with the row's
-  state and city) and has to come back through the name rules R2-R4;
+  state and city) and has to come back through the name rules R2-R4. This is the
+  **headline metric** (spec: "runs the matcher over the gold set's names"), reported
+  and gated on its own as ``names``;
 * every board is fed the way a job event arrives: carrying its board's ``company_id``
   (collectors copy ``board.company_id`` onto the event), so it has to come back through R1.
-  The board identifier is never matched as free text; in production it never is, and the
-  gold set deliberately holds near-duplicate pairs (two companies sharing one word) where a
+  These cases are tautological (the expected id is the input) and are reported
+  separately as ``boards``; they verify the production path, not the matcher. The board
+  identifier is never matched as free text; in production it never is, and the gold set
+  deliberately holds near-duplicate pairs (two companies sharing one word) where a
   free-text slug would link to the wrong one.
 
 Precision is correct links over asserted auto-links, recall is links found over links that
-exist. Negatives: for 30% of the rows another gold company's legal name is fed with *this*
-row's geography and must not be linked to this row.
+exist. Negatives, for 30% of the rows: another gold company's legal name is fed with *this*
+row's geography and must not be linked to this row (asserted); and two token *supersets*
+of this row's name (``<name> Press LLC`` and ``Blue <name> Bakery``, with this row's
+geography) are fed and must not be auto-linked to anything. ``token_set_ratio`` scores a
+superset 100, so the superset negatives measure the risk the guard in ``match_name``
+exists for; a superset that still auto-links counts as a wrong link in the precision.
 
 Files: ``tests/fixtures/gold_sample.csv`` (public 50-row sample) always; the full private
 set when ``TELL_GOLD_SET`` points at it. The variable is read at import time because the
 hermetic settings fixture strips ``TELL_*`` from the environment inside each test.
-Gate: precision >= 0.97 and recall >= 0.85, and no wrong auto-link at all.
+Gate: ``names`` precision >= 0.97 and recall >= 0.85, and no wrong auto-link at all.
 """
 
 from __future__ import annotations
@@ -103,6 +111,7 @@ class Tally:
     asserted: int = 0
     correct: int = 0
     negatives: int = 0
+    supersets: int = 0
     by_rule: dict[str, int] = field(default_factory=dict)
     by_group: dict[str, list[int]] = field(default_factory=dict)
     """``group -> [found, exists]`` for the positive cases."""
@@ -213,14 +222,23 @@ def _board_company_id(session: Session, row: GoldRow) -> int | None:
     return board.company_id if board is not None else None
 
 
-def run_gold(session: Session, rows: list[GoldRow]) -> Tally:
+@dataclass
+class GoldResult:
+    """``names`` is the headline metric (R2-R6 over legal names); ``boards`` the R1 check."""
+
+    names: Tally
+    boards: Tally
+
+
+def run_gold(session: Session, rows: list[GoldRow]) -> GoldResult:
     index = AliasIndex.from_session(session)
-    tally = Tally()
+    names = Tally()
+    boards = Tally()
     for row in rows:
         decision = match_name(
             session, row.legal_name, state=row.hq_state, city=row.hq_city, index=index
         )
-        tally.positive(
+        names.positive(
             decision,
             row.company_id,
             label=f"formd:{row.domain}:{row.legal_name!r}",
@@ -232,7 +250,7 @@ def run_gold(session: Session, rows: list[GoldRow]) -> Tally:
             decision = match_name(
                 session, words, on_domain_company_id=_board_company_id(session, row), index=index
             )
-            tally.positive(
+            boards.positive(
                 decision, row.company_id, label=f"ats:{row.domain}:{words!r}", group=row.group
             )
 
@@ -241,19 +259,37 @@ def run_gold(session: Session, rows: list[GoldRow]) -> Tally:
         if (i % 10) / 10 >= NEGATIVE_SHARE:
             continue
         other = rows[(i + 7) % n]
-        if other is row or normalize_name(other.legal_name) == normalize_name(row.legal_name):
-            continue
-        tally.negatives += 1
-        decision = match_name(
-            session, other.legal_name, state=row.hq_state, city=row.hq_city, index=index
-        )
-        tally.record(
-            decision, other.company_id, label=f"negative:{row.domain}:{other.legal_name!r}"
-        )
-        assert decision.company_id != row.company_id, (
-            f"{other.legal_name!r} with {row.domain}'s geography linked to {row.domain}"
-        )
-    return tally
+        if other is not row and normalize_name(other.legal_name) != normalize_name(row.legal_name):
+            names.negatives += 1
+            decision = match_name(
+                session, other.legal_name, state=row.hq_state, city=row.hq_city, index=index
+            )
+            names.record(
+                decision, other.company_id, label=f"negative:{row.domain}:{other.legal_name!r}"
+            )
+            assert decision.company_id != row.company_id, (
+                f"{other.legal_name!r} with {row.domain}'s geography linked to {row.domain}"
+            )
+        base = normalize_name(row.name) or normalize_name(row.legal_name)
+        for superset in (f"{base.title()} Press LLC", f"Blue {base.title()} Bakery"):
+            if normalize_name(superset) == normalize_name(row.legal_name):
+                continue
+            names.negatives += 1
+            names.supersets += 1
+            decision = match_name(
+                session, superset, state=row.hq_state, city=row.hq_city, index=index
+            )
+            names.record(decision, None, label=f"superset:{row.domain}:{superset!r}")
+    return GoldResult(names=names, boards=boards)
+
+
+def _report(label: str, tally: Tally, *, n: int, file: str) -> None:
+    print(
+        f"{label}: precision={tally.precision:.4f} recall={tally.recall:.4f} n={n} "
+        f"cases={tally.exists} negatives={tally.negatives} supersets={tally.supersets} "
+        f"by_rule={dict(sorted(tally.by_rule.items()))} by_group={tally.group_recall()} "
+        f"file={file}"
+    )
 
 
 @pytest.mark.skipif(
@@ -267,25 +303,29 @@ def test_gold_set_precision_and_recall(db_session: Session, gold_path: Path) -> 
     rows = load_gold(gold_path)
     assert rows, f"{gold_path} has no rows"
     seed(db_session, rows)
-    tally = run_gold(db_session, rows)
-    print(
-        f"precision={tally.precision:.4f} recall={tally.recall:.4f} n={len(rows)} "
-        f"cases={tally.exists} negatives={tally.negatives} "
-        f"by_rule={dict(sorted(tally.by_rule.items()))} "
-        f"by_group={tally.group_recall()} file={gold_path.name}"
-    )
-    for miss in tally.missed:
+    result = run_gold(db_session, rows)
+    names, boards = result.names, result.boards
+    _report("names", names, n=len(rows), file=gold_path.name)
+    _report("boards", boards, n=len(rows), file=gold_path.name)
+    for miss in names.missed:
         print(f"missed: {miss}")
-    assert tally.wrong == [], tally.wrong
-    assert tally.precision >= PRECISION_FLOOR, (
-        f"precision {tally.precision:.4f} < {PRECISION_FLOOR}"
+
+    # The headline metric: legal names through the name rules R2-R6 only.
+    assert names.wrong == [], names.wrong
+    assert names.precision >= PRECISION_FLOOR, (
+        f"names precision {names.precision:.4f} < {PRECISION_FLOOR}"
     )
-    assert tally.recall >= RECALL_FLOOR, f"recall {tally.recall:.4f} < {RECALL_FLOOR}"
-    # boards link by domain (R1); the exact-alias rule carries most legal names, the rest is
-    # name+geography
-    if any(row.has_board for row in rows):
-        assert tally.by_rule.get("R1", 0) == sum(1 for row in rows if row.has_board)
-    assert tally.by_rule.get("R2", 0) > 0
+    assert names.recall >= RECALL_FLOOR, f"names recall {names.recall:.4f} < {RECALL_FLOOR}"
+    assert names.by_rule.get("R2", 0) > 0
+    assert "R1" not in names.by_rule
+
+    # The production path for boards: every one links by domain (R1) to its own company.
+    expected_boards = sum(1 for row in rows if row.has_board)
+    assert boards.exists == expected_boards
+    assert boards.by_rule.get("R1", 0) == expected_boards
+    assert boards.wrong == []
+    if expected_boards:
+        assert (boards.precision, boards.recall) == (1.0, 1.0)
 
 
 def test_gold_sample_is_companies_only() -> None:

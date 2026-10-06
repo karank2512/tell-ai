@@ -10,9 +10,11 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from tell.collectors.base import R1_MATCH
 from tell.models import AtsBoard, Company, CompanyAlias, EventRow, ReviewQueueItem
 from tell.resolve.match import (
     CONFIDENCE,
+    GUARD_RATIO,
     AliasIndex,
     Candidate,
     MatchDecision,
@@ -235,10 +237,33 @@ def test_r3_negative_wrong_state_falls_through(
 
 
 def test_r4_unique_high_ratio(db_session: Session, companies: dict[str, Company]) -> None:
-    decision = match_name(db_session, "Beacon Health Systems LLC")
+    decision = match_name(db_session, "Beacon Helth Inc")  # a typo, not a superset
     assert (decision.rule, decision.confidence, decision.action) == ("R4", 0.85, "auto_link")
     assert decision.company_id == companies["beacon"].id
-    assert decision.ratio == 100.0
+    assert decision.ratio is not None
+    assert decision.ratio >= 95
+    assert decision.candidates[0].sort_ratio >= GUARD_RATIO
+
+
+def test_token_superset_guard_sends_supersets_to_review(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    """``token_set_ratio`` scores any superset 100; R3 / R4 also need ``token_sort_ratio >= 85``."""
+    for name, state in (
+        ("Beacon Health Systems LLC", None),  # would be R4 on token_set_ratio alone
+        ("Blue Acme Bakery", None),
+        ("Beacon Health Press LLC", "MA"),  # would be R3 on token_set_ratio alone
+        ("Anti Acme Coalition Inc", "CA"),
+    ):
+        decision = match_name(db_session, name, state=state)
+        assert (decision.rule, decision.action) == ("R5", "review"), name
+        assert decision.company_id is None
+        top = decision.candidates[0]
+        assert top.ratio == 100.0
+        assert top.sort_ratio < GUARD_RATIO
+        assert not top.guarded
+    # the guard never touches R2: an exact alias is an exact alias
+    assert match_name(db_session, "Beacon Health, Inc.").rule == "R2"
 
 
 def test_r4_negative_two_candidates_go_to_review(
@@ -251,6 +276,44 @@ def test_r4_negative_two_candidates_go_to_review(
         companies["acme"].id,
         companies["robotics"].id,
     }
+
+
+def test_r4_uniqueness_is_evaluated_over_the_whole_table(db_session: Session) -> None:
+    """A company holding many aliases cannot hide a second candidate company from R4."""
+    hoarder = _company(db_session, "acme-i.example", "Acme Corp I")
+    add_aliases(db_session, hoarder.id, [f"Acme Corp {n}" for n in range(1, 26)], source="manual")
+    rival = _company(db_session, "acmee.example", "Acmee")
+    add_aliases(db_session, rival.id, ["Acmee"], source="manual")
+    decision = match_name(db_session, "Acme Inc")
+    assert (decision.rule, decision.action) == ("R5", "review")
+    strong = {c.company_id for c in decision.candidates if c.ratio >= 85}
+    assert strong == {hoarder.id, rival.id}
+    # a name only the hoarder resembles is still linked
+    alone = match_name(db_session, "Acme Corp 3 Inc")
+    assert (alone.rule, alone.company_id) == ("R2", hoarder.id)
+
+
+def test_r3_geography_tie_is_not_auto_linked(db_session: Session) -> None:
+    """Two companies sharing an alias in the issuer's state: review, both logged."""
+    first = _company(db_session, "method.example", "Method", hq_state="NY", hq_city="New York")
+    second = _company(db_session, "method.io", "Method Financial", hq_state="NY", hq_city="Albany")
+    add_aliases(db_session, first.id, ["Method"], source="manual")
+    add_aliases(db_session, second.id, ["Method"], source="manual")
+    for name in ("Method Inc", "Methods Inc"):  # exact shared alias, and 92.3 against it
+        decision = match_name(db_session, name, state="NY")
+        assert (decision.rule, decision.action) == ("R5", "review"), name
+        assert decision.company_id is None
+        assert {c.company_id for c in decision.candidates if c.ratio >= 92} == {
+            first.id,
+            second.id,
+        }
+    # geography that singles one out still links (R3), and a city breaks the tie when the
+    # issuer state is missing
+    third = _company(db_session, "method.co", "Method Labs", hq_state="TX", hq_city="Austin")
+    add_aliases(db_session, third.id, ["Methodd"], source="manual")
+    assert match_name(db_session, "Methodd Inc", state="TX").company_id == third.id
+    by_city = match_name(db_session, "Method Inc", state=None, city="Albany")
+    assert (by_city.rule, by_city.company_id) == ("R3", second.id)
 
 
 def test_r5_single_candidate_between_85_and_91(
@@ -330,17 +393,25 @@ def test_decision_audit_shape() -> None:
         confidence=0.85,
         company_id=7,
         ratio=96.5,
-        candidates=[Candidate(7, "acme", 96.5)],
+        candidates=[Candidate(7, "acme", 96.5, 96.5)],
         action="auto_link",
     )
     audit = decision.audit(now=NOW)
     assert audit == {
         "rule": "R4",
         "ratio": 96.5,
-        "candidates": [{"company_id": 7, "alias": "acme", "ratio": 96.5}],
+        "candidates": [{"company_id": 7, "alias": "acme", "ratio": 96.5, "sort_ratio": 96.5}],
         "confidence": 0.85,
         "resolved_at": "2026-10-05T12:00:00+00:00",
     }
+
+
+def test_r1_audit_record_matches_the_spec_confidence() -> None:
+    """Collectors stamp ``R1_MATCH`` when they copy ``board.company_id``; same shape and confidence."""
+    assert R1_MATCH["rule"] == "R1"
+    assert R1_MATCH["confidence"] == CONFIDENCE["R1"]
+    assert R1_MATCH["via"] == "ats_board"
+    assert set(R1_MATCH) >= {"rule", "ratio", "candidates"}
 
 
 # --- resolve_events --------------------------------------------------------------------------
@@ -374,7 +445,12 @@ def test_resolve_links_form_d_and_enriches_company(
     assert match["confidence"] == 0.95
     assert match["ratio"] == 100.0
     assert match["resolved_at"] == "2026-10-05T12:00:00+00:00"
-    assert match["candidates"][0] == {"company_id": acme.id, "alias": "acme", "ratio": 100.0}
+    assert match["candidates"][0] == {
+        "company_id": acme.id,
+        "alias": "acme",
+        "ratio": 100.0,
+        "sort_ratio": 100.0,
+    }
     assert len(match["candidates"]) <= 5
     # the original payload keys survive the merge
     assert event.payload["issuer_name"] == "Acme, Inc."
@@ -548,15 +624,42 @@ def test_resolve_other_edgar_forms_use_company_name(
     _event(
         db_session,
         "ev-s1",
-        {"accession_number": "y", "cik": "0000055555", "company_name": "Beacon Health Systems"},
+        {"accession_number": "y", "cik": "0000055555", "company_name": "Beacon Helth"},
         type_="form_s1_filed",
     )
     stats = resolve_events(db_session, now=NOW)
     assert stats.by_rule == {"R4": 1}
     beacon = companies["beacon"]
     db_session.refresh(beacon)
-    assert (beacon.cik, beacon.legal_name) == ("0000055555", "Beacon Health Systems")
-    assert _aliases(db_session, beacon.id)["beacon health systems"] == "edgar"
+    assert (beacon.cik, beacon.legal_name) == ("0000055555", "Beacon Helth")
+    assert _aliases(db_session, beacon.id)["beacon helth"] == "edgar"
+
+
+def test_resolve_skips_sources_without_company_names(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    """A GitHub repo or a job title named like a company is not a company name."""
+    _event(
+        db_session,
+        "ev-repo",
+        {"name": "acme", "full_name": "someone/acme", "language": "Rust"},
+        source="github",
+        type_="repo_created",
+    )
+    _event(
+        db_session,
+        "ev-job",
+        {"title": "Acme", "vendor": "greenhouse", "board_identifier": "nobody"},
+        source="greenhouse",
+        type_="job_opened",
+    )
+    stats = resolve_events(db_session, now=NOW)
+    assert (stats.scanned, stats.no_name, stats.auto_linked) == (2, 2, 0)
+    for event_id in ("ev-repo", "ev-job"):
+        event = db_session.get(EventRow, event_id)
+        assert event is not None
+        assert event.company_id is None
+        assert "match" not in event.payload
 
 
 def test_resolve_leaves_linked_events_alone(

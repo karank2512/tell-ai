@@ -33,6 +33,9 @@ NORMALIZE_CASES: list[tuple[str, str]] = [
     ("Acme PBC", "acme"),
     ("Acme Holdings", "acme"),
     ("Acme Holdings, Inc.", "acme"),
+    ("Acme (Inc.)", "acme"),  # a suffix glued to a bracket is still a suffix
+    ("Acme Inc)", "acme"),
+    ('"Acme, Inc."', "acme"),
     ("Inc Acme", "inc acme"),
     ("Company Store", "company store"),
     ("Corporation", "corporation"),
@@ -147,5 +150,14 @@ def test_legal_suffix_list_matches_spec() -> None:
         "pbc",
         "holdings",
     }
-    assert frozenset(spec) == normalize.LEGAL_SUFFIXES
+    assert frozenset(spec) == normalize.SPEC_SUFFIXES
+    # the international forms (ADR 0018) extend the spec list; none is an English word
+    assert normalize.LEGAL_SUFFIXES == normalize.SPEC_SUFFIXES | normalize.INTERNATIONAL_SUFFIXES
+    assert {"pte", "pty", "private", "sas", "ag", "aps", "ab"} <= normalize.INTERNATIONAL_SUFFIXES
+    assert not {"spa", "se", "the", "group"} & normalize.INTERNATIONAL_SUFFIXES
+    assert normalize_name("Peakflo Pte. Ltd.") == "peakflo"
+    assert normalize_name("Razorpay Private Limited") == "razorpay"
+    assert normalize_name("Boom AI S.A.P.I. de C.V.") == "boom ai"
+    assert normalize_name("Topo SAS") == "topo"
+    assert normalize_name("AG") == "ag"  # the last remaining word is never stripped
     assert frozenset({"labs"}) == normalize.CONDITIONAL_SUFFIXES

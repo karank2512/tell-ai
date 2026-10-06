@@ -1,0 +1,12 @@
+# The `default` ICP profile: spec section 8 defaults, verbatim.
+# Scores every company with at least one active signal (the public site and the
+# weekly page read these). Partner profiles live in tell-private/profiles/ and
+# override a shipped profile of the same name.
+name: default
+target_families: [sales, gtm_ops, customer]   # weight 1.0 on hiring_velocity
+other_families_weight: 0.3
+weights: { funding: 4.0, leadership: 2.0, launch: 1.5, expansion: 1.0, tech_adoption: 0 }
+half_life_days: { hiring_velocity: 30, funding: 90, leadership: 60, launch: 45, expansion: 60, tech_adoption: 90 }
+tech_keywords: []                               # devtools profiles list the keywords that count
+size_band: { min_open_postings: 3, max_open_postings: 400 }
+alert_threshold: 6.0

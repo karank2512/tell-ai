@@ -7,8 +7,11 @@ items with their top candidates and blank ``verdict`` columns, a human fills
 Streamlit page (:mod:`tell.resolve.review_app`) calls the same :func:`apply_verdict`,
 so every rule lives here and is unit-tested without a display.
 
-* ``link``: the event gets ``company_id``; the event's normalized name becomes a
-  ``manual`` alias of that company so the pair never comes back; item ``resolved``.
+* ``link``: the event gets ``company_id`` with the same enrichment an auto-link gets
+  (:func:`tell.resolve.match.link_event`: ``cik`` / ``legal_name`` when empty, the
+  issuer name and every previous name as aliases, so a later filing under a former name
+  resolves through R2); the item's name also becomes a ``manual`` alias of that company
+  so the pair never comes back; item ``resolved``.
 * ``create``: a new ``companies`` row (``domain`` required, ``name`` from
   ``new_company_name`` or the event name), then as ``link``.
 * ``reject``: item ``rejected`` with its verdict recorded; the resolver skips the same
@@ -32,7 +35,7 @@ from sqlalchemy.orm import Session
 from tell.collectors.base import iso_utc, utcnow
 from tell.discovery import registrable_domain
 from tell.models import Company, EventRow, ReviewQueueItem
-from tell.resolve.match import REVIEW_KIND, add_aliases
+from tell.resolve.match import REVIEW_KIND, add_aliases, link_event
 
 __all__ = [
     "CSV_CANDIDATES",
@@ -141,7 +144,7 @@ def _link(session: Session, item: ReviewQueueItem, company: Company, now: dateti
     name = str(item.payload.get("name") or "")
     event = _event(session, item)
     if event is not None:
-        event.company_id = company.id
+        link_event(session, event, company.id)
         match = dict(event.payload.get("match") or {})
         match.update(
             {

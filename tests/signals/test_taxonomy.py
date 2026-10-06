@@ -50,7 +50,14 @@ def test_table_matches_the_spec_shape() -> None:
         ("Office Coordinator", OTHER),
         ("", OTHER),
         ("12345", OTHER),
-        ("Développeur Full-Stack", "engineering"),  # accented Latin is still matched
+        ("Développeur Full-Stack", OTHER),  # French role word: non-English -> other
+        ("Responsable Marketing", OTHER),
+        ("Ingeniero de Software Senior", OTHER),
+        ("Software Engineer (m/w/d)", "engineering"),  # English title, German gender marker
+        ("Zoë's Café Operations Manager", "finance_ops"),  # accents alone are not non-English
+        ("Barista (20 hrs)", OTHER),  # "hrs" is hours, not HR
+        ("HR Business Partner", "finance_ops"),
+        ("SDRs - EMEA", "sales"),  # short keywords still take the plural
     ],
 )
 def test_title_edge_cases(title: str, expected: str) -> None:
@@ -77,7 +84,9 @@ def test_non_english_detection() -> None:
     assert is_non_english("مدير مبيعات")
     assert is_non_english("Менеджер по продажам (B2B)")  # a few Latin letters, mostly not
     assert is_non_english("---")
-    assert not is_non_english("Développeur")
+    assert is_non_english("Développeur")  # listed French role word
+    assert is_non_english("Praktikant Vertrieb")
+    assert not is_non_english("Résumé Screener")  # accents alone do not decide
     assert not is_non_english("Account Executive")
     assert role_family("Менеджер AE", "Sales") == OTHER
 
@@ -101,6 +110,9 @@ def test_normalize_title() -> None:
         ("New York, NY, United States", "new york, us"),
         ("San Francisco, CA 94105", "san francisco, us"),
         ("Portland, OR", "portland, us"),
+        ("Portland, OR 97201", "portland, us"),
+        ("Eugene, OR - Hybrid", "eugene, us"),
+        ("Toronto, CA", "toronto, us"),  # state code wins the collision (ADR 0020)
         ("Toronto, ON", "toronto, ca"),
         ("Toronto, Ontario, Canada", "toronto, ca"),
         ("London, England, United Kingdom", "london, gb"),

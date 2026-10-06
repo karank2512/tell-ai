@@ -7,21 +7,37 @@ Rule    Condition                                                    Confidence 
 ======  ===========================================================  ==========  =========
 R1      the source URL is on the watched domain (``on_domain_company_id``)  0.98  auto_link
 R2      normalized name (or its alt form) equals exactly one company's alias  0.95  auto_link
-R3      ``token_set_ratio >= 92`` and issuer state == ``hq_state`` (city when no state)  0.90  auto_link
-R4      ratio ``>= 95`` and exactly one candidate company in the whole table  0.85  auto_link
+R3      ``token_set_ratio >= 92``, issuer state == ``hq_state`` (city when no state), the
+        geography singles out exactly one company, and the superset guard holds  0.90  auto_link
+R4      ratio ``>= 95``, exactly one candidate company (ratio >= 85) in the whole table,
+        and the superset guard holds                                 0.85  auto_link
 R5      ratio ``>= 85`` with two or more candidate companies, or one not auto-linked  0.60  review
 R6      otherwise                                                    0           unlinked
 ======  ===========================================================  ==========  =========
 
-Interpretation notes (recorded in ``docs/methods/entity-resolution.md``):
+Interpretation notes (recorded in ``docs/methods/entity-resolution.md`` and ADR 0018):
 
 * R2 with an alias shared by two companies is ambiguous and falls through (R3 may
   disambiguate by geography; otherwise R5).
+* R3 with two companies at ratio >= 92 whose geography both match is a tie; the rule
+  does not fire and the event goes to review (R5) with both candidates logged.
+* R4's "exactly one candidate company in the whole table" is evaluated over every alias
+  (not a truncated extract pool), so a company holding many aliases cannot hide another.
+* Superset guard: ``token_set_ratio`` scores any token superset 100 ("Blue Stripe Bakery"
+  vs "stripe"), so R3 and R4 additionally require a guard ratio of at least 85
+  (:data:`GUARD_RATIO`) against one of the company's aliases:
+  ``min(token_sort_ratio(norm, alias), 100 * matched_chars / len(norm))``, i.e. the
+  plain sorted-token ratio, capped by the share of the *query* the alias explains (plain
+  ``token_sort_ratio`` alone dilutes with length: "Domu Technologies Press" vs "domu
+  technologies" scores 85). A candidate failing the guard falls to R5 review. This only
+  removes auto-links, so it is consistent with the spec table.
 * The spec words R5 as "85 to 91 with one candidate"; a single candidate at 92-94 whose
   geography does not match is also sent to review rather than dropped.
 
 Every decision is written into ``events.payload["match"]`` as
 ``{rule, ratio, candidates[:5], confidence, resolved_at}`` so a wrong link can be audited.
+R1 links made by the collectors (``board.company_id`` copied onto job and tech events)
+carry :data:`tell.collectors.base.R1_MATCH` for the same reason.
 """
 
 from __future__ import annotations
@@ -46,13 +62,20 @@ __all__ = [
     "AUTO_LINK_RULES",
     "CANDIDATE_LIMIT",
     "CONFIDENCE",
+    "GEO_RATIO",
+    "GUARD_RATIO",
     "REVIEW_KIND",
+    "REVIEW_RATIO",
     "RULES",
+    "UNIQUE_RATIO",
     "AliasIndex",
     "Candidate",
     "MatchDecision",
     "ResolveStats",
+    "add_aliases",
     "backfill_aliases",
+    "guard_ratio",
+    "link_event",
     "match_name",
     "resolve_events",
 ]
@@ -79,6 +102,16 @@ CANDIDATE_LIMIT = 5
 GEO_RATIO = 92
 UNIQUE_RATIO = 95
 REVIEW_RATIO = 85
+GUARD_RATIO = 85
+"""Superset guard for R3 / R4: :func:`guard_ratio` against one of the company's aliases must
+reach this too."""
+
+NAME_SOURCES: frozenset[str] = frozenset({"edgar", "news"})
+"""Sources whose events carry a company *name* the resolver may match (ADR 0018).
+
+Job and GitHub payloads carry ``title`` / repository ``name`` values that are not company
+names; an event from any other source is skipped (counted as ``no_name``).
+"""
 
 SUPPORTED_BOARD_VENDORS: frozenset[str] = frozenset(
     {"greenhouse", "lever", "ashby", "smartrecruiters"}
@@ -146,14 +179,29 @@ US_STATES: dict[str, str] = {
 
 @dataclass(frozen=True)
 class Candidate:
-    """One company considered for a name: its best-scoring alias and that ratio."""
+    """One company considered for a name: its best-scoring alias and that ratio.
+
+    ``sort_ratio`` is the best :func:`guard_ratio` over the company's scored aliases, the
+    value the superset guard checks (R3 / R4 need ``sort_ratio >= GUARD_RATIO``).
+    """
 
     company_id: int
     alias: str
     ratio: float
+    sort_ratio: float = 0.0
+
+    @property
+    def guarded(self) -> bool:
+        """Whether the superset guard allows an auto-link to this company."""
+        return self.sort_ratio >= GUARD_RATIO
 
     def to_dict(self) -> dict[str, Any]:
-        return {"company_id": self.company_id, "alias": self.alias, "ratio": self.ratio}
+        return {
+            "company_id": self.company_id,
+            "alias": self.alias,
+            "ratio": self.ratio,
+            "sort_ratio": self.sort_ratio,
+        }
 
 
 @dataclass
@@ -197,6 +245,32 @@ def _city_key(city: str | None) -> str | None:
 # --- alias index -----------------------------------------------------------------------------
 
 
+def guard_ratio(query: str, alias: str) -> float:
+    """The superset guard: ``token_sort_ratio`` capped by how much of ``query`` the alias covers.
+
+    ``token_sort_ratio = 200 * M / (len(query) + len(alias))`` with ``M`` matching
+    characters (Indel), so ``100 * M / len(query)`` is the share of the query's characters
+    the alias explains. The minimum of the two is symmetric for a short query against a
+    long alias ("acme" vs "acme robotics": 47) and does not dilute for a long query with
+    one extra token ("domu technologies press" vs "domu technologies": sort 85, cover 74).
+    A one-letter typo passes ("beakon health" vs "beacon health": 92).
+    """
+    if not query or not alias:
+        return 0.0
+    sort = float(fuzz.token_sort_ratio(query, alias))
+    cover = sort * (len(query) + len(alias)) / (2 * len(query))
+    return round(min(sort, cover), 2)
+
+
+def _better_alias(new: tuple[float, float, str], current: tuple[float, float, str]) -> bool:
+    """Higher ``token_set_ratio`` wins, then higher ``token_sort_ratio``, then alphabetical."""
+    if new[0] != current[0]:
+        return new[0] > current[0]
+    if new[1] != current[1]:
+        return new[1] > current[1]
+    return new[2] < current[2]
+
+
 class AliasIndex:
     """Every alias (plus each company's normalized name) with geography, ready for scoring.
 
@@ -214,6 +288,8 @@ class AliasIndex:
         self._companies: dict[str, set[int]] = {}
         self._aliases: list[str] = []
         self._alts: list[str] = []
+        self._by_alt: dict[str, set[str]] = {}
+        """alt form -> aliases that fold to it (so :meth:`exact` is a dict lookup)."""
         self._geo: dict[int, tuple[str | None, str | None]] = {}
         if geography:
             for company_id, (state, city) in geography.items():
@@ -245,7 +321,9 @@ class AliasIndex:
         if holders is None:
             self._companies[alias] = {company_id}
             self._aliases.append(alias)
-            self._alts.append(normalize_name_alt(alias))
+            alt = normalize_name_alt(alias)
+            self._alts.append(alt)
+            self._by_alt.setdefault(alt, set()).add(alias)
         else:
             holders.add(company_id)
 
@@ -259,38 +337,70 @@ class AliasIndex:
             if form:
                 found |= self._companies.get(form, set())
         if alt:
-            for alias, alias_alt in zip(self._aliases, self._alts, strict=True):
-                if alias_alt == alt:
-                    found |= self._companies[alias]
+            for alias in self._by_alt.get(alt, ()):
+                found |= self._companies[alias]
         return found
 
-    def candidates(self, norm: str, alt: str, *, limit: int = CANDIDATE_LIMIT) -> list[Candidate]:
-        """Top ``limit`` companies by ``token_set_ratio`` against every alias (plain and alt form)."""
-        if not norm or not self._aliases:
-            return []
+    def _scored_positions(self, norm: str, alt: str, pool: int) -> dict[int, float]:
+        """``alias position -> best token_set_ratio`` over the plain and alt forms.
+
+        Two passes per form: the top ``pool`` aliases (so R6 decisions still log their
+        nearest candidates) and *every* alias at or above :data:`REVIEW_RATIO`, so a
+        company holding many aliases can never push another company's candidate alias out
+        of view (R4's "exactly one candidate company in the whole table" is evaluated
+        over the full index).
+        """
         scored: dict[int, float] = {}
-        pool = max(limit * 4, 20)
         for query, choices in ((norm, self._aliases), (alt, self._alts)):
             if not query:
                 continue
-            for _, score, index in process.extract(
-                query, choices, scorer=fuzz.token_set_ratio, limit=pool
-            ):
+            top = process.extract(query, choices, scorer=fuzz.token_set_ratio, limit=pool)
+            strong = process.extract(
+                query,
+                choices,
+                scorer=fuzz.token_set_ratio,
+                limit=None,
+                score_cutoff=REVIEW_RATIO - 0.01,
+            )
+            for _, score, index in (*top, *strong):
                 position = int(index)
                 scored[position] = max(scored.get(position, 0.0), float(score))
-        best: dict[int, Candidate] = {}
+        return scored
+
+    def candidates(self, norm: str, alt: str, *, limit: int = CANDIDATE_LIMIT) -> list[Candidate]:
+        """Companies ranked by ``token_set_ratio`` against every alias (plain and alt form).
+
+        Returns every company at or above :data:`REVIEW_RATIO` and at least the top
+        ``limit``; callers truncate to ``candidates[:5]`` for the audit record. Each
+        company carries its best-scoring alias (ties: higher ``token_sort_ratio``, then
+        alphabetical) and ``sort_ratio``, the best ``token_sort_ratio`` over its scored
+        aliases, for the superset guard.
+        """
+        if not norm or not self._aliases:
+            return []
+        scored = self._scored_positions(norm, alt, max(limit * 4, 20))
+        best_alias: dict[int, tuple[float, float, str]] = {}
+        """company -> (ratio, that alias's sort ratio, alias): the alias shown in the audit."""
+        best_sort: dict[int, float] = {}
         for position, ratio in scored.items():
             alias = self._aliases[position]
+            sort_ratio = guard_ratio(norm, alias)
+            if alt:
+                sort_ratio = max(sort_ratio, guard_ratio(alt, self._alts[position]))
             for company_id in self._companies[alias]:
-                current = best.get(company_id)
-                if (
-                    current is None
-                    or ratio > current.ratio
-                    or (ratio == current.ratio and alias < current.alias)
-                ):
-                    best[company_id] = Candidate(company_id, alias, round(ratio, 2))
-        ranked = sorted(best.values(), key=lambda c: (-c.ratio, c.company_id))
-        return ranked[:limit]
+                best_sort[company_id] = max(best_sort.get(company_id, 0.0), sort_ratio)
+                current = best_alias.get(company_id)
+                if current is None or _better_alias((ratio, sort_ratio, alias), current):
+                    best_alias[company_id] = (ratio, sort_ratio, alias)
+        ranked = sorted(
+            (
+                Candidate(company_id, alias, round(ratio, 2), round(best_sort[company_id], 2))
+                for company_id, (ratio, _, alias) in best_alias.items()
+            ),
+            key=lambda c: (-c.ratio, -c.sort_ratio, c.company_id),
+        )
+        strong = sum(1 for c in ranked if c.ratio >= REVIEW_RATIO)
+        return ranked[: max(limit, strong)]
 
     def geography_matches(self, company_id: int, state: str | None, city: str | None) -> bool:
         """Issuer state equals ``hq_state``; city equals ``hq_city`` when either state is missing."""
@@ -358,14 +468,21 @@ def match_name(
         return _decision("R2", company_id, ratio, candidates)
 
     strong = [c for c in candidates if c.ratio >= REVIEW_RATIO]
-    for candidate in strong:
-        if candidate.ratio >= GEO_RATIO and idx.geography_matches(
-            candidate.company_id, state, city
-        ):
-            return _decision("R3", candidate.company_id, candidate.ratio, candidates)
 
+    # R3: name + geography. The geography has to single out exactly one company; a tie
+    # (two companies at >= 92 in the issuer's state) is ambiguous and goes to review with
+    # both candidates logged. The superset guard applies before the link is made.
+    geo = [
+        c
+        for c in strong
+        if c.ratio >= GEO_RATIO and idx.geography_matches(c.company_id, state, city)
+    ]
+    if len({c.company_id for c in geo}) == 1 and geo[0].guarded:
+        return _decision("R3", geo[0].company_id, geo[0].ratio, candidates)
+
+    # R4: name only, unique in the whole table (``strong`` holds every company >= 85).
     companies = {c.company_id for c in strong}
-    if strong and strong[0].ratio >= UNIQUE_RATIO and len(companies) == 1:
+    if strong and strong[0].ratio >= UNIQUE_RATIO and len(companies) == 1 and strong[0].guarded:
         return _decision("R4", strong[0].company_id, strong[0].ratio, candidates)
 
     if strong:
@@ -432,11 +549,21 @@ def _news_name(payload: Mapping[str, Any]) -> str | None:
 
 
 def _subject(event: EventRow) -> _Subject | None:
+    """The name (and geography) an event offers the matcher, chosen by source.
+
+    EDGAR events name the company in ``issuer_name`` (Form D) or ``company_name`` (other
+    forms); news events in their Google News query. Any other source is skipped: job
+    and GitHub payloads carry titles and repository names, not company names.
+    """
+    if event.source not in NAME_SOURCES:
+        return None
     payload = event.payload
-    name: Any = payload.get("issuer_name") or payload.get("company_name") or payload.get("name")
+    name: Any = None
+    if event.source == "edgar":
+        name = payload.get("issuer_name") or payload.get("company_name")
+    else:
+        name = _news_name(payload)
     if not isinstance(name, str) or not name.strip():
-        name = _news_name(payload) if event.source == "news" else None
-    if not name:
         return None
     previous_raw = payload.get("previous_names")
     previous = tuple(
@@ -481,11 +608,22 @@ def _cik_taken(session: Session, cik: str, company_id: int) -> bool:
     return session.scalar(stmt) is not None
 
 
-def _apply_link(
-    session: Session, event: EventRow, subject: _Subject, company_id: int, index: AliasIndex
+def link_event(
+    session: Session, event: EventRow, company_id: int, *, index: AliasIndex | None = None
 ) -> int:
-    """Set ``company_id``, fill ``cik`` / ``legal_name`` when empty, add aliases; return aliases added."""
+    """Link ``event`` to ``company_id`` with the enrichment every link gets; return aliases added.
+
+    Sets ``event.company_id``; for an EDGAR event fills ``companies.cik`` (when empty and
+    not held by another company) and ``companies.legal_name`` (when empty); adds the
+    event's name and every ``previous_names`` entry as aliases (source ``edgar`` /
+    ``news``, so a later filing under a former name resolves through R2). Used by the
+    resolver's auto-links and by review verdicts alike (spec section 6: "each previous
+    name becomes an alias when a filing is linked"). ``index`` is kept current when given.
+    """
     event.company_id = company_id
+    subject = _subject(event)
+    if subject is None:
+        return 0
     company = session.get(Company, company_id)
     if company is not None and event.source == "edgar":
         if company.cik is None and subject.cik and not _cik_taken(session, subject.cik, company_id):
@@ -494,8 +632,9 @@ def _apply_link(
             company.legal_name = subject.legal_name
     names = (subject.name, *subject.previous_names)
     added = add_aliases(session, company_id, names, source=_alias_source(event.source))
-    for name in names:
-        index.add(normalize_name(name), company_id)
+    if index is not None:
+        for name in names:
+            index.add(normalize_name(name), company_id)
     return added
 
 
@@ -606,7 +745,7 @@ def resolve_events(
             audit["source_rule"] = previous.get("rule")
         if decision.action == "auto_link" and decision.company_id is not None:
             stats.auto_linked += 1
-            stats.aliases_added += _apply_link(session, event, subject, decision.company_id, index)
+            stats.aliases_added += link_event(session, event, decision.company_id, index=index)
         elif decision.action == "review":
             norm = normalize_name(subject.name)
             if _was_rejected(rejected, norm, _review_key(decision)):

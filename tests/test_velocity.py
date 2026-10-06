@@ -260,6 +260,11 @@ def poll(
     return events
 
 
+def warm(session: Session, board: AtsBoard, at: datetime) -> None:
+    """An empty first poll, so the postings of the next poll are not cold-start ones."""
+    assert poll(session, board, [], at) == []
+
+
 def close(session: Session, board: AtsBoard, keep: list[ObservedPosting], at: datetime) -> None:
     """Two absent polls 12h apart: everything not in ``keep`` is closed at ``at``."""
     poll(session, board, keep, at - 12 * H)
@@ -346,6 +351,7 @@ def test_close_more_than_30_days_ago_is_a_new_requisition(
 def test_external_id_change_with_same_fingerprint_and_content_within_7_days_is_a_repost(
     db_session: Session, board: AtsBoard, company: Company
 ) -> None:
+    warm(db_session, board, T0 - 4 * DAY)
     poll(db_session, board, [obs("j1", posted_at=T0 - 3 * DAY)], T0 - 3 * DAY)
     # j1 vanishes (not closed yet: one absence) and j2 appears with identical content.
     events = poll(db_session, board, [obs("j2", posted_at=T0 - H)], T0)
@@ -358,28 +364,117 @@ def test_external_id_change_with_same_fingerprint_and_content_within_7_days_is_a
 def test_external_id_change_needs_same_content_and_7_days(
     db_session: Session, board: AtsBoard
 ) -> None:
-    poll(db_session, board, [obs("j1", posted_at=T0 - 9 * DAY)], T0 - 9 * DAY)
-    poll(db_session, board, [obs("j1")], T0 - 8 * DAY)  # last seen 8 days ago
+    # The old listing was last seen 35 days ago: no rule applies, j2 is a new requisition.
+    poll(db_session, board, [obs("j1", posted_at=T0 - 40 * DAY)], T0 - 40 * DAY)
+    poll(db_session, board, [obs("j1")], T0 - 35 * DAY)
     events = poll(db_session, board, [obs("j2", posted_at=T0 - H)], T0)
     assert [e.type for e in events] == [JOB_OPENED]
 
-    poll(db_session, board, [obs("j3", title="Data Engineer", department="Data")], T0 + DAY)
+    # Same fingerprint, different content, the old listing gone for 8 days: not rule 2
+    # (which needs identical content within 7 days) but rule 3, vanished within 30 days.
+    poll(
+        db_session,
+        board,
+        [obs("j2"), obs("j3", title="Data Engineer", department="Data")],
+        T0 + DAY,
+    )
+    poll(db_session, board, [obs("j2")], T0 + 5 * DAY)
     events = poll(
         db_session,
         board,
         [obs("j2"), obs("j4", title="Data Engineer", department="Data", description="Other.")],
-        T0 + 2 * DAY,
+        T0 + 9 * DAY,
     )
-    assert [e.type for e in events] == [JOB_OPENED]  # different content_hash
+    assert [(e.type, e.payload["repost_reason"]) for e in events] == [
+        (JOB_REPOSTED, "vanished_within_30d"),
+        ("job_closed", None),
+    ]
+    assert posting(db_session, board, "j4").repost_of == posting(db_session, board, "j3").id
+
+
+def test_reworded_twin_replacing_an_old_posting_in_one_poll_is_a_repost(
+    db_session: Session, board: AtsBoard, company: Company
+) -> None:
+    """A (opened 40 days ago) disappears in the poll where its reworded twin B appears."""
+    warm(db_session, board, T0 - 41 * DAY)
+    poll(db_session, board, [obs("a", posted_at=T0 - 40 * DAY)], T0 - 40 * DAY)
+    poll(db_session, board, [obs("a")], T0 - DAY)
+    events = poll(db_session, board, [obs("b", posted_at=T0 - H, description="Reworded.")], T0)
+    assert [(e.type, e.payload["repost_reason"]) for e in events] == [
+        (JOB_REPOSTED, "vanished_within_30d")
+    ]
+    assert events[0].payload["repost_of_external_id"] == "a"
+    assert vel.new7(db_session, company.id, "sales", T0) == 0
 
 
 def test_side_by_side_duplicates_are_one_requisition_in_new7(
     db_session: Session, board: AtsBoard, company: Company
 ) -> None:
+    warm(db_session, board, T0 - DAY)
     events = poll(
         db_session, board, [obs("j1", posted_at=T0 - H), obs("j2", posted_at=T0 - 2 * H)], T0
     )
     assert [e.type for e in events] == [JOB_OPENED, JOB_OPENED]
+    assert vel.new7(db_session, company.id, "sales", T0) == 1
+
+
+# --- 3b. cold start (ADR 0019) ----------------------------------------------------------------
+
+
+def test_first_poll_postings_are_flagged_and_never_counted(
+    db_session: Session, board: AtsBoard, company: Company
+) -> None:
+    """A board's first poll sees only what survived: no spike, no inflated baseline."""
+    first = poll(
+        db_session,
+        board,
+        [obs(f"c{i}", title=f"Account Executive {i}", posted_at=None) for i in range(5)],
+        T0 - DAY,
+    )
+    assert [e.type for e in first] == [JOB_OPENED] * 5
+    assert all(e.payload["first_poll"] is True for e in first)
+    assert all(
+        e.payload["match"]
+        == {
+            "rule": "R1",
+            "ratio": None,
+            "candidates": [],
+            "confidence": 0.98,
+            "via": "ats_board",
+        }
+        for e in first
+    )
+    cold = vel.velocity(db_session, company.id, "sales", T0 - DAY)
+    assert (cold.new7, cold.base, cold.fires) == (0, 0.5, False)
+    assert vel.emit_velocity_events(db_session, now=T0 - DAY) == []
+
+    # The next poll's new postings are real news and count against the 0.5 floor.
+    second = poll(
+        db_session,
+        board,
+        [obs(f"c{i}", title=f"Account Executive {i}", posted_at=None) for i in range(5)]
+        + [
+            obs(f"n{i}", title=title, posted_at=T0 - H)
+            for i, title in enumerate(("Enterprise AE", "Mid-Market AE", "Strategic AE"))
+        ],
+        T0,
+    )
+    assert [e.type for e in second] == [JOB_OPENED] * 3
+    assert all("first_poll" not in e.payload for e in second)
+    warm_result = vel.velocity(db_session, company.id, "sales", T0)
+    assert (warm_result.new7, warm_result.base, warm_result.fires) == (3, 0.5, True)
+    assert [p["external_id"] for p in warm_result.postings] == ["n0", "n1", "n2"]
+
+
+def test_first_poll_postings_anchor_the_same_requisition_chain(
+    db_session: Session, company: Company
+) -> None:
+    anchor = opened_event(company.id, "old", T0 - 10 * DAY, fp="fp-same")
+    anchor.payload["first_poll"] = True
+    write_events(db_session, [anchor, opened_event(company.id, "new", T0, fp="fp-same")])
+    assert vel.new7(db_session, company.id, "sales", T0) == 0  # same requisition as the anchor
+    assert vel.new7(db_session, company.id, "sales", T0 - 10 * DAY) == 0  # anchor never counted
+    write_events(db_session, [opened_event(company.id, "other", T0, fp="fp-other")])
     assert vel.new7(db_session, company.id, "sales", T0) == 1
 
 
@@ -587,6 +682,24 @@ def test_episode_survives_a_short_gap(db_session: Session, company: Company) -> 
     assert not vel.velocity(db_session, company.id, "sales", T0 + 9 * DAY).fires
     assert vel.velocity(db_session, company.id, "sales", T0 + 12 * DAY).fires
     assert vel.emit_velocity_events(db_session, now=T0 + 12 * DAY) == []
+    assert len(velocity_events(db_session)) == 1
+
+
+def test_long_episode_never_re_emits_after_the_lookback_cap(
+    db_session: Session, company: Company
+) -> None:
+    """A small company opening 2 sales roles every week fires continuously (no ratio rule);
+    the 90-day walk-back cap must not start a second episode."""
+    start = T0 - 120 * DAY
+    for week in range(18):
+        at = start + 7 * week * DAY
+        write_events(db_session, spikes(company.id, 2, at, prefix=f"w{week}-"))
+    assert vel.velocity(db_session, company.id, "sales", start).fires
+    assert len(vel.emit_velocity_events(db_session, now=start)) == 1
+    for day in (7, 30, 98, 105, 119):
+        at = start + day * DAY
+        assert vel.velocity(db_session, company.id, "sales", at).fires
+        assert vel.emit_velocity_events(db_session, now=at) == [], day
     assert len(velocity_events(db_session)) == 1
 
 

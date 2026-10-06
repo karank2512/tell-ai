@@ -152,14 +152,22 @@ def test_csv_round_trip_link_create_reject(
     assert linked.payload["match"]["confidence"] == 1.0
     assert linked.payload["match"]["review_id"] == queue["items"]["ev-link"].id
     assert linked.payload["match"]["candidates"]  # the R5 audit trail is kept
-    assert _aliases(db_session, queue["robotics"].id)["acme robotics group"] == "manual"
+    # the same enrichment an auto-link gets: the filing's name is an edgar alias, cik and
+    # legal_name are filled when empty
+    assert _aliases(db_session, queue["robotics"].id)["acme robotics group"] == "edgar"
+    robotics = queue["robotics"]
+    db_session.refresh(robotics)
+    # rows apply in item order (ev-create first), so the created company took the shared
+    # test CIK and this one is left alone; legal_name is filled either way
+    assert (robotics.cik, robotics.legal_name) == (None, "Acme Robotics Group")
 
     created = db_session.scalars(select(Company).where(Company.domain == "acme-ventures.com")).one()
     assert created.name == "Acme Ventures"
     created_event = db_session.get(EventRow, "ev-create")
     assert created_event is not None
     assert created_event.company_id == created.id
-    assert _aliases(db_session, created.id) == {"acme robotics ventures": "manual"}
+    assert _aliases(db_session, created.id) == {"acme robotics ventures": "edgar"}
+    assert (created.cik, created.legal_name) == ("0000012345", "Acme Robotics Ventures")
 
     rejected = db_session.get(EventRow, "ev-reject")
     assert rejected is not None
@@ -242,6 +250,42 @@ def test_apply_verdict_unknown_item_or_kind(db_session: Session) -> None:
     db_session.flush()
     with pytest.raises(ReviewError, match="no entity_match review item"):
         apply_verdict(db_session, board.id, "reject")
+
+
+def test_manual_link_applies_previous_name_aliases(db_session: Session) -> None:
+    """A review link is a link of a filing: previous names become aliases, so a later
+    filing under the former name resolves through R2 (spec section 6, renamed companies)."""
+    method = _company(db_session, "method.com", "Method", hq_state="NY")
+    _company(db_session, "method.io", "Method Financial", hq_state="NY")
+    backfill_aliases(db_session)
+    event = _formd_event(db_session, "ev-methodd", "Methodd Inc", state="NY")
+    event.payload = {
+        **event.payload,
+        "cik": "0000777777",
+        "previous_names": ["Old Method Corp", "Methodology LLC"],
+    }
+    db_session.flush()
+    assert resolve_events(db_session, now=NOW).review == 1
+    (item,) = open_items(db_session)
+    apply_verdict(db_session, item.id, "link", company_id_or_domain="method.com", now=NOW)
+
+    db_session.refresh(method)
+    assert (method.cik, method.legal_name) == ("0000777777", "Methodd Inc")
+    assert _aliases(db_session, method.id) == {
+        "method": "manual",
+        "methodd": "edgar",
+        "old method": "edgar",
+        "methodology": "edgar",
+    }
+    assert event.company_id == method.id
+    assert event.payload["match"]["rule"] == "manual"
+
+    _formd_event(db_session, "ev-former", "Methodology, LLC", state="NY")
+    stats = resolve_events(db_session, now=NOW)
+    assert stats.by_rule == {"R2": 1}
+    former = db_session.get(EventRow, "ev-former")
+    assert former is not None
+    assert former.company_id == method.id
 
 
 def test_link_survives_a_missing_event(db_session: Session) -> None:

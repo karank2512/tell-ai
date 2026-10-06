@@ -21,3 +21,7 @@ Template: [0000-template.md](0000-template.md). Each record covers one locked de
 | [0015](0015-ats-404-and-reverification.md) | One 404 / dead-board rule for every ATS collector |
 | [0016](0016-news-headline-redaction.md) | Leadership news headlines are stored with the person's name redacted (provisional, pending confirmation) |
 | [0017](0017-posting-ghost-votes.md) | `posting_ghost_votes` stores anonymous job-seeker ghost-job votes (inert until 500) |
+| [0018](0018-entity-resolution-rule-refinements.md) | Entity-resolution refinements beyond the SPEC wording: R3 tie to review, R4 over the whole table, token-superset guard, international suffixes, R1 audit record, one link function, name-only headline metric |
+| [0019](0019-velocity-cold-start-and-reposts.md) | Hiring velocity: first-poll events flagged and never counted, `vanished_within_30d` repost rule, capped walk-back marks the whole episode |
+| [0020](0020-taxonomy-interpretations.md) | Role-family taxonomy interpretations: keyword masking, shared department hints, stale-weighted small-company count, non-English stop words, short-keyword suffixes, location code collision kept |
+| [0021](0021-scoring-interpretations.md) | Scoring interpretations: size band gates alerts not storage, 7-day cooldown + 0.5 re-arm hysteresis, end-of-day scoring instant, `default` scores every active company, `news_funding` and first-poll tech events carry no weight, heat ties count half |
