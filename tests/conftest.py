@@ -32,6 +32,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import Session
 
+import tests._ci_env  # noqa: F401  # must run before typer reads the environment
 from tell.config import Settings, get_settings
 from tell.db import SessionLocal, make_engine
 from tell.models import Base
