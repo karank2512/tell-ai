@@ -27,7 +27,13 @@ Top-level commands, matching the spec section 11 workflow YAML:
   24 hours (:mod:`tell.ops.deadman`).
 * ``prune --out DIR``: the spec section 5 size budget (:mod:`tell.ops.prune`).
 * ``api``: v1 key management (:mod:`tell.api.cli`).
+* ``intake``: the intake form's sheet into watchlists (:mod:`tell.intake.cli`).
 * ``discover``, ``seed-yc`` (alias of ``discover seed-yc``), ``backtest``, ``version``.
+
+The global flag ``tell --manual <command>`` marks every ``runs`` row the command records
+with ``notes.manual = true``, the manual-intervention anchor of "weeks unattended" (SPEC
+13.4); ``TELL_RUN_MANUAL=true`` in the environment does the same (``ingest.yml`` exports
+it on ``workflow_dispatch`` only).
 """
 
 from __future__ import annotations
@@ -52,7 +58,7 @@ from tell import __version__
 from tell.api import cli as api_cli
 from tell.backtest import cli as backtest_cli
 from tell.collectors import ashby, edgar, github_org, greenhouse, lever, news, smartrecruiters
-from tell.collectors.base import RunResult, finish_run, start_run, utcnow
+from tell.collectors.base import RunResult, finish_run, set_manual_run, start_run, utcnow
 from tell.config import get_settings
 from tell.db import session_scope
 from tell.discovery import cli as discovery_cli
@@ -89,6 +95,8 @@ MIN_POLL_GAP = POLL_INTERVAL - timedelta(hours=1)
 """Boards polled more recently than this are skipped without ``--force``: six hours less an
 hour of slack, because scheduled runs start late by varying amounts and a strict 6 h gap
 would skip every other slot."""
+
+_MIN_POLL_GAP_HOURS = int(MIN_POLL_GAP.total_seconds() // 3600)
 
 POLLED_STATUSES: tuple[str, ...] = ("active", "dead")
 """Board statuses an ATS run polls; a 200 revives a ``dead`` board (ADR 0015)."""
@@ -147,9 +155,23 @@ app = typer.Typer(
 
 
 @app.callback()
-def main() -> None:
+def main(
+    manual: Annotated[
+        bool,
+        typer.Option(
+            "--manual",
+            help=(
+                "Mark this command's runs as a manual intervention (runs.notes.manual = true, "
+                "the anchor of 'weeks unattended'); same as TELL_RUN_MANUAL=true."
+            ),
+        ),
+    ] = False,
+) -> None:
     """tell: public buying signals with receipts."""
     get_settings()  # loaded (and validated) once; every command reads the cached instance
+    # True forces the marker; None lets the TELL_RUN_MANUAL setting decide (and clears a
+    # value left by an earlier in-process invocation, as in tests).
+    set_manual_run(True if manual else None)
 
 
 # --- shared helpers ---------------------------------------------------------------------------
@@ -456,7 +478,14 @@ def ingest(
         typer.Option("--limit", min=1, help="Max boards (ATS) or companies (news) this run."),
     ] = None,
     force: Annotated[
-        bool, typer.Option("--force", help="Also poll boards polled within the last 6 hours.")
+        bool,
+        typer.Option(
+            "--force",
+            help=(
+                f"Also poll boards polled within the last {_MIN_POLL_GAP_HOURS} hours "
+                "(one cron slot less an hour of slack; see MIN_POLL_GAP)."
+            ),
+        ),
     ] = False,
 ) -> None:
     """Run one collector and print its JSON run line (exit 1 when the run failed)."""

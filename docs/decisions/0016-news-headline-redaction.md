@@ -1,6 +1,6 @@
 # 0016. Leadership news headlines are stored with the person's name redacted
 
-- Status: proposed (provisional orchestrator decision, pending Karan's confirmation)
+- Status: accepted (proposed by the orchestrator 2026-10-05; confirmed by Karan 2026-10-06)
 - Date: 2026-10-05
 
 ## Context

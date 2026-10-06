@@ -86,6 +86,7 @@ __all__ = [
     "SLACK_WEBHOOK_PREFIX",
     "Contact",
     "IntakeError",
+    "PrivateRecordError",
     "PrivateWatchlist",
     "RowError",
     "Submission",
@@ -161,6 +162,14 @@ _DOMAIN_SPLIT: Final = re.compile(r"[\s,;]+")
 _PROFILE_IN_LABEL: Final = re.compile(r"\(([^()]+)\)\s*$")
 _NON_SLUG: Final = re.compile(r"[^a-z0-9]+")
 _HEADER_PUNCT: Final = re.compile(r"[^a-z0-9]+")
+
+
+class PrivateRecordError(ValueError):
+    """A ``tell-private/watchlists/<slug>.yaml`` record does not validate or is misnamed.
+
+    The message names the file (a customer's slug) and the failing fields, never a field
+    value; callers that log publicly report only the type name.
+    """
 
 
 class IntakeError(RuntimeError):
@@ -532,9 +541,10 @@ def load_private_watchlists(private_dir: Path = DEFAULT_PRIVATE_DIR) -> dict[str
     The hook for the Slack digest (:mod:`tell.publish.slack`): look a watchlist up by
     ``Watchlist.slug`` and post to its ``slack_webhook_url`` when one is set. A missing
     directory yields ``{}`` (fork checkouts have no ``tell-private``). A file whose
-    ``slug`` differs from its name, or that does not validate, raises ``ValueError``
-    naming the file but not its contents; a file that is not YAML raises
-    ``yaml.YAMLError`` (whose message may quote the file, so callers log only its type).
+    ``slug`` differs from its name, or that does not validate, raises
+    :class:`PrivateRecordError` (a ``ValueError``) naming the file but not its contents; a
+    file that is not YAML raises ``yaml.YAMLError`` (whose message may quote the file, so
+    callers log only its type).
     """
     directory = private_dir / PRIVATE_WATCHLISTS_SUBDIR
     if not directory.is_dir():
@@ -547,10 +557,10 @@ def load_private_watchlists(private_dir: Path = DEFAULT_PRIVATE_DIR) -> dict[str
         except ValidationError as exc:
             fields = sorted({".".join(str(p) for p in err["loc"]) for err in exc.errors()})
             msg = f"{path.name}: invalid private watchlist (fields: {fields})"
-            raise ValueError(msg) from None
+            raise PrivateRecordError(msg) from None
         if record.slug != path.stem:
             msg = f"{path.name}: slug does not match the file name"
-            raise ValueError(msg)
+            raise PrivateRecordError(msg)
         records[record.slug] = record
     return records
 

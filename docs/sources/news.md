@@ -5,7 +5,7 @@ classifier: `tell/collectors/news_classify.py`. Tests: `tests/collectors/test_ne
 `tests/test_news_classify.py`, plus the generic `tests/test_contracts.py` and
 `tests/test_idempotency.py`. Schema addition: `company_feeds`
 (`docs/decisions/0014-company-feeds-table.md`). Leadership headlines are stored redacted
-(`docs/decisions/0016-news-headline-redaction.md`, provisional). Entry point for the CLI:
+(`docs/decisions/0016-news-headline-redaction.md`, accepted). Entry point for the CLI:
 `news.ingest()` (starts the run, calls `collect()`, finishes the run with the notes the
 next run reads).
 
@@ -70,7 +70,7 @@ rule. **Never stored:** the raw leadership headline, the `description`, article 
 author names, images, or anything fetched from the publisher's site (the publisher URL is
 never followed).
 
-## Leadership redaction (ADR 0016, provisional)
+## Leadership redaction (ADR 0016)
 
 SPEC section 3.7 says to store the headline; the PII rule says no person's name in any
 payload. Until Karan confirms, leadership headlines are stored through

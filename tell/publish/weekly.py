@@ -52,6 +52,7 @@ from tell.signals.velocity import HIRING_VELOCITY
 __all__ = [
     "CHANGELOG_PATH",
     "METHOD_KEYWORDS",
+    "METHOD_LINE_MAX",
     "NO_METHOD_CHANGE",
     "SALES_FAMILY",
     "TOP_N",
@@ -79,7 +80,11 @@ CHANGELOG_PATH = Path(__file__).resolve().parents[2] / "CHANGELOG.md"
 _WEEK = timedelta(days=7)
 _WEEK_LABEL = re.compile(r"^(\d{4})-W(\d{2})$")
 _METHOD_RE = re.compile(r"\b(" + "|".join(METHOD_KEYWORDS) + r")\b", re.IGNORECASE)
+_METHOD_LABEL_RE = re.compile(r"^(" + "|".join(METHOD_KEYWORDS) + r")( rule)?:", re.IGNORECASE)
+"""A bullet that opens with a method label, e.g. ``Scoring rule:`` or ``Velocity:``."""
 _MARKDOWN = re.compile(r"`|\*\*")
+METHOD_LINE_MAX = 280
+"""Length cap of the method-change line on the weekly page and in ``latest.json``."""
 
 
 @dataclass(frozen=True, order=True)
@@ -358,18 +363,46 @@ def coverage(session: Session, week: IsoWeek) -> Coverage:
     return Coverage(int(monitored), int(boards_polled), int(filings))
 
 
+def _shorten(text: str, limit: int = METHOD_LINE_MAX) -> str:
+    """``text`` cut to ``limit`` characters at the last sentence or clause boundary.
+
+    A bullet that is one long sentence (the release bullets) is cut mid-text with an
+    ellipsis; otherwise the cut lands after the last ``. `` or ``; `` in the first half or
+    later, so the public weekly page never ends on a half-word.
+    """
+    if len(text) <= limit:
+        return text
+    head = text[: limit - 3]
+    boundary = max(head.rfind(". "), head.rfind("; "))
+    if boundary >= limit // 2:
+        return head[: boundary + 1].rstrip(";").rstrip()
+    return head.rstrip() + "..."
+
+
 def method_change_line(changelog: Path | None = None) -> str:
-    """The first ``CHANGELOG.md`` bullet mentioning scoring, velocity or resolution."""
+    """The latest ``CHANGELOG.md`` bullet describing a method change.
+
+    A bullet that *starts* with a method label (``Scoring rule:``, ``Scoring:``,
+    ``Velocity:``, ``Resolution:``) wins over one that merely mentions the word, so a
+    phase release bullet listing every module never displaces the one-line rule change
+    beneath it. The first such bullet in file order (newest first) is used; without one,
+    the first bullet mentioning scoring, velocity or resolution. Cut to
+    :data:`METHOD_LINE_MAX` characters at a sentence boundary.
+    """
     path = changelog or CHANGELOG_PATH
     if not path.is_file():
         return NO_METHOD_CHANGE
+    bullets: list[str] = []
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
-        if not line.startswith(("- ", "* ")):
-            continue
-        text = _MARKDOWN.sub("", line[2:]).strip()
+        if line.startswith(("- ", "* ")):
+            bullets.append(_MARKDOWN.sub("", line[2:]).strip())
+    for text in bullets:
+        if _METHOD_LABEL_RE.match(text):
+            return _shorten(text)
+    for text in bullets:
         if _METHOD_RE.search(text):
-            return text if len(text) <= 280 else text[:277].rstrip() + "..."
+            return _shorten(text)
     return NO_METHOD_CHANGE
 
 

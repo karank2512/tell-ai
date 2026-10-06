@@ -34,7 +34,7 @@ dev-down:
 # concurrent `make test` runs in one checkout never collide; both are removed afterwards.
 test:
 	@id=$$$$; status=0; \
-	COVERAGE_FILE=.coverage.$$id uv run pytest --cov=tell --cov-report=json:coverage.$$id.json --cov-report=term-missing -q \
+	COVERAGE_FILE=.coverage.$$id uv run pytest --cov=tell --cov=tell_mcp --cov-report=json:coverage.$$id.json --cov-report=term-missing -q \
 	  && uv run python scripts/check_coverage.py coverage.$$id.json || status=$$?; \
 	rm -f .coverage.$$id coverage.$$id.json; \
 	exit $$status
@@ -51,6 +51,8 @@ fmt:
 migrate:
 	uv run alembic upgrade head
 
-# Phase 2 replaces this with the supervised fixture recorder (real calls, polite rates, diff for review).
+# No automated recorder exists: fixtures were recorded (or, for EDGAR, hand-crafted) once and
+# frozen. Re-recording is a supervised, manual, polite procedure: docs/CUTOVER_CHECKLIST.md
+# step 5 ("SEC contact and the EDGAR fixtures") describes it end to end.
 refresh-fixtures:
-	@echo "refresh-fixtures: no recorder yet (lands with the first collector in Phase 2)."
+	@echo "refresh-fixtures: no automated recorder; re-record by hand per docs/CUTOVER_CHECKLIST.md step 5 (polite rates, trim under 50 KB, scrub, diff, run the contract tests)."

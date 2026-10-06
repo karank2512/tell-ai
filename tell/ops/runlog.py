@@ -19,7 +19,9 @@ line, over the trailing 7 days:
 ``success_rate`` / ``success_rate_by_source``
     ``ok / (ok + failed)`` over runs started in the period, overall and per source
     (sources with no finished run in the period are left out; ``running`` rows never
-    count).
+    count). Runs of :data:`NON_PIPELINE_SOURCES` (the nightly ``intake`` reader, which
+    runs in ``tell-private`` and fails on a rotated sheet URL or drifted form columns,
+    not on ingestion) are excluded, so the quoted number describes the ingest pipeline.
 ``freshness_p95_h``
     Spec section 12's p95 of ``observed_at - occurred_at`` over the last 24 hours of
     collector events (:func:`tell.publish.health.freshness_p95_h`).
@@ -44,6 +46,7 @@ from tell.ops.deadman import SCHEDULED_SOURCES, SILENT_AFTER
 from tell.publish.health import freshness_p95_h
 
 __all__ = [
+    "NON_PIPELINE_SOURCES",
     "OPS_PERIOD",
     "RUN_LINE_KEYS",
     "OpsLine",
@@ -69,6 +72,11 @@ RUN_LINE_KEYS: tuple[str, ...] = (
 """The spec section 1 run-log keys, in that order."""
 
 OPS_PERIOD = timedelta(days=7)
+
+NON_PIPELINE_SOURCES: tuple[str, ...] = ("intake",)
+"""``runs.source`` values that are not part of the ingest pipeline and never count toward
+success rates or the unattended period: ``intake`` (``tell intake sync``, SPEC 15.6)."""
+
 _WEEK_S = timedelta(days=7).total_seconds()
 
 
@@ -105,7 +113,12 @@ def success_rates(
     finished = Run.status.in_(("ok", "failed"))
     stmt = (
         select(Run.source, func.count(), func.count().filter(Run.status == "ok"))
-        .where(Run.started_at > since, Run.started_at <= now, finished)
+        .where(
+            Run.started_at > since,
+            Run.started_at <= now,
+            finished,
+            Run.source.not_in(NON_PIPELINE_SOURCES),
+        )
         .group_by(Run.source)
         .order_by(Run.source)
     )

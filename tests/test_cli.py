@@ -28,6 +28,7 @@ from tell import __version__
 from tell import cli as tell_cli
 from tell.backtest.cli import REPORTS
 from tell.cli import MIN_POLL_GAP, app
+from tell.collectors import base as collectors_base
 from tell.collectors import edgar, github_org, greenhouse, news
 from tell.config import get_settings
 from tell.db import SessionLocal
@@ -381,6 +382,57 @@ def test_resolve_without_command_backfills_and_runs(bound: Engine) -> None:
     stats = _json(_invoke(["resolve", "stats"]))
     assert stats["events_unlinked"] + stats["events_linked"] == line["fetched"]
     assert [r.status for r in _runs(bound, "resolve")] == ["ok"]
+
+
+@pytest.fixture
+def _manual_cleared() -> Any:
+    """Leave no process-wide ``--manual`` override behind for later tests."""
+    yield
+    collectors_base.set_manual_run(None)
+
+
+@pytest.mark.usefixtures("_manual_cleared")
+def test_manual_flag_marks_every_run_of_the_command(bound: Engine) -> None:
+    """SPEC 13.4: ``tell --manual <cmd>`` writes runs.notes.manual = true (the anchor)."""
+    line = _json(_invoke(["--manual", "resolve"]))
+    assert line["notes"]["manual"] is True
+    (run,) = _runs(bound, "resolve")
+    assert run.notes is not None
+    assert run.notes["manual"] is True
+    assert run.status == "ok"
+    # The override does not outlive the invocation: the next plain command is unmarked.
+    _invoke(["resolve"])
+    assert [(r.notes or {}).get("manual") for r in _runs(bound, "resolve")] == [True, None]
+
+
+@pytest.mark.usefixtures("_manual_cleared")
+def test_manual_env_marks_runs_and_survives_a_failure(
+    bound: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``TELL_RUN_MANUAL=true`` (ingest.yml on workflow_dispatch) marks the run, failed or not."""
+    monkeypatch.setenv("TELL_RUN_MANUAL", "true")
+    get_settings.cache_clear()
+    with respx.mock(assert_all_mocked=True) as mock:
+        mock.get(host="www.sec.gov").respond(403)
+        _invoke(["ingest", "--source", "edgar"], code=1)
+    (run,) = _runs(bound, "edgar")
+    assert run.status == "failed"
+    assert run.notes is not None
+    assert run.notes["manual"] is True
+    assert "HTTPStatusError" in run.notes["error"]
+    line = _json(_invoke(["--manual", "runlog", "--week"]))
+    assert "weeks_unattended" in line  # a read-only command records no run
+
+
+def test_default_runs_carry_no_manual_marker(bound: Engine) -> None:
+    """A scheduled run (no flag, no variable) never resets 'weeks unattended'."""
+    _invoke(["resolve"])
+    with respx.mock(assert_all_mocked=True) as mock:
+        mock.get(host="www.sec.gov").respond(404)
+        _invoke(["ingest", "--source", "edgar"])
+    for source in ("resolve", "edgar"):
+        (run,) = _runs(bound, source)
+        assert "manual" not in (run.notes or {}), source
 
 
 def test_resolve_failure_is_recorded(bound: Engine, monkeypatch: pytest.MonkeyPatch) -> None:

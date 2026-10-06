@@ -88,6 +88,13 @@ class Settings(BaseSettings):
     tell_api_key: SecretStr | None = Field(
         default=None, description="Optional API key for the FastAPI service (tell-mcp client)."
     )
+    tell_api_url: str | None = Field(
+        default=None,
+        description=(
+            "Base URL of the FastAPI v1 service; tell-mcp uses it only together with "
+            "TELL_API_KEY (unset: the static api/v0 JSON on TELL_BASE_URL)."
+        ),
+    )
     tell_repo_url: str = Field(
         default="https://github.com/karank2512/tell-ai",
         description="Public URL of the code repo; pages link to the commit that produced them.",
@@ -107,6 +114,13 @@ class Settings(BaseSettings):
         default=None,
         description="Google Form where people ask for domains to be watched (Slack footer).",
     )
+    tell_intake_csv_url: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Published-as-CSV URL of the intake form's response sheet (tell intake sync); a "
+            "secret, because anyone with it can read every response."
+        ),
+    )
 
     # --- alerting ------------------------------------------------------------
     tell_alert_threshold: float = Field(
@@ -125,6 +139,16 @@ class Settings(BaseSettings):
     # --- review UI -----------------------------------------------------------
     tell_review_password: SecretStr | None = Field(
         default=None, description="Password gating the Streamlit review page."
+    )
+
+    # --- operations ----------------------------------------------------------
+    tell_run_manual: bool = Field(
+        default=False,
+        description=(
+            "Mark every run this process records as a manual intervention "
+            "(runs.notes.manual = true, the anchor of 'weeks unattended', SPEC 13.4). "
+            "ingest.yml sets it on workflow_dispatch only; `tell --manual` forces it."
+        ),
     )
 
     # --- environment ---------------------------------------------------------

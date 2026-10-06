@@ -12,13 +12,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import inspect, text
-from sqlalchemy.dialects import postgresql
 from sqlalchemy.engine import Connection, Engine
 
 from tell import models
@@ -491,7 +491,8 @@ def test_column_types(engine: Engine) -> None:
         insp = inspect(conn)
         for (table, column), expected in EXPECTED_TYPES.items():
             col = next(c for c in insp.get_columns(table) if c["name"] == column)
-            rendered = col["type"].compile(dialect=postgresql.dialect())
+            type_engine: Any = col["type"]  # the inspector's TypeEngine; compile() is untyped
+            rendered = str(type_engine.compile(dialect=conn.dialect))
             assert rendered == expected, (table, column)
 
 

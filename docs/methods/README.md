@@ -21,8 +21,33 @@ Each page defines what a number means, how it is computed and what it cannot tel
 | `speed-vs-press` | 13.1 | How long after a Form D does the first funding headline appear, and when would tell alert? The spec's SQL is the implementation and is printed in the report; fewer than 100 filings is reported as "sample too small". | `tell/backtest/speed_vs_press.py` |
 | `velocity-lead` | 13.2 | Does a hiring spike precede a filing more often than for matched non-filers? Prospective once collection has run 60 days ("not yet runnable" before); retrospective from current `posted_at` and from Wayback snapshots, each with its coverage. | `tell/backtest/velocity_lead.py`, `tell/backtest/wayback.py` |
 | `noise` | 13.3 | Repost share by vendor and family, median posting lifetime, share of boards with a posting open over 180 days; placeholder for the rated filtered-vs-unfiltered comparison. | `tell/backtest/noise.py` |
-| `ops` | 13.4 | Weeks unattended, success rate, freshness p95, companies and postings, gold-set precision and recall, review-queue rate. | `tell/backtest/ops.py` |
+| `ops` | 13.4 | Weeks unattended (anchored on the latest run marked `notes.manual = true`, see below), success rate, freshness p95, companies and postings, gold-set precision and recall, review-queue rate. | `tell/backtest/ops.py` |
 | `dogfood` | 13.5 | Private: written to `tell-private/reports/` only, never here. | `tell/backtest/dogfood.py` |
+
+### Manual interventions and "weeks unattended"
+
+SPEC 13.4 defines "weeks unattended" as days since the last manual intervention needed to
+keep ingest green, from the `runs` table, divided by 7. The `runs` table cannot see a
+human, so an intervention is a run that carries the marker `runs.notes.manual = true`,
+written by the run lifecycle (`tell/collectors/base.py`) on every run recorded while the
+marker is on:
+
+- `TELL_RUN_MANUAL=true` in the environment. `ingest.yml` sets it to
+  `${{ github.event_name == 'workflow_dispatch' }}`, so a run dispatched by hand from the
+  Actions page or `gh workflow run ingest.yml -f source=...` (the way one collector is
+  re-run after a fix) marks every run it records, and a scheduled run never does.
+- The global CLI flag `tell --manual <command>` (for example
+  `tell --manual ingest --source lever --force` after a hotfix from a terminal), which
+  wins over the variable for that invocation.
+
+`tell backtest ops` anchors the unattended period on the latest marked run (its
+`finished_at`); with no marked run it counts from the first run ever and the report says
+so. `tell runlog --week` prints a proxy beside it, the weeks since the last gap of more
+than 24 hours without a successful scheduled run, as a cross-check for fixes nobody marked.
+Runs of the nightly intake reader (`source = intake`, which runs in `tell-private`) are not
+pipeline runs: they count toward neither the success rate nor the anchor. Rule for the
+operator and rationale: ADR 0028; deployment side: `docs/deploy/github-actions.md`,
+"Re-running one source".
 
 Dated reports written so far (updated by `tell backtest`):
 

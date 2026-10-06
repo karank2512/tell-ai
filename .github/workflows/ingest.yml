@@ -1,5 +1,6 @@
 # Four ingest runs a day (SPEC section 11; the dropped collectors per ADR 0003 are not run).
-# Setup, secrets and failure policy: docs/deploy/github-actions.md.
+# Setup, secrets and failure policy: docs/deploy/github-actions.md. The separate discover
+# job and the per-run prune step are recorded in ADR 0028.
 name: ingest
 
 on:
@@ -37,10 +38,9 @@ env:
   TELL_ENV: prod
   UV_FROZEN: "1"
   # "true" on a manual run (Actions -> Run workflow, or `gh workflow run`), "false" on the
-  # schedule. Reserved for the manual-intervention marker runs.notes.manual = true, the
-  # anchor of "weeks unattended" (SPEC 13.4, tell backtest ops). Nothing in tell/ reads it
-  # yet (see docs/deploy/github-actions.md, "Re-running one source"); when the CLI does,
-  # it must never be set on the schedule.
+  # schedule. The run lifecycle (tell/collectors/base.py) then writes runs.notes.manual =
+  # true on every run this workflow records: the manual-intervention anchor of "weeks
+  # unattended" (SPEC 13.4, tell backtest ops; ADR 0028). Never set it on a schedule.
   TELL_RUN_MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
 
 jobs:

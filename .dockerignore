@@ -1,0 +1,22 @@
+# Build context for the (undeployed) FastAPI image, docs/deploy/render.md. The Dockerfile
+# COPYs only what the service needs; this keeps the rest from being sent to the daemon.
+.git
+.github
+.venv
+.venvs
+.env
+.env.*
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.coverage*
+coverage*.json
+htmlcov
+__pycache__
+*.pyc
+tests
+packages/tell-mcp/tests
+docs/*
+!docs/api
+scripts
+.DS_Store

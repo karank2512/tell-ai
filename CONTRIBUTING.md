@@ -57,7 +57,7 @@ does not sync. See `docs/decisions/0011-venv-outside-icloud.md`.
 
 ## Fixture discipline
 
-Each source directory under `tests/fixtures/` holds at least three recorded cases: `normal`, `empty_board`, and one `drift` case that deliberately omits a field so the contract test proves it fails loudly. Fixtures are trimmed by hand to under 50 KB and scrubbed of anything personal (no names, emails or phone numbers). Record them with `make refresh-fixtures` at polite rates, then freeze. If a provider's response changes, record a new fixture, update the contract test, and say so in the PR.
+Each source directory under `tests/fixtures/` holds at least three recorded cases: `normal`, `empty_board`, and one `drift` case that deliberately omits a field so the contract test proves it fails loudly. Fixtures are trimmed by hand to under 50 KB and scrubbed of anything personal (no names, emails or phone numbers). Record them by hand at polite rates (`make refresh-fixtures` is a placeholder that points at the procedure in `docs/CUTOVER_CHECKLIST.md`, step 5), then freeze. If a provider's response changes, record a new fixture, update the contract test, and say so in the PR.
 
 ## Writing a collector
 

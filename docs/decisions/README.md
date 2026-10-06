@@ -19,7 +19,7 @@ Template: [0000-template.md](0000-template.md). Each record covers one locked de
 | [0013](0013-postings-version-marker.md) | `postings.version_marker` holds the provider change marker |
 | [0014](0014-company-feeds-table.md) | `company_feeds` keeps discovered company RSS/Atom feeds |
 | [0015](0015-ats-404-and-reverification.md) | One 404 / dead-board rule for every ATS collector |
-| [0016](0016-news-headline-redaction.md) | Leadership news headlines are stored with the person's name redacted (provisional, pending confirmation) |
+| [0016](0016-news-headline-redaction.md) | Leadership news headlines are stored with the person's name redacted (accepted 2026-10-06) |
 | [0017](0017-posting-ghost-votes.md) | `posting_ghost_votes` stores anonymous job-seeker ghost-job votes (inert until 500) |
 | [0018](0018-entity-resolution-rule-refinements.md) | Entity-resolution refinements beyond the SPEC wording: R3 tie to review, R4 over the whole table, token-superset guard, international suffixes, R1 audit record, one link function, name-only headline metric |
 | [0019](0019-velocity-cold-start-and-reposts.md) | Hiring velocity: first-poll events flagged and never counted, `vanished_within_30d` repost rule, capped walk-back marks the whole episode |
@@ -31,3 +31,4 @@ Template: [0000-template.md](0000-template.md). Each record covers one locked de
 | [0025](0025-weekly-reports-published-to-tell-data.md) | `weekly.yml` publishes refreshed methods reports to `tell-data/site/methods/` and never commits to `tell-ai` |
 | [0026](0026-workflow-keepalive-via-api.md) | Scheduled workflows are kept alive by re-enabling them through the API, not by commits |
 | [0027](0027-intake-contact-storage.md) | Intake contacts and webhooks live only in tell-private; the DB keeps a random per-watchlist owner handle and a company+profile slug |
+| [0028](0028-operations-interpretations.md) | Operations interpretations: separate `discover` job and per-run prune in `ingest.yml`, 5-hour poll gap, dead-man vs health `never_run`, prune keeps signal evidence, `runs.notes.manual` written by the run lifecycle (`tell --manual` / `TELL_RUN_MANUAL`) |

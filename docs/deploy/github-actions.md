@@ -43,6 +43,9 @@ grants more only where one job needs it (`actions: write` for the weekly keepali
 | `TELL_FEEDBACK_FORM_URL` | no | Prefilled Google Form link for thumbs and `rate_this_row` |
 | `TELL_INTAKE_FORM_URL` | no | "Watch these domains" form linked from the digest |
 
+`TELL_RUN_MANUAL` is neither a secret nor a variable: the workflow derives it from the
+event name (see "Re-running one source" below).
+
 Unset variables expand to empty strings, and tell's settings ignore empty values, so the
 defaults in `tell/config.py` apply. `TELL_REPO_URL` and `TELL_DATA_REPO_URL` are derived
 from `github.repository` and `TELL_DATA_REPO`. `TELL_HTTP_USER_AGENT` is
@@ -58,7 +61,8 @@ filings: edgar, then news (30 min) ───────────────
 
 1. **discover**: `tell discover batch --limit 300 --rps 4`, the SPEC section 11 budget (at
    most 300 new domains per run at 4 requests per second; boards due for re-verification
-   are included). A run seeds about 1,200 domains a day, so the ~5,000 YC domains are
+   are included). The SPEC places discovery inside the ATS job; it is a job of its own so
+   it runs once per workflow rather than once per vendor leg (ADR 0028). A run seeds about 1,200 domains a day, so the ~5,000 YC domains are
    covered within a week of cutover. A failed or timed-out discovery pass never blocks the
    ATS legs, which `need` it but run unless the whole run was cancelled.
 2. **ats**: one matrix leg per vendor (`greenhouse`, `lever`, `ashby`, `smartrecruiters`),
@@ -73,7 +77,8 @@ filings: edgar, then news (30 min) ───────────────
 
 `tell prune` runs every time rather than on a monthly guard: it is idempotent, finds
 nothing to do on most runs, and archives events older than 180 days to
-`tell-data/events/` before deleting them, so the archive is committed in the same push.
+`tell-data/events/` before deleting them, so the archive is committed in the same push
+(ADR 0028).
 The commit step retries once with `git pull --rebase` if `weekly.yml` pushed in between.
 
 ### Run-time estimates (SPEC sections 11 and 14)
@@ -96,8 +101,10 @@ section 14) rather than raising the timeout.
 - `resolve_score_publish` runs `if: always()`, so one broken vendor never blocks the
   publish or the digest; it publishes whatever the healthy sources produced.
 - The **dead-man** step (`tell deadman`) is last. It exits 1 when any scheduled source
-  (the four ATS vendors, `edgar`, `news`) has had no successful run in 24 hours, writes the
-  report to the step summary, and turns the run red. GitHub emails the repo owner about a
+  (the four ATS vendors, `edgar`, `news`) has had no successful run in 24 hours, or has
+  never run at all, writes the report to the step summary, and turns the run red. The
+  health page shows a never-run source as `never_run` without turning red (ADR 0023), so
+  the two disagree only until every scheduled source has run once (ADR 0028). GitHub emails the repo owner about a
   failed scheduled run, which is the alert: no pager, no cost. One bad run does not page;
   24 hours of silence does.
 - The health page (`health.html`, `api/v0/health.json`) is rebuilt by every publish with
@@ -121,18 +128,22 @@ score, publish and the dead-man still run so the fix shows up on the site. Rerun
 every collector is idempotent (SPEC section 5), and boards polled in the last five hours
 are skipped. Leave **source** empty to run everything.
 
-A manual run counts as an operator intervention, and `tell backtest ops` measures "weeks
-unattended" (SPEC 13.4) from the latest `runs` row whose `notes.manual` is `true`.
-`ingest.yml` exports `TELL_RUN_MANUAL=true` on `workflow_dispatch` (and `false` on the
-schedule) so that marker can be written, **but nothing reads the variable yet**: the
-tracked commands in `tell/cli.py` do not set `notes.manual`, `tell/config.py` has no such
-setting, and so a manual re-run is currently invisible to the ops report, which then
-counts weeks since the first run instead. Until the CLI side lands, treat the ops report's
-"weeks unattended" line as "weeks since collection started" and say so when quoting it.
-When it does land, the rule is: re-run from the Actions page or `gh workflow run` whenever
-a fix was needed to keep ingest green, and never export `TELL_RUN_MANUAL` in a scheduled
-job (an unmarked manual fix makes the unattended number look better than it is, and a
-marked scheduled run resets it for nothing).
+A manual run counts as an operator intervention. `ingest.yml` exports
+`TELL_RUN_MANUAL=true` on `workflow_dispatch` (and `false` on the schedule), and the run
+lifecycle in `tell/collectors/base.py` then writes `runs.notes.manual = true` on every run
+the workflow records (discover, each ATS leg, edgar, news, resolve, score, publish, prune).
+`tell backtest ops` and `tell runlog --week` measure "weeks unattended" (SPEC 13.4) from
+the latest such row; without one they count from the first run ever (ADR 0028). The same
+marker is written locally by the global flag `tell --manual <command>` (for example
+`uv run tell --manual ingest --source lever --force` after a hotfix), which wins over the
+variable for that invocation.
+
+The rule: re-run from the Actions page or `gh workflow run` whenever a fix was needed to
+keep ingest green, use `tell --manual` for a fix applied from a terminal, and never export
+`TELL_RUN_MANUAL` in a scheduled job. An unmarked fix makes the unattended number look
+better than it is, and a marked scheduled run resets it for nothing; the dead-man proxy
+(weeks since the last 24-hour gap) is printed beside the headline number as the
+cross-check.
 
 ## weekly.yml
 
@@ -253,7 +264,7 @@ run turns the pending publisher into the project's trusted publisher.
 
 - `test`: `uv sync --frozen`, `ruff check`, `ruff format --check`, `mypy --strict tell`,
   `alembic upgrade head` against a Postgres 16 service container (ADR 0004; works on fork
-  PRs without secrets), `pytest -q --cov=tell --cov-fail-under=80`, then
+  PRs without secrets), `pytest -q --cov=tell --cov=tell_mcp --cov-fail-under=80`, then
   `scripts/check_coverage.py` for the 90% floors on `collectors/`, `resolve/`, `signals/`.
   `tests/test_workflows.py` parses every workflow here and checks every `uv run tell ...`
   line against the CLI, so a renamed command or flag fails CI, not a 02:17 cron.

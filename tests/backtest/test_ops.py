@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from tell.backtest import ops
 from tell.backtest.common import render_report
+from tell.collectors import base as collectors_base
 from tell.models import ReviewQueueItem
 from tests.backtest.helpers import DAY, HOUR, NOW, board, company, event, posting, run
 
@@ -36,6 +37,11 @@ def _world(session: Session, *, manual: bool) -> None:
     run(session, "edgar", NOW - 2 * DAY)
     run(session, "edgar", NOW - 3 * DAY, notes={"manual": manual})
     run(session, "news", NOW - HOUR, "running")
+    # The nightly intake reader (tell-private) is not a pipeline run: never counted, never
+    # an anchor, even when marked manual.
+    run(session, "intake", NOW - DAY, "failed")
+    run(session, "intake", NOW - 2 * DAY, "failed", notes={"manual": True})
+    run(session, "intake", NOW - 100 * DAY)
 
     owner = company(session, "alpha.example")
     company(session, "bravo.example", cik="0000000009")
@@ -118,6 +124,36 @@ def test_without_manual_runs_starts_at_first_run(db_session: Session, tmp_path: 
     text = render_report(report)
     assert "the first run (2026-08-01T02:17:00+00:00)" in text
     assert "No measured gold-set table found" in text
+
+
+def test_intake_runs_are_not_pipeline_runs(db_session: Session) -> None:
+    _world(db_session, manual=False)
+    assert ops.first_run_at(db_session, NOW) == datetime.fromisoformat("2026-08-01T02:17:00+00:00")
+    assert "intake" not in {
+        s for s, _, _ in ops.success_by_source(db_session, NOW - 200 * DAY, NOW)
+    }
+    report = ops.build_report(db_session, NOW)
+    assert report.n == 6
+    assert "intake" not in render_report(report).replace("intake reader", "")
+
+
+def test_run_lifecycle_marker_anchors_the_report(db_session: Session, tmp_path: Path) -> None:
+    """The marker the lifecycle writes under ``--manual`` is what ``manual_anchor`` reads."""
+    _world(db_session, manual=False)
+    collectors_base.set_manual_run(True)
+    try:
+        run_id = collectors_base.start_run(db_session, "greenhouse", now=NOW - 2 * HOUR)
+        row = collectors_base.finish_run(
+            db_session, run_id, status="ok", fetched=1, inserted=0, skipped=1, now=NOW - HOUR
+        )
+    finally:
+        collectors_base.set_manual_run(None)
+    assert row.notes == {"manual": True}
+    since, manual = ops.manual_anchor(db_session, NOW)
+    assert (since, manual) == (NOW - HOUR, True)
+    text = render_report(ops.build_report(db_session, NOW, gold_doc=tmp_path / "absent.md"))
+    assert "the last run marked manual" in text
+    assert "divided by 7): 0.0 weeks" in text
 
 
 def test_empty_database(db_session: Session, tmp_path: Path) -> None:

@@ -116,6 +116,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
+from tell.config import get_settings
 from tell.db import upsert
 from tell.models import AtsBoard, EventRow, Posting, PostingObservation, ReviewQueueItem, Run
 from tell.signals.taxonomy import fingerprint as make_fingerprint
@@ -136,6 +137,7 @@ __all__ = [
     "JOB_OPENED",
     "JOB_REPOSTED",
     "JOB_UPDATED",
+    "MANUAL_NOTE_KEY",
     "NOT_FOUND_DEAD_AFTER",
     "NOT_FOUND_DEAD_GAP",
     "NOT_FOUND_REASON",
@@ -158,12 +160,14 @@ __all__ = [
     "discover_collectors",
     "finish_run",
     "from_epoch_ms",
+    "is_manual_run",
     "iso_utc",
     "new_run_id",
     "parse_iso",
     "r1_match",
     "record_board_not_found",
     "record_board_ok",
+    "set_manual_run",
     "sha256_hex",
     "stale_weight",
     "start_run",
@@ -493,8 +497,63 @@ def new_run_id(source: str, now: datetime | None = None) -> str:
     return f"{source}-{stamp:%Y%m%dT%H%M%S}-{secrets.token_hex(3)}"
 
 
+MANUAL_NOTE_KEY = "manual"
+"""``runs.notes`` key of the manual-intervention marker (SPEC 13.4, "weeks unattended").
+
+``tell backtest ops`` anchors the unattended period on the latest run whose notes carry
+``"manual": true`` (``tell runlog --week`` prints the dead-man proxy instead). The marker is written by the run
+lifecycle below for every run recorded while :func:`is_manual_run` is true: when the
+operator passed ``tell --manual``, or when ``TELL_RUN_MANUAL=true`` is in the
+environment (``ingest.yml`` exports it on ``workflow_dispatch`` only, never on the
+schedule). Scheduled runs never carry the key.
+"""
+
+
+class _ManualMarker:
+    """Process-wide override of the ``TELL_RUN_MANUAL`` setting (``None``: not overridden)."""
+
+    override: bool | None = None
+
+
+_MANUAL = _ManualMarker()
+
+
+def set_manual_run(flag: bool | None) -> None:
+    """Force (``True`` / ``False``) or clear (``None``) the manual marker for this process.
+
+    ``tell --manual`` sets ``True`` before the command runs; every other invocation
+    clears it so the ``TELL_RUN_MANUAL`` setting decides.
+    """
+    _MANUAL.override = flag
+
+
+def is_manual_run() -> bool:
+    """Whether runs recorded now are marked as a manual intervention."""
+    if _MANUAL.override is not None:
+        return _MANUAL.override
+    return get_settings().tell_run_manual
+
+
+def _mark_manual(
+    notes: dict[str, Any] | None, *, previous: Mapping[str, Any] | None
+) -> dict[str, Any] | None:
+    """``notes`` with ``manual: true`` merged in when this run is a manual intervention.
+
+    The marker stays when the row already carries it (set by :func:`start_run`), so a run
+    started under ``--manual`` keeps the mark however it finishes.
+    """
+    marked = is_manual_run() or bool(previous and previous.get(MANUAL_NOTE_KEY))
+    if not marked:
+        return notes
+    return {**(notes or {}), MANUAL_NOTE_KEY: True}
+
+
 def start_run(session: Session, source: str, *, now: datetime | None = None) -> str:
-    """Insert a ``runs`` row with ``status='running'`` and return its ``run_id``."""
+    """Insert a ``runs`` row with ``status='running'`` and return its ``run_id``.
+
+    A manual intervention (:func:`is_manual_run`) is marked on the row at once, so even
+    a run that never reaches :func:`finish_run` carries ``notes.manual = true``.
+    """
     if not source:
         msg = "source must be a non-empty string"
         raise ValueError(msg)
@@ -511,6 +570,7 @@ def start_run(session: Session, source: str, *, now: datetime | None = None) -> 
             inserted=0,
             skipped=0,
             errors=0,
+            notes=_mark_manual(None, previous=None),
         )
     )
     session.flush()
@@ -546,6 +606,7 @@ def finish_run(
     notes_dict = dict(notes) if notes is not None else None
     if notes_dict is not None:
         _require_json(notes_dict, "notes")
+    notes_dict = _mark_manual(notes_dict, previous=run.notes)
     run.finished_at = finished
     run.fetched = fetched
     run.inserted = inserted

@@ -62,6 +62,22 @@ def test_method_change_line(tmp_path: Path) -> None:
     assert method_change_line().strip()  # the repository's own changelog
 
 
+def test_method_change_line_prefers_labelled_bullets_and_sentence_cuts(tmp_path: Path) -> None:
+    log = tmp_path / "CHANGELOG.md"
+    release = "Phase 7 scoring: " + ", ".join(
+        f"`module_{i}` with every scoring rule" for i in range(40)
+    )
+    log.write_text(f"- {release}\n- Velocity: reposts within 30 days are not new roles.\n")
+    assert method_change_line(log) == "Velocity: reposts within 30 days are not new roles."
+    sentences = " ".join(f"Scoring moved sentence {i}." for i in range(40))
+    log.write_text(f"- {sentences}\n")
+    line = method_change_line(log)
+    assert len(line) <= 280
+    assert line.endswith(".")
+    assert not line.endswith("...")
+    assert line.startswith("Scoring moved sentence 0.")
+
+
 def _company(session: Session, n: int, *, cik: str | None = None) -> Company:
     company = Company(domain=f"w{n}.example", name=f"Weekly {n}", cik=cik)
     session.add(company)

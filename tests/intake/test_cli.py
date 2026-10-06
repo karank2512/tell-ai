@@ -157,7 +157,7 @@ def test_drifted_columns_exit_1(bound: Engine, tmp_path: Path) -> None:
         ("slug: [unclosed\n", "ParserError"),  # not YAML: the message would quote the file
         (
             f"slug: other\ncompany: Acme\nicp_profile: default\nowner: x\nnote: {EMAIL}\n",
-            "ValueError",
+            "PrivateRecordError",
         ),
     ],
 )
@@ -178,6 +178,29 @@ def test_bad_private_file_exits_1_naming_only_the_error_type(
     assert "unclosed" not in result.output
     with SessionLocal(bind=bound) as session:
         assert session.scalar(select(Watchlist)) is None  # nothing was applied
+
+
+def test_unwritable_private_dir_exits_1_after_the_commit(
+    bound: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sheet = tmp_path / "sheet.csv"
+    sheet.write_text(SHEET, encoding="utf-8")
+    private_dir = tmp_path / "tell-private"
+    private_dir.mkdir()
+
+    def refuse(*_args: Any, **_kwargs: Any) -> list[Path]:
+        msg = f"{private_dir / 'watchlists' / 'acme-rockets-default.yaml'}: read-only"
+        raise PermissionError(msg)
+
+    monkeypatch.setattr(intake_cli, "write_private_watchlists", refuse)
+    result = _invoke(["sync", "--csv-file", str(sheet), "--private-dir", str(private_dir)], code=1)
+    assert _json(result) == {
+        "error": "could not write private watchlist files (PermissionError)",
+        "source": "intake",
+    }
+    _assert_no_secrets(result.output)
+    with SessionLocal(bind=bound) as session:
+        assert session.scalar(select(Watchlist)) is not None  # the database side was committed
 
 
 def test_private_dir_inside_repo_exits_1(tmp_path: Path) -> None:

@@ -215,7 +215,14 @@ def dogfood_command(
     as_of: AsOfOption = None,
     out: Annotated[
         Path,
-        typer.Option("--out", help="Private directory (never inside the public checkout)."),
+        typer.Option(
+            "--out",
+            help=(
+                "Private directory, default tell-private/reports. Any path inside the public "
+                "checkout is refused; any other path is accepted at the operator's risk (the "
+                "report mixes personal outcomes with system output, SPEC 13.5)."
+            ),
+        ),
     ] = dogfood.DEFAULT_OUT,
     refresh: RefreshOption = False,
 ) -> None:

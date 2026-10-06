@@ -54,6 +54,8 @@ def test_success_rates(db_session: Session) -> None:
     add_run(db_session, "edgar", NOW - DAY)
     add_run(db_session, "edgar", NOW - HOUR, "running")  # not finished: not counted
     add_run(db_session, "edgar", NOW - 9 * DAY, "failed")  # outside the period
+    add_run(db_session, "intake", NOW - DAY, "failed")  # tell-private's reader: not a pipeline run
+    assert "intake" in runlog.NON_PIPELINE_SOURCES
     overall, by_source = runlog.success_rates(db_session, NOW - 7 * DAY, NOW)
     assert by_source == {"edgar": 1.0, "greenhouse": 0.5}
     assert overall == round(2 / 3, 4)

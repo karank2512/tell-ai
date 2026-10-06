@@ -1,15 +1,20 @@
 """Spec 13.4 operations and resolution.
 
 * **Weeks unattended.** Days since the last manual intervention, divided by 7. An
-  intervention is recorded by the operator as a ``runs`` row whose ``notes`` carry
-  ``"manual": true`` (a hand-dispatched run, a hotfix deploy, a re-run after a fix); the
-  period starts at the latest such row (its ``finished_at``, else ``started_at``) and, when
-  there is none, at the first run ever. The dead-man proxy of ``tell runlog --week``
+  intervention is a ``runs`` row whose ``notes`` carry ``"manual": true``
+  (:data:`tell.collectors.base.MANUAL_NOTE_KEY`). The run lifecycle writes that marker on
+  every run recorded under ``tell --manual`` or with ``TELL_RUN_MANUAL=true`` in the
+  environment, which ``ingest.yml`` exports on ``workflow_dispatch`` only (a hand-dispatched
+  run after a fix) and never on the schedule; the period starts at the latest such row (its
+  ``finished_at``, else ``started_at``) and, when there is none, at the first run ever. The dead-man proxy of ``tell runlog --week``
   (:func:`tell.ops.runlog.weeks_unattended`, which infers an intervention from a gap of more
   than 24 hours without a successful scheduled run) is printed beside it.
 * **Weeks since collection started.** From the first ``runs`` row.
 * **Success rate.** ``ok / (ok + failed)`` over runs started in the trailing
-  :data:`PERIOD` (``running`` rows never count), overall and by source.
+  :data:`PERIOD` (``running`` rows never count), overall and by source. Runs of
+  :data:`tell.ops.runlog.NON_PIPELINE_SOURCES` (the nightly ``intake`` reader) are left
+  out of every query here: they run in ``tell-private`` and fail on a rotated sheet URL,
+  not on ingestion.
 * **Freshness p95.** Spec section 12's definition, reused from
   :func:`tell.publish.health.freshness_p95_h` (last 24 hours of collector events,
   first-poll baselines excluded).
@@ -28,14 +33,15 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from tell.backtest.common import REPO_ROOT, Metric, Report, Section, Table, share
-from tell.collectors.base import FIRST_POLL_KEY, iso_utc
+from tell.collectors.base import FIRST_POLL_KEY, MANUAL_NOTE_KEY, iso_utc
 from tell.models import EventRow, ReviewQueueItem, Run
-from tell.ops.runlog import companies_monitored, postings_tracked
+from tell.ops.runlog import NON_PIPELINE_SOURCES, companies_monitored, postings_tracked
 from tell.ops.runlog import weeks_unattended as deadman_weeks_unattended
 from tell.publish.health import STALE_AFTER, freshness_p95_h
 
@@ -45,6 +51,7 @@ __all__ = [
     "PERIOD",
     "GoldRow",
     "build_report",
+    "first_run_at",
     "freshness_n",
     "manual_anchor",
     "parse_gold_table",
@@ -96,18 +103,28 @@ def parse_gold_table(path: Path = ENTITY_RESOLUTION_DOC) -> tuple[list[GoldRow],
     return rows, measured.group("day") if measured else None
 
 
+def _pipeline_runs() -> Any:
+    return Run.source.not_in(NON_PIPELINE_SOURCES)
+
+
+def first_run_at(session: Session, now: datetime) -> datetime | None:
+    """Start of the first pipeline run at or before ``now`` (``None`` with no run yet)."""
+    return session.scalar(
+        select(func.min(Run.started_at)).where(Run.started_at <= now, _pipeline_runs())
+    )
+
+
 def manual_anchor(session: Session, now: datetime) -> tuple[datetime | None, bool]:
     """``(since, manual)``: the latest manual run's end, else the first run's start."""
     manual = session.execute(
         select(func.coalesce(Run.finished_at, Run.started_at))
-        .where(Run.notes["manual"].astext == "true", Run.started_at <= now)
+        .where(Run.notes[MANUAL_NOTE_KEY].astext == "true", Run.started_at <= now, _pipeline_runs())
         .order_by(func.coalesce(Run.finished_at, Run.started_at).desc())
         .limit(1)
     ).scalar_one_or_none()
     if manual is not None:
         return min(manual, now), True
-    first = session.scalar(select(func.min(Run.started_at)).where(Run.started_at <= now))
-    return first, False
+    return first_run_at(session, now), False
 
 
 def success_by_source(
@@ -116,7 +133,12 @@ def success_by_source(
     """``[(source, finished, ok)]`` over runs started in ``(since, now]``."""
     stmt = (
         select(Run.source, func.count(), func.count().filter(Run.status == "ok"))
-        .where(Run.started_at > since, Run.started_at <= now, Run.status.in_(("ok", "failed")))
+        .where(
+            Run.started_at > since,
+            Run.started_at <= now,
+            Run.status.in_(("ok", "failed")),
+            _pipeline_runs(),
+        )
         .group_by(Run.source)
         .order_by(Run.source)
     )
@@ -163,7 +185,7 @@ def build_report(
 ) -> Report:
     """The 13.4 report at ``now``."""
     since, manual = manual_anchor(session, now)
-    first_run = session.scalar(select(func.min(Run.started_at)).where(Run.started_at <= now))
+    first_run = first_run_at(session, now)
     proxy_weeks, _ = deadman_weeks_unattended(session, now)
     by_source = success_by_source(session, now - PERIOD, now)
     finished = sum(c for _, c, _ in by_source)
@@ -186,9 +208,10 @@ def build_report(
             "it resolve names to companies?"
         ),
         cohort=(
-            f"Every runs row up to the evaluation instant; success rate and review-queue rate "
-            f"over the trailing {days} days; freshness over the last 24 hours of collector "
-            "events. Cohort N is the number of finished runs in the period."
+            f"Every pipeline runs row up to the evaluation instant (the nightly intake "
+            f"reader's runs are left out); success rate and review-queue rate over the "
+            f"trailing {days} days; freshness over the last 24 hours of collector events. "
+            "Cohort N is the number of finished runs in the period."
         ),
         n=finished,
         as_of=now.date(),
@@ -267,8 +290,10 @@ def build_report(
     ]
     report.caveats = [
         (
-            "Weeks unattended depends on the operator marking interventions (runs.notes.manual = "
-            "true); an unmarked manual fix is invisible, so the dead-man proxy is printed beside it."
+            "Weeks unattended depends on interventions being marked (runs.notes.manual = true, "
+            "written for every run under `tell --manual` or TELL_RUN_MANUAL=true, which ingest.yml "
+            "sets on workflow_dispatch); a fix applied without a marked run is invisible, so the "
+            "dead-man proxy is printed beside it."
         ),
         "Success rate counts runs, not boards: one failed vendor leg is one failed run.",
         (

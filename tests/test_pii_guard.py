@@ -13,6 +13,8 @@ from tell.models import Base
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures"
+FIXTURE_DIRS = (FIXTURES_DIR, REPO_ROOT / "packages" / "tell-mcp" / "tests" / "fixtures")
+"""Every recorded-fixture tree in the repository, the tell-mcp workspace package included."""
 
 FORBIDDEN_COLUMNS = {"email", "phone", "first_name", "last_name"}
 FORBIDDEN_SUFFIXES = ("_email", "_phone")
@@ -45,7 +47,7 @@ def test_no_pii_columns_in_any_model() -> None:
 
 
 def _fixture_files() -> list[Path]:
-    return sorted(p for p in FIXTURES_DIR.rglob("*") if p.is_file())
+    return sorted(p for root in FIXTURE_DIRS for p in root.rglob("*") if p.is_file())
 
 
 def _strip_url(match: re.Match[str]) -> str:
@@ -90,7 +92,8 @@ def _offending_strings(path: Path) -> list[str]:
 
 
 def test_fixtures_dir_exists() -> None:
-    assert FIXTURES_DIR.is_dir()
+    for root in FIXTURE_DIRS:
+        assert root.is_dir(), root
 
 
 def test_no_at_sign_outside_urls_in_fixtures() -> None:

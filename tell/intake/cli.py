@@ -11,10 +11,11 @@ Commands:
 
 Output is one JSON line of counts plus rejected row numbers and reasons, never a
 name, email, company, URL or slug, so it is safe in a public Actions log. Exit 1 when
-the sheet cannot be fetched or its columns drifted, or when a private watchlist file
-does not parse or validate (the message names the error type only: a YAML error could
-quote the file, and the file name is a customer's slug); row-level problems exit 0 and
-are listed under ``rejected_rows``.
+the sheet cannot be fetched or its columns drifted, when a private watchlist file does
+not parse or validate, or when the private files cannot be written after the commit
+(each message names the error type only: a YAML error could quote the file, and a file
+name is a customer's slug); row-level problems exit 0 and are listed under
+``rejected_rows``.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from tell.db import session_scope
 from tell.intake.reader import (
     DEFAULT_PRIVATE_DIR,
     IntakeError,
+    PrivateRecordError,
     check_private_dir,
     read_csv_source,
     sync_submissions,
@@ -82,11 +84,20 @@ def sync_command(
             result = sync_submissions(session, text, private_dir=resolved, now=utcnow())
     except IntakeError as exc:
         raise _fail(str(exc)) from None
-    except (ValueError, yaml.YAMLError) as exc:
+    except (PrivateRecordError, yaml.YAMLError) as exc:
         # Neither the message (it may quote the file) nor the file name (a customer's slug)
         # belongs in a log; run the sync locally against the private checkout to see which.
         raise _fail(f"invalid private watchlist file ({type(exc).__name__})") from None
-    written = write_private_watchlists(resolved, result.private_updates)
+    except ValueError as exc:
+        # Anything else that failed validation (a profile, a row, the database layer): the
+        # type is diagnostic enough for a log and never carries a value.
+        raise _fail(f"intake sync failed ({type(exc).__name__})") from None
+    try:
+        written = write_private_watchlists(resolved, result.private_updates)
+    except OSError as exc:
+        # The database commit is done; the next sync re-applies the submission and writes
+        # the file then (ADR 0027). The path would name a slug, so only the type is logged.
+        raise _fail(f"could not write private watchlist files ({type(exc).__name__})") from None
     record = result.log_record()
     record["private_files_written"] = len(written)
     typer.echo(json.dumps(record, sort_keys=True))

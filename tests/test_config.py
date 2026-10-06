@@ -27,15 +27,18 @@ EXPECTED_ENV_VARS = {
     "TELL_DISCOVERY_RPS",
     "TELL_BASE_URL",
     "TELL_API_KEY",
+    "TELL_API_URL",
     "TELL_REPO_URL",
     "TELL_DATA_REPO_URL",
     "TELL_FEEDBACK_FORM_URL",
     "TELL_INTAKE_FORM_URL",
+    "TELL_INTAKE_CSV_URL",
     "TELL_ALERT_THRESHOLD",
     "TELL_SLACK_TZ",
     "TELL_SLACK_DIGEST_HOUR",
     "TELL_REVIEW_PASSWORD",
     "TELL_HTTP_TIMEOUT_S",
+    "TELL_RUN_MANUAL",
     "TELL_ENV",
 }
 
@@ -45,6 +48,7 @@ SECRETS = {
     "github_token",
     "tell_data_push_token",
     "tell_api_key",
+    "tell_intake_csv_url",
     "tell_review_password",
 }
 
@@ -74,6 +78,9 @@ def test_defaults() -> None:
     assert s.tell_discovery_rps == 4.0
     assert s.tell_base_url == "https://karank2512.github.io/tell-data"
     assert s.tell_api_key is None
+    assert s.tell_api_url is None
+    assert s.tell_intake_csv_url is None
+    assert s.tell_run_manual is False
     assert s.tell_alert_threshold == 6.0
     assert s.tell_slack_tz == "America/Los_Angeles"
     assert s.tell_slack_digest_hour == 7
@@ -92,7 +99,9 @@ def test_env_overrides_and_secret_masking(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("TELL_RATE_EDGAR_RPS", "2.5")
     monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.invalid/abc")
     monkeypatch.setenv("TELL_ENV", "ci")
+    monkeypatch.setenv("TELL_RUN_MANUAL", "true")
     s = Settings()
+    assert s.tell_run_manual is True
     assert s.tell_poll_concurrency == 3
     assert s.tell_rate_edgar_rps == 2.5
     assert s.tell_env == "ci"

@@ -94,11 +94,12 @@ accession first, else the latest original per file number filed on or before the
 User-Agent (`tell/0.1 (+https://github.com/karank2512/tell-ai)`, no contact address) was refused
 with 403 "Undeclared Automated Tool", so every fixture was written by hand to the documented
 EDGAR shapes with fictional issuers (CIKs 999xxxx) and re-recording is a cutover task once
-`SEC_USER_AGENT` holds a real contact (`make refresh-fixtures`). The ticker file uses real,
+`SEC_USER_AGENT` holds a real contact (`docs/CUTOVER_CHECKLIST.md`, step 5). The ticker file uses real,
 public CIK/ticker pairs of well-known listed companies.
 
-Cutover checklist: re-record the hand-crafted EDGAR fixtures with `make refresh-fixtures` once
-`SEC_USER_AGENT` carries a real contact address, and diff them.
+Cutover checklist: re-record the hand-crafted EDGAR fixtures once `SEC_USER_AGENT` carries a
+real contact address, and diff them. `make refresh-fixtures` is a placeholder (there is no
+automated recorder); the manual procedure is `docs/CUTOVER_CHECKLIST.md`, step 5.
 
 | File | What |
 | --- | --- |

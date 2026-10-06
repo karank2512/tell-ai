@@ -69,7 +69,7 @@ jobs:
       # Includes tests/test_workflows.py, which parses every workflow in this directory and
       # checks each `uv run tell ...` line against the CLI.
       - name: Tests with coverage (overall floor 80)
-        run: uv run pytest -q --cov=tell --cov-fail-under=80 --cov-report=json --cov-report=term-missing
+        run: uv run pytest -q --cov=tell --cov=tell_mcp --cov-fail-under=80 --cov-report=json --cov-report=term-missing
 
       - name: Coverage floors (90 for collectors/, resolve/, signals/)
         run: uv run python scripts/check_coverage.py
