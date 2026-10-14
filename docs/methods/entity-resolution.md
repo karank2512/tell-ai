@@ -253,6 +253,32 @@ these numbers with the caveat that the gold set is a draft a person has not yet
 spot-checked; the caveat comes off, and the numbers may be quoted elsewhere, once the
 spot-check is done.
 
+### Re-measured 2026-10-13: how much of the 300-row recall is real
+
+The gold set's legal names were mostly drafted by a script: 259 of 300 rows are marked
+`unverified`, and 290 of the 300 legal names normalise to the company's display name, so
+R2 matches them trivially. The 0.9733 recall above therefore mostly measures that the
+normaliser strips `, Inc.`. Split by how the legal name was obtained (same matcher, all 300
+companies seeded so every name competes with the full alias index):
+
+| Slice | positives | found | recall | auto-links | wrong | precision |
+| --- | --- | --- | --- | --- | --- | --- |
+| Legal name verified against SEC EDGAR (`edgar_fts`) | 36 | 28 | 0.78 | 28 | 0 | 1.00 |
+| All verified (`edgar_fts`, `yc`, `discovery`) | 41 | 33 | 0.80 | 33 | 0 | 1.00 |
+| Unverified (script-drafted legal names) | 259 | 259 | 1.00 | 259 | 0 | 1.00 |
+
+Even the verified recall is flattering: most verified legal names are also the brand plus a
+suffix. On the 9 SEC-verified issuers whose legal name differs from the brand (former
+corporate names such as `InterviewStreet Inc` for HackerRank), the name rules found 1. The
+misses stay unlinked, never mislinked: a wrong link is a false alert to a seller, so the
+rules are precision-first, and renamed issuers are left to `issuerPreviousNameList` aliases.
+
+The result that does not depend on the labels is the decoy test: 0 of the 180 token-superset
+names (for example `Blue Stripe Bakery` against `Stripe`, which `token_set_ratio` scores
+100) were auto-linked, and there were 0 wrong links among all 380 auto-links. Quote that,
+and the verified-slice recall with its N, rather than 0.9733, until the gold set has been
+re-verified against EDGAR and spot-checked by a person.
+
 ## Deliberately not done
 
 No LinkedIn lookups, no paid enrichment, no LLM in the auto-link path. An LLM may propose

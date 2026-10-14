@@ -32,3 +32,4 @@ Template: [0000-template.md](0000-template.md). Each record covers one locked de
 | [0026](0026-workflow-keepalive-via-api.md) | Scheduled workflows are kept alive by re-enabling them through the API, not by commits |
 | [0027](0027-intake-contact-storage.md) | Intake contacts and webhooks live only in tell-private; the DB keeps a random per-watchlist owner handle and a company+profile slug |
 | [0028](0028-operations-interpretations.md) | Operations interpretations: separate `discover` job and per-run prune in `ingest.yml`, 5-hour poll gap, dead-man vs health `never_run`, prune keeps signal evidence, `runs.notes.manual` written by the run lifecycle (`tell --manual` / `TELL_RUN_MANUAL`) |
+| [0029](0029-ingest-runs-per-day.md) | `ingest.yml` runs once a day by default (private repo, metered minutes) and four times a day when the `TELL_RUNS_PER_DAY` variable is `4` |

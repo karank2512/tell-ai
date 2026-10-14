@@ -6,7 +6,7 @@ repo is public, so the minutes are free (SPEC section 14). Nothing here needs a 
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| [`ingest.yml`](../../.github/workflows/ingest.yml) | `17 2,8,14,20 * * *` (UTC) and manual | Discovery, four ATS legs, EDGAR + news, then resolve, score, publish to `tell-data`, prune, Slack digest, dead-man |
+| [`ingest.yml`](../../.github/workflows/ingest.yml) | `17 15 * * *` daily, plus `17 2,8,20 * * *` when `TELL_RUNS_PER_DAY` is `4` (UTC; ADR 0029), and manual | Discovery, four ATS legs, EDGAR + news, then resolve, score, publish to `tell-data`, prune, Slack digest, dead-man |
 | [`weekly.yml`](../../.github/workflows/weekly.yml) | `23 6 * * 1` (Mondays 06:23 UTC) and manual | Weekly page, methods reports into `tell-data`, operations line, private Slack summary, schedule keepalive |
 | [`ci.yml`](../../.github/workflows/ci.yml) | Pull requests, pushes to `main`, `13 6 * * 1` (Mondays 06:13 UTC), manual | Ruff, mypy, Postgres 16 service + `alembic upgrade head`, pytest with coverage floors, gitleaks; `pip-audit` weekly |
 | [`publish-mcp.yml`](../../.github/workflows/publish-mcp.yml) | Push of a tag `tell-mcp-v*` | Builds `packages/tell-mcp` and publishes it to PyPI by trusted publishing |
@@ -102,7 +102,7 @@ The commit step retries once with `git pull --rebase` if `weekly.yml` pushed in 
 | News | The slow one at 1 request per second: companies with activity in the last 30 days plus every watchlist member, the long tail rotated over a week; capped by its per-run budget to fit 30 minutes |
 | Discovery | Up to 300 new domains at 4 requests per second, bounded by the 30-minute timeout |
 | Resolve, score, publish, prune | A few minutes, dominated by writing account pages |
-| Total | About 40 minutes of runner time a day across four runs; Neon about 25 minutes of 0.25 CU per run, ~60 CU-hours a month of the 100 free |
+| Total | An estimated 50 to 60 billed minutes per live run (each job is rounded up to the minute); one run a day fits the 2,000 free minutes of a private repository, four a day need the repository to be public (ADR 0029); Neon about 25 minutes of 0.25 CU per run, ~60 CU-hours a month of the 100 free |
 
 If an ATS leg approaches 90 minutes, split its boards across more matrix legs (SPEC
 section 14) rather than raising the timeout.

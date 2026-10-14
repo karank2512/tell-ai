@@ -156,8 +156,9 @@ and carry the change over.
   (`uv run tell discover batch --limit 300 --rps 4`, 10 to 15 minutes each). Run one now
   and read its line (boards found, `no_board`, `unsupported`); then either repeat it a few
   times a day over the first week, or let `ingest.yml` do it: its `discover` job runs the
-  same command on every scheduled run, four times a day, so the directory is covered within
-  about a week of step 7 without any hand runs. Discovery writes only `companies` and
+  same command on every scheduled run (once a day while `tell-ai` is private, four times a
+  day once `TELL_RUNS_PER_DAY` is `4`; ADR 0029), so the directory is covered within about
+  two weeks (a few days at four runs) without any hand runs. Discovery writes only `companies` and
   `ats_boards`; nothing is polled yet.
 - [ ] Neon dashboard: compute hours stay far under the 100 CU-hours a month (SPEC
   section 14 estimates about 60); the project scales to zero between runs.
@@ -197,6 +198,7 @@ three together ([preflight guard](deploy/github-actions.md#secrets-and-variables
 | --- | --- | --- |
 | `TELL_DATA_REPO` | yes | `karank2512/tell-data` |
 | `TELL_BASE_URL` | no | leave unset: defaults to `https://karank2512.github.io/tell-data` |
+| `TELL_RUNS_PER_DAY` | no | leave unset while `tell-ai` is private (one run a day fits the free minutes); set to `4` once the repository is public (ADR 0029) |
 | `TELL_FEEDBACK_FORM_URL` | no | Prefilled Google Form link for thumbs and `rate_this_row` (`{signal_id}`, `{domain}`, `{verdict}` placeholders); without it, feedback links open a prefilled GitHub issue |
 | `TELL_INTAKE_FORM_URL` | no | The "Watch these domains" Google Form link ([docs/intake/google-form.md](intake/google-form.md)); without it, the digest footer links the repo's issue form |
 
@@ -280,9 +282,8 @@ with a comment in [`.env.example`](../.env.example).
 - [ ] Repeat "Add New Webhook to Workspace" for the **private weekly channel** ->
   `SLACK_WEEKLY_WEBHOOK_URL` (optional).
 - [ ] Digest timing: the first `ingest.yml` run at or after 07:00 `America/Los_Angeles`
-  sends it (`TELL_SLACK_DIGEST_HOUR` = 7, `TELL_SLACK_TZ`). With the `17 2,8,14,20` UTC
-  schedule that is the 14:17 UTC run in summer (07:17 PDT) and the 20:17 UTC run in winter
-  (14:17 UTC is 06:17 PST, too early). Nothing to set for the default. A different hour or
+  sends it (`TELL_SLACK_DIGEST_HOUR` = 7, `TELL_SLACK_TZ`). The daily slot is 15:17 UTC
+  (07:17 PST, 08:17 PDT; ADR 0029), so the digest goes out on that run all year. Nothing to set for the default. A different hour or
   zone is a code change, not a repository variable: no workflow maps `vars.TELL_SLACK_*`
   into the job environment, so add `TELL_SLACK_DIGEST_HOUR: "<hour>"` (and, if needed,
   `TELL_SLACK_TZ`) to the top-level `env:` block of `.github/workflows/ingest.yml` in a PR.

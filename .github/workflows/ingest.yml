@@ -1,11 +1,18 @@
-# Four ingest runs a day (SPEC section 11; the dropped collectors per ADR 0003 are not run).
+# Ingest runs (SPEC section 11; the dropped collectors per ADR 0003 are not run): once a
+# day by default, four times a day when the TELL_RUNS_PER_DAY variable is "4" (ADR 0029).
 # Setup, secrets and failure policy: docs/deploy/github-actions.md. The separate discover
 # job and the per-run prune step are recorded in ADR 0028.
 name: ingest
 
 on:
   schedule:
-    - cron: "17 2,8,14,20 * * *" # four runs a day, off the hour
+    # Two cron lines so preflight can tell the slots apart (github.event.schedule holds the
+    # line that fired). The daily slot always runs: 15:17 UTC is 07:17 PST / 08:17 PDT, so
+    # the Slack digest (first run at or after 07:00 local) still goes out once a day. The
+    # extra slots run only when vars.TELL_RUNS_PER_DAY == '4' (ADR 0029): Actions minutes
+    # are free on public repositories but metered on private ones (2,000 a month on Free).
+    - cron: "17 15 * * *" # daily slot, off the hour
+    - cron: "17 2,8,20 * * *" # extra slots (EXTRA_SLOTS_CRON in preflight below)
   workflow_dispatch:
     inputs:
       source:
@@ -63,8 +70,18 @@ jobs:
           HAS_DATABASE_URL: ${{ secrets.DATABASE_URL != '' }}
           HAS_TELL_DATA_PUSH_TOKEN: ${{ secrets.TELL_DATA_PUSH_TOKEN != '' }}
           HAS_TELL_DATA_REPO: ${{ vars.TELL_DATA_REPO != '' }}
+          EVENT_NAME: ${{ github.event_name }}
+          FIRED_CRON: ${{ github.event.schedule }}
+          RUNS_PER_DAY: ${{ vars.TELL_RUNS_PER_DAY }}
+          EXTRA_SLOTS_CRON: "17 2,8,20 * * *"
         run: |
           enabled="$HAS_DATABASE_URL"
+          extra_slot_off=false
+          if [ "$EVENT_NAME" = schedule ] && [ "$FIRED_CRON" = "$EXTRA_SLOTS_CRON" ] \
+            && [ "$RUNS_PER_DAY" != 4 ]; then
+            enabled=false
+            extra_slot_off=true
+          fi
           publish_enabled=false
           if [ "$enabled" = true ] && [ "$HAS_TELL_DATA_PUSH_TOKEN" = true ] \
             && [ "$HAS_TELL_DATA_REPO" = true ]; then
@@ -73,7 +90,9 @@ jobs:
           echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
           echo "publish_enabled=$publish_enabled" >> "$GITHUB_OUTPUT"
           msg=""
-          if [ "$enabled" != true ]; then
+          if [ "$extra_slot_off" = true ]; then
+            msg="ingest skipped: extra slot; set the TELL_RUNS_PER_DAY variable to 4 for four runs a day (ADR 0029)"
+          elif [ "$enabled" != true ]; then
             msg="ingest skipped: DATABASE_URL secret not set; see docs/CUTOVER_CHECKLIST.md"
           elif [ "$publish_enabled" != true ]; then
             msg="tell-data publish skipped: TELL_DATA_PUSH_TOKEN secret or TELL_DATA_REPO variable not set; see docs/CUTOVER_CHECKLIST.md"

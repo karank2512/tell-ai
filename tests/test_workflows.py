@@ -9,8 +9,10 @@ No network, no database.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
+import subprocess
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -232,7 +234,8 @@ def test_tell_invocation_exists_in_cli(label: str, argv: list[str]) -> None:
 def test_ingest_triggers_and_concurrency() -> None:
     wf = _load("ingest.yml")
     on = _on(wf)
-    assert on["schedule"] == [{"cron": "17 2,8,14,20 * * *"}]
+    # ADR 0029: a daily slot that always runs, plus extra slots gated on TELL_RUNS_PER_DAY.
+    assert on["schedule"] == [{"cron": DAILY_SLOT_CRON}, {"cron": EXTRA_SLOTS_CRON}]
     assert "source" in on["workflow_dispatch"]["inputs"]
     assert on["workflow_dispatch"]["inputs"]["source"]["required"] is False
     assert wf["concurrency"] == {"group": "ingest", "cancel-in-progress": False}
@@ -347,6 +350,72 @@ def test_ingest_dispatch_source_skips_other_legs() -> None:
 
 # --- preflight guard (ingest.yml, weekly.yml) -------------------------------------------
 
+DAILY_SLOT_CRON = "17 15 * * *"
+EXTRA_SLOTS_CRON = "17 2,8,20 * * *"
+
+
+def _run_ingest_preflight(tmp_path: Path, **env: str) -> tuple[dict[str, str], str]:
+    """Execute ingest.yml's preflight script with bash, the way the runner does."""
+    [step] = _load("ingest.yml")["jobs"]["preflight"]["steps"]
+    output = tmp_path / "output"
+    summary = tmp_path / "summary"
+    output.write_text("")
+    summary.write_text("")
+    base = {
+        "HAS_DATABASE_URL": "true",
+        "HAS_TELL_DATA_PUSH_TOKEN": "true",
+        "HAS_TELL_DATA_REPO": "true",
+        "EVENT_NAME": "schedule",
+        "FIRED_CRON": DAILY_SLOT_CRON,
+        "RUNS_PER_DAY": "",
+        "EXTRA_SLOTS_CRON": str(step["env"]["EXTRA_SLOTS_CRON"]),
+    }
+    run_env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "GITHUB_OUTPUT": str(output),
+        "GITHUB_STEP_SUMMARY": str(summary),
+        **base,
+        **env,
+    }
+    subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", str(step["run"])], env=run_env, check=True
+    )
+    outputs = dict(line.split("=", 1) for line in output.read_text().splitlines() if line)
+    return outputs, summary.read_text()
+
+
+@pytest.mark.parametrize(
+    ("env", "enabled", "publish", "summary_part"),
+    [
+        ({}, "true", "true", ""),  # daily slot always runs
+        ({"FIRED_CRON": EXTRA_SLOTS_CRON}, "false", "false", "extra slot"),  # private default
+        ({"FIRED_CRON": EXTRA_SLOTS_CRON, "RUNS_PER_DAY": "1"}, "false", "false", "extra slot"),
+        ({"FIRED_CRON": EXTRA_SLOTS_CRON, "RUNS_PER_DAY": "4"}, "true", "true", ""),
+        ({"EVENT_NAME": "workflow_dispatch", "FIRED_CRON": ""}, "true", "true", ""),
+        ({"HAS_DATABASE_URL": "false"}, "false", "false", "DATABASE_URL secret not set"),
+        ({"HAS_TELL_DATA_PUSH_TOKEN": "false"}, "true", "false", "tell-data publish skipped"),
+    ],
+)
+def test_ingest_preflight_slot_gate(
+    tmp_path: Path, env: dict[str, str], enabled: str, publish: str, summary_part: str
+) -> None:
+    """ADR 0029: extra slots run only with TELL_RUNS_PER_DAY=4; manual runs always run."""
+    outputs, summary = _run_ingest_preflight(tmp_path, **env)
+    assert outputs == {"enabled": enabled, "publish_enabled": publish}
+    if summary_part:
+        assert summary_part in summary
+    else:
+        assert summary == ""
+
+
+def test_extra_slots_cron_matches_the_schedule_line() -> None:
+    """github.event.schedule is compared verbatim, so the two strings must stay identical."""
+    wf = _load("ingest.yml")
+    [step] = wf["jobs"]["preflight"]["steps"]
+    crons = [entry["cron"] for entry in _on(wf)["schedule"]]
+    assert step["env"]["EXTRA_SLOTS_CRON"] in crons
+    assert DAILY_SLOT_CRON in crons
+
 
 @pytest.mark.parametrize("name", GUARDED_WORKFLOWS)
 def test_preflight_job_turns_secrets_into_outputs(name: str) -> None:
@@ -363,11 +432,19 @@ def test_preflight_job_turns_secrets_into_outputs(name: str) -> None:
     }
     [step] = preflight["steps"]
     assert step["id"] == "check"
-    assert step["env"] == {
+    secret_flags = {
         "HAS_DATABASE_URL": "${{ secrets.DATABASE_URL != '' }}",
         "HAS_TELL_DATA_PUSH_TOKEN": "${{ secrets.TELL_DATA_PUSH_TOKEN != '' }}",
         "HAS_TELL_DATA_REPO": "${{ vars.TELL_DATA_REPO != '' }}",
     }
+    if name == "ingest.yml":  # ADR 0029: the slot gate reads the event and the variable
+        secret_flags |= {
+            "EVENT_NAME": "${{ github.event_name }}",
+            "FIRED_CRON": "${{ github.event.schedule }}",
+            "RUNS_PER_DAY": "${{ vars.TELL_RUNS_PER_DAY }}",
+            "EXTRA_SLOTS_CRON": EXTRA_SLOTS_CRON,
+        }
+    assert step["env"] == secret_flags
     script = str(step["run"])
     assert 'echo "enabled=$enabled" >> "$GITHUB_OUTPUT"' in script
     assert 'echo "publish_enabled=$publish_enabled" >> "$GITHUB_OUTPUT"' in script

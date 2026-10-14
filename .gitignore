@@ -47,3 +47,6 @@ htmlcov/
 
 # Project
 *.log
+
+# Agent worktrees created by Claude Code workflows
+.claude/worktrees/
