@@ -54,6 +54,7 @@ from tell.models import (
 
 SAMPLE = Path(__file__).resolve().parents[1] / "fixtures" / "yc" / "sample.json"
 ALLOWED_KEYS = {"name", "website", "batch", "all_locations"}
+"""Keys of the frozen sample (recorded before ``status`` was read; status is tested inline)."""
 
 
 def _sample() -> list[dict[str, Any]]:
@@ -90,6 +91,7 @@ def test_record_model_drops_every_other_field() -> None:
         "name": "Acme",
         "website": "https://acme.com",
         "batch": None,
+        "status": None,
         "all_locations": None,
     }
     with pytest.raises(pydantic.ValidationError, match="name"):
@@ -135,6 +137,7 @@ def test_parse_directory_normalises_domains_and_skips_missing_websites() -> None
         "domain": "gusto.com",
         "batch": "Winter 2012",
         "locations": "San Francisco, CA, USA",
+        "status": None,  # the frozen sample predates the status field
     }
     assert by_name["Caper"]["locations"] is None
     assert all(c["domain"] == c["domain"].lower() for c in companies)
@@ -208,6 +211,74 @@ def test_reseed_updates_changed_rows_and_keeps_known_locations(db_session: Sessi
     assert rows["stripe.com"].name == "Stripe"
     assert rows["stripe.com"].hq_city == "South San Francisco"  # YC had no city: kept
     assert rows["gusto.com"].name == "Gusto"  # first record for a domain wins
+
+
+def test_seed_stores_status_and_batch_and_reseed_updates_them(db_session: Session) -> None:
+    """ADR 0034: the Form D guards read ``yc_status`` / ``yc_batch``; a change is an update."""
+    raw = [
+        {
+            "name": "Legion Health",
+            "website": "https://legionhealth.com",
+            "batch": "Summer 2021",
+            "status": "Active",
+            "all_locations": "San Francisco, CA, USA",
+        },
+        {
+            "name": "Manatee",
+            "website": "https://trymanatee.com",
+            "batch": "Summer 2022",
+            "status": "Inactive",
+            "all_locations": "College Park, MD, USA",
+        },
+    ]
+    companies, skipped = parse_directory(raw)
+    assert skipped == 0
+    assert [(c["status"], c["batch"]) for c in companies] == [
+        ("Active", "Summer 2021"),
+        ("Inactive", "Summer 2022"),
+    ]
+    first = seed_companies(db_session, companies)
+    assert (first.inserted, first.updated, first.unchanged) == (2, 0, 0)
+    rows = _companies(db_session)
+    assert (rows["legionhealth.com"].yc_status, rows["legionhealth.com"].yc_batch) == (
+        "Active",
+        "Summer 2021",
+    )
+    assert rows["trymanatee.com"].yc_status == "Inactive"
+
+    # unchanged directory: nothing written
+    again = seed_companies(db_session, parse_directory(raw)[0])
+    assert (again.inserted, again.updated, again.unchanged) == (0, 0, 2)
+
+    # a status change is an update; a record without status keeps the stored one
+    raw[0] = {**raw[0], "status": "Acquired"}
+    raw[1] = {key: value for key, value in raw[1].items() if key != "status"}
+    changed = seed_companies(db_session, parse_directory(raw)[0])
+    assert (changed.inserted, changed.updated, changed.unchanged) == (0, 1, 1)
+    db_session.expire_all()
+    rows = _companies(db_session)
+    assert rows["legionhealth.com"].yc_status == "Acquired"
+    assert (rows["trymanatee.com"].yc_status, rows["trymanatee.com"].yc_batch) == (
+        "Inactive",
+        "Summer 2022",
+    )
+
+
+def test_seed_backfills_status_on_rows_seeded_before_the_column(db_session: Session) -> None:
+    db_session.add(Company(domain="exa.ai", name="Exa"))
+    db_session.flush()
+    stats = seed_companies(
+        db_session,
+        [
+            YcCompany(
+                name="Exa", domain="exa.ai", batch="Summer 2021", locations=None, status="Active"
+            )
+        ],
+    )
+    assert (stats.inserted, stats.updated) == (0, 1)
+    db_session.expire_all()
+    exa = _companies(db_session)["exa.ai"]
+    assert (exa.yc_status, exa.yc_batch) == ("Active", "Summer 2021")
 
 
 def test_seed_handles_more_rows_than_one_batch(

@@ -25,6 +25,12 @@ geography) are fed and must not be auto-linked to anything. ``token_set_ratio`` 
 superset 100, so the superset negatives measure the risk the guard in ``match_name``
 exists for; a superset that still auto-links counts as a wrong link in the precision.
 
+Since ADR 0034 every name is fed with Form D issuer facts (:func:`_issuer`), so the Form D
+rules apply: R3 is review-only and a fund-like name is R6. The gold CSV has no entity type
+or jurisdiction column, so each issuer is a Delaware corporation of unknown age (guards
+(b)-(d) pass; they are unit-tested on production's own links in
+``tests/resolve/test_guards.py``), and the gold companies carry no YC status or batch.
+
 Files: ``tests/fixtures/gold_sample.csv`` (public 50-row sample) always; the full private
 set when ``TELL_GOLD_SET`` points at it. The variable is read at import time because the
 hermetic settings fixture strips ``TELL_*`` from the environment inside each test.
@@ -44,6 +50,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tell.models import AtsBoard, Company
+from tell.resolve.guards import IssuerFacts
 from tell.resolve.match import (
     SUPPORTED_BOARD_VENDORS,
     AliasIndex,
@@ -230,13 +237,23 @@ class GoldResult:
     boards: Tally
 
 
+def _issuer(name: str) -> IssuerFacts:
+    """A Form D issuer named ``name``: a Delaware corporation, year of incorporation unknown."""
+    return IssuerFacts(name=name, entity_type="Corporation", jurisdiction="DELAWARE")
+
+
 def run_gold(session: Session, rows: list[GoldRow]) -> GoldResult:
     index = AliasIndex.from_session(session)
     names = Tally()
     boards = Tally()
     for row in rows:
         decision = match_name(
-            session, row.legal_name, state=row.hq_state, city=row.hq_city, index=index
+            session,
+            row.legal_name,
+            state=row.hq_state,
+            city=row.hq_city,
+            index=index,
+            issuer=_issuer(row.legal_name),
         )
         names.positive(
             decision,
@@ -262,7 +279,12 @@ def run_gold(session: Session, rows: list[GoldRow]) -> GoldResult:
         if other is not row and normalize_name(other.legal_name) != normalize_name(row.legal_name):
             names.negatives += 1
             decision = match_name(
-                session, other.legal_name, state=row.hq_state, city=row.hq_city, index=index
+                session,
+                other.legal_name,
+                state=row.hq_state,
+                city=row.hq_city,
+                index=index,
+                issuer=_issuer(other.legal_name),
             )
             names.record(
                 decision, other.company_id, label=f"negative:{row.domain}:{other.legal_name!r}"
@@ -277,7 +299,12 @@ def run_gold(session: Session, rows: list[GoldRow]) -> GoldResult:
             names.negatives += 1
             names.supersets += 1
             decision = match_name(
-                session, superset, state=row.hq_state, city=row.hq_city, index=index
+                session,
+                superset,
+                state=row.hq_state,
+                city=row.hq_city,
+                index=index,
+                issuer=_issuer(superset),
             )
             names.record(decision, None, label=f"superset:{row.domain}:{superset!r}")
     return GoldResult(names=names, boards=boards)

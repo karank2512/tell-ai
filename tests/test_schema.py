@@ -5,7 +5,9 @@ the ``company_feeds`` table (migration ``0003``, ADR 0014), the ``ats_boards`` 4
 streak columns ``not_found_count`` / ``first_not_found_at`` (migration ``0004``, ADR 0015)
 the ``posting_ghost_votes`` table (migration ``0005``, ADR 0017) and the public-watchlist
 columns ``watchlists.slug`` / ``watchlists.is_public`` (migration ``0006``, ADR 0022) and
-the FastAPI v1 ``api_keys`` / ``api_usage`` tables (migration ``0007``, ADR 0024).
+the FastAPI v1 ``api_keys`` / ``api_usage`` tables (migration ``0007``, ADR 0024) and
+the YC directory columns ``companies.yc_status`` / ``companies.yc_batch`` (migration
+``0008``, ADR 0034).
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ from tests.conftest import alembic_config
 
 pytestmark = pytest.mark.db
 
-HEAD_REVISION = "0007"
+HEAD_REVISION = "0008"
 
 # --- the spec, hardcoded -----------------------------------------------------------------
 
@@ -44,6 +46,8 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
         "github_org",
         "created_at",
         "updated_at",
+        "yc_status",  # ADR 0034, migration 0008
+        "yc_batch",  # ADR 0034, migration 0008
     ],
     "company_aliases": ["company_id", "alias", "source"],
     "ats_boards": [
@@ -233,7 +237,16 @@ EXPECTED_INDEXES: dict[str, dict[str, tuple[list[str], dict[str, str]]]] = {
 }
 
 EXPECTED_NULLABLE: dict[str, set[str]] = {
-    "companies": {"legal_name", "cik", "hq_city", "hq_state", "hq_country", "github_org"},
+    "companies": {
+        "legal_name",
+        "cik",
+        "hq_city",
+        "hq_state",
+        "hq_country",
+        "github_org",
+        "yc_status",
+        "yc_batch",
+    },
     "company_aliases": set(),
     "ats_boards": {
         "company_id",

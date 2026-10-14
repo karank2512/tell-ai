@@ -9,11 +9,13 @@ Both operations are dry runs unless ``apply`` is set, and both are idempotent.
   verdict is kept, and so is every ``edgar`` / ``news`` / ``ats_board`` row (counted, not
   touched). The index ignores failing aliases anyway; pruning keeps the table honest.
 * :func:`close_junk_reviews` (``tell resolve close-junk-reviews``) re-runs the matcher on
-  every open ``entity_match`` item. An item that no longer has any candidate at or above
-  ``REVIEW_RATIO`` (its candidates were all failing or single-token-superset aliases) is
-  closed as ``rejected`` with ``payload.resolved_by = "alias_hygiene"``; nothing is
-  deleted and no event is linked. Items that still have a real candidate stay open for a
-  human, even when the new rules would now auto-link them.
+  every open ``entity_match`` item, with the Form D guards when the item's event is a Form
+  D (ADR 0034). An item the current rules no longer send to review (R6: its candidates
+  were all failing or single-token-superset aliases, shared only a descriptor such as
+  ``technologies`` with the name, or the issuer is a pooled investment fund) is closed as
+  ``rejected`` with ``payload.resolved_by = "alias_hygiene"``; nothing is deleted and no
+  event is linked. Items that still have a real candidate stay open for a human, even
+  when the new rules would now auto-link them.
 """
 
 from __future__ import annotations
@@ -26,17 +28,20 @@ from typing import Any
 from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session
 
-from tell.models import Company, CompanyAlias, ReviewQueueItem
-from tell.resolve.aliases import alias_problem, is_single_token
+from tell.models import Company, CompanyAlias, EventRow, ReviewQueueItem
+from tell.resolve.aliases import alias_problem, is_single_token, shares_distinctive_token
+from tell.resolve.guards import IssuerFacts
 from tell.resolve.match import (
     REVIEW_KIND,
     REVIEW_RATIO,
     AliasIndex,
+    MatchDecision,
+    issuer_facts,
     match_name,
     review_alias_pairs,
     stored_alias_problem,
 )
-from tell.resolve.normalize import normalize_name
+from tell.resolve.normalize import normalize_name, normalize_name_alt
 
 __all__ = [
     "EXAMPLES",
@@ -158,21 +163,46 @@ def _old_aliases(payload: dict[str, Any]) -> list[str]:
 
 
 def _junk_reason(alias: str, name: str) -> str:
-    """Why an old candidate alias no longer counts: the rule's reason, or a one-word superset."""
+    """Why an old candidate alias no longer counts: the rule's reason, a one-word superset, or
+    no distinctive token shared with the name (ADR 0034)."""
     problem = alias_problem(alias)
     if problem is not None:
         return problem
     if is_single_token(alias) and normalize_name(name) != alias:
         return "single_token_superset"
+    if not shares_distinctive_token(
+        (normalize_name(name), normalize_name_alt(name)), (alias, normalize_name_alt(alias))
+    ):
+        return "descriptor_only"
     return "below_review_ratio"
+
+
+def _item_reason(decision: MatchDecision) -> str:
+    """Why an item is junk: a pooled fund, only descriptor-sharing candidates, or none at all."""
+    if decision.fund_signals:
+        return "pooled_fund"
+    if any(c.ratio >= REVIEW_RATIO for c in decision.candidates):
+        return "descriptor_only"
+    return "no_candidate"
+
+
+def _item_facts(session: Session, payload: dict[str, Any]) -> IssuerFacts | None:
+    """The Form D facts of the item's event, when it is a Form D still in the table."""
+    event_id = payload.get("event_id")
+    if not isinstance(event_id, str):
+        return None
+    event = session.get(EventRow, event_id)
+    return issuer_facts(event) if event is not None else None
 
 
 def close_junk_reviews(session: Session, *, now: datetime, apply: bool = False) -> dict[str, Any]:
     """Re-evaluate open ``entity_match`` items; close those with no real candidate left.
 
     An item is junk when :func:`tell.resolve.match.match_name`, run on its name and
-    geography with the current rules, finds no candidate at or above ``REVIEW_RATIO``
-    (rule R6). With ``apply`` the item becomes ``rejected`` with ``verdict = "reject"``
+    geography with the current rules (and its event's Form D facts, ADR 0034), decides R6:
+    no candidate at or above ``REVIEW_RATIO``, none that shares a distinctive token with the
+    name, or a pooled-fund issuer. ``by_reason`` counts the junk items by
+    ``pooled_fund`` / ``descriptor_only`` / ``no_candidate``. With ``apply`` the item becomes ``rejected`` with ``verdict = "reject"``
     and ``resolved_by = "alias_hygiene"``, so the resolver never reopens the pair. Flushes;
     the caller owns the transaction.
     """
@@ -187,6 +217,7 @@ def close_junk_reviews(session: Session, *, now: datetime, apply: bool = False) 
     kept: Counter[str] = Counter()
     aliases: Counter[str] = Counter()
     reasons: Counter[str] = Counter()
+    by_reason: Counter[str] = Counter()
     for item in session.scalars(stmt):
         scanned += 1
         payload = item.payload
@@ -202,11 +233,13 @@ def close_junk_reviews(session: Session, *, now: datetime, apply: bool = False) 
             state=state if isinstance(state, str) else None,
             city=city if isinstance(city, str) else None,
             index=index,
+            issuer=_item_facts(session, payload),
         )
         if decision.rule != "R6":
             kept[decision.rule] += 1
             continue
         junk.append(item)
+        by_reason[_item_reason(decision)] += 1
         for alias in _old_aliases(payload):
             aliases[alias] += 1
             reasons[_junk_reason(alias, name)] += 1
@@ -224,5 +257,6 @@ def close_junk_reviews(session: Session, *, now: datetime, apply: bool = False) 
         "kept_open_by_rule": dict(sorted(kept.items())),
         "junk_aliases": dict(aliases.most_common(EXAMPLES)),
         "junk_alias_reasons": dict(sorted(reasons.items())),
+        "by_reason": dict(sorted(by_reason.items())),
         "examples": [{"id": item.id, "name": item.payload.get("name")} for item in junk[:EXAMPLES]],
     }

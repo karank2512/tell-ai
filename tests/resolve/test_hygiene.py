@@ -258,3 +258,42 @@ def test_reports_ignore_malformed_candidates(db_session: Session) -> None:
     db_session.add(review)
     db_session.flush()
     assert prune_aliases(db_session)["failing"] == 0
+
+
+def test_close_junk_reviews_closes_descriptor_only_and_fund_items(db_session: Session) -> None:
+    """ADR 0034: production's 85.71 descriptor-only items and fund issuers are closed."""
+    h3x = _company(db_session, "h3x.tech", "H3X Technologies", hq_state="CO")
+    _alias(db_session, h3x, "h3x technologies")
+    cb = _company(db_session, "cbtherapeutics.com", "CB Therapeutics", hq_state="CA")
+    _alias(db_session, cb, "cb therapeutics")
+    descriptor = _item(
+        db_session,
+        "ev-desc",
+        "Nimbus Technologies Inc",
+        [_candidate(h3x, "h3x technologies", 85.71)],
+    )
+    fund_event = _event(db_session, "ev-fund", "CB Therapeutics Opportunity Partners")
+    fund_event.payload = {**fund_event.payload, "industry_group_type": "Pooled Investment Fund"}
+    db_session.flush()
+    fund = _item(
+        db_session,
+        "ev-fund",
+        "CB Therapeutics Opportunity Partners",
+        [_candidate(cb, "cb therapeutics", 100.0)],
+    )
+    real = _item(
+        db_session, "ev-real", "H3X Technologies Group", [_candidate(h3x, "h3x technologies")]
+    )
+
+    report = close_junk_reviews(db_session, now=NOW, apply=True)
+    assert (report["junk"], report["closed"]) == (2, 2)
+    assert report["by_reason"] == {"descriptor_only": 1, "pooled_fund": 1}
+    assert report["junk_alias_reasons"] == {"below_review_ratio": 1, "descriptor_only": 1}
+    for item_id, status in ((descriptor, "rejected"), (fund, "rejected"), (real, "open")):
+        item = db_session.get(ReviewQueueItem, item_id)
+        assert item is not None
+        assert item.status == status
+    assert close_junk_reviews(db_session, now=NOW)["junk"] == 0
+    # with no candidate left at all the reason is no_candidate
+    _item(db_session, "ev-none", "Completely Unrelated Holdings", [])
+    assert close_junk_reviews(db_session, now=NOW)["by_reason"] == {"no_candidate": 1}

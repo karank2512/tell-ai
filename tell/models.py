@@ -226,6 +226,11 @@ class Company(Base):
     updated_at: Mapped[datetime] = mapped_column(
         _timestamptz(), nullable=False, server_default=text("now()")
     )
+    yc_status: Mapped[str | None] = mapped_column(Text)
+    """YC directory status as listed (``Active``, ``Inactive``, ``Acquired``, ``Public``);
+    ``NULL`` for companies not from the directory (migration 0008, ADR 0034)."""
+    yc_batch: Mapped[str | None] = mapped_column(Text)
+    """YC batch as listed, e.g. ``Summer 2021`` (migration 0008, ADR 0034)."""
 
 
 class CompanyAlias(Base):

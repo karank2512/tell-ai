@@ -28,17 +28,25 @@ by ``tell resolve prune-aliases`` for rows written before it existed.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
+
+from rapidfuzz.distance import Levenshtein
 
 from tell.discovery import is_platform_domain
 
 __all__ = [
+    "DESCRIPTOR_TOKENS",
+    "FUZZY_TOKEN_LENGTH",
     "GENERIC_ALIAS_TOKENS",
     "MIN_ALIAS_LENGTH",
     "SHORT_ENGLISH_WORDS",
     "SHORT_LABEL_LENGTH",
+    "TOKEN_TYPO_EDITS",
     "alias_problem",
+    "distinctive_tokens",
     "is_single_token",
     "label_alias_problem",
+    "shares_distinctive_token",
 ]
 
 MIN_ALIAS_LENGTH = 3
@@ -145,6 +153,68 @@ GENERIC_ALIAS_TOKENS: frozenset[str] = frozenset(
 (plus numbers and single characters) fails the rule. Kept short on purpose: every entry
 is either a function word, a legal or structural form, startup naming filler, or a word
 fund vehicles share; a distinctive word belongs nowhere near this list."""
+
+DESCRIPTOR_TOKENS: frozenset[str] = frozenset(
+    {
+        # What a company does, not who it is: "LSK Technologies", "CB Therapeutics",
+        # "AI Insurance". Production (2026-10-14) opened review items whose only shared word
+        # with the issuer was one of these: token_set_ratio scores "Nimbus Technologies"
+        # against "h3x technologies" 85.71, exactly the review floor (ADR 0034).
+        "technologies",
+        "technology",
+        "tech",
+        "therapeutics",
+        "insurance",
+        "health",
+        "healthcare",
+        "bio",
+        "biotech",
+        "biosciences",
+        "bioscience",
+        "sciences",
+        "science",
+        "robotics",
+        "energy",
+        "systems",
+        "solutions",
+        "software",
+        "labs",
+        "lab",
+        "studio",
+        "studios",
+        "network",
+        "networks",
+        "data",
+        "analytics",
+        "security",
+        "payments",
+        "finance",
+        "financial",
+        "capital",
+        "medical",
+        "diagnostics",
+        "pharma",
+        "pharmaceuticals",
+        "foods",
+        "food",
+        "services",
+        "industries",
+    }
+)
+"""Descriptor words: a company *category* that many unrelated companies share. Unlike
+:data:`GENERIC_ALIAS_TOKENS` they may stand in an alias ("Beacon Health" keeps ``health``),
+but sharing one with an issuer is no evidence that the two are the same company, so they do
+not count towards :func:`shares_distinctive_token` (ADR 0034)."""
+
+TOKEN_TYPO_EDITS = 1
+"""Two distinctive tokens of at least :data:`FUZZY_TOKEN_LENGTH` characters count as shared
+when they are at most this many edits apart (Levenshtein): ``acmee`` / ``acme``,
+``beakon`` / ``beacon``, ``methodd`` / ``method``, so a one-letter typo still reaches a
+human."""
+
+FUZZY_TOKEN_LENGTH = 4
+"""Shorter tokens are shared only when equal (``lsk`` / ``lsx`` is not a typo signal)."""
+
 
 _SHORT_ENGLISH_WORDS_TEXT = """
     ace act add age aid aim air all amp ant any ape arc ark arm art ask awe axe bad bag
@@ -262,3 +332,38 @@ def label_alias_problem(label: str, domain: str) -> str | None:
     if is_platform_domain(domain):
         return "platform_domain"
     return None
+
+
+def distinctive_tokens(alias: str) -> set[str]:
+    """The tokens of a normalized name that can identify a company.
+
+    Not filler (:data:`GENERIC_ALIAS_TOKENS`, a number, a single character) and not a
+    descriptor (:data:`DESCRIPTOR_TOKENS`): ``"nimbus technologies"`` -> ``{"nimbus"}``,
+    ``"ai insurance"`` -> ``set()``.
+    """
+    return {t for t in _tokens(alias) if not _filler(t) and t not in DESCRIPTOR_TOKENS}
+
+
+def _same_token(a: str, b: str) -> bool:
+    if a == b:
+        return True
+    if min(len(a), len(b)) < FUZZY_TOKEN_LENGTH:
+        return False
+    return Levenshtein.distance(a, b, score_cutoff=TOKEN_TYPO_EDITS) <= TOKEN_TYPO_EDITS
+
+
+def shares_distinctive_token(names: Iterable[str], aliases: Iterable[str]) -> bool:
+    """Whether any of ``names`` and any of ``aliases`` (normalized forms) share a distinctive token.
+
+    Shared means equal, or for tokens of at least :data:`FUZZY_TOKEN_LENGTH` characters at
+    most :data:`TOKEN_TYPO_EDITS` edit apart. An R5 review candidate must
+    pass this (ADR 0034): "Nimbus Technologies" shares only a descriptor with
+    ``h3x technologies`` and is no candidate; "Methodd Inc" still is one for ``method``.
+    """
+    left: set[str] = set()
+    for name in names:
+        left |= distinctive_tokens(name)
+    right: set[str] = set()
+    for alias in aliases:
+        right |= distinctive_tokens(alias)
+    return any(_same_token(a, b) for a in left for b in right)

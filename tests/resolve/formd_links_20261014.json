@@ -1,0 +1,1160 @@
+[
+ {
+  "company": {
+   "domain": "legionhealth.com",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Legion Health",
+   "yc_batch": "Summer 2021",
+   "yc_status": "Active"
+  },
+  "event_id": "7eb710affe4c3b20",
+  "payload": {
+   "accession_number": "0001916502-26-000002",
+   "cik": "0001916502",
+   "date_filed": "2026-07-01",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "SAN FRANCISCO",
+   "issuer_name": "Legion Health, Inc.",
+   "issuer_state": "CA",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [
+    "Legion Health, LLC"
+   ],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "SAME"
+ },
+ {
+  "company": {
+   "domain": "payloadcms.com",
+   "hq_city": "Grand Rapids",
+   "hq_state": "MI",
+   "name": "Payload",
+   "yc_batch": "Summer 2022",
+   "yc_status": "Acquired"
+  },
+  "event_id": "c04bb52a656c1cb8",
+  "payload": {
+   "accession_number": "0001921687-26-000005",
+   "cik": "0001921687",
+   "date_filed": "2026-07-08",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "CINCINNATI",
+   "issuer_name": "Payload, Inc.",
+   "issuer_state": "OH",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "DIFFERENT"
+ },
+ {
+  "company": {
+   "domain": "overlord.app",
+   "hq_city": "New York City",
+   "hq_state": "NY",
+   "name": "Overlord",
+   "yc_batch": "Winter 2023",
+   "yc_status": "Active"
+  },
+  "event_id": "c6688d940b88a69e",
+  "payload": {
+   "accession_number": "0002143465-26-000001",
+   "cik": "0002143465",
+   "date_filed": "2026-07-08",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "SAN JOSE",
+   "issuer_name": "Overlord Labs, Inc.",
+   "issuer_state": "CA",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": 2024
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "DIFFERENT"
+ },
+ {
+  "company": {
+   "domain": "ncompass.tech",
+   "hq_city": "New York City",
+   "hq_state": "NY",
+   "name": "nCompass Technologies",
+   "yc_batch": "Winter 2024",
+   "yc_status": "Active"
+  },
+  "event_id": "7d96ecf2c76b493a",
+  "payload": {
+   "accession_number": "0001563190-26-000131",
+   "cik": "0001563190",
+   "date_filed": "2026-07-17",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Residential",
+   "issuer_city": "NEW YORK",
+   "issuer_name": "Compass, Inc.",
+   "issuer_state": "NY",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": null
+  },
+  "rule": "R3",
+  "type": "form_d_filed",
+  "verdict": "DIFFERENT"
+ },
+ {
+  "company": {
+   "domain": "tybrhealth.com",
+   "hq_city": "Houston",
+   "hq_state": "TX",
+   "name": "TYBR Health",
+   "yc_batch": "Winter 2022",
+   "yc_status": "Active"
+  },
+  "event_id": "2bd89f0b4e679012",
+  "payload": {
+   "accession_number": "0001835188-26-000001",
+   "cik": "0001835188",
+   "date_filed": "2026-07-22",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Biotechnology",
+   "issuer_city": "HOUSTON",
+   "issuer_name": "TYBR Health, Inc.",
+   "issuer_state": "TX",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "SAME"
+ },
+ {
+  "company": {
+   "domain": "fly.io",
+   "hq_city": "Chicago",
+   "hq_state": "IL",
+   "name": "Fly.io",
+   "yc_batch": "Winter 2020",
+   "yc_status": "Active"
+  },
+  "event_id": "ab3a07ccc00ee203",
+  "payload": {
+   "accession_number": "0002144091-26-000001",
+   "cik": "0002144091",
+   "date_filed": "2026-07-22",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Computers",
+   "issuer_city": "SAN FRANCISCO",
+   "issuer_name": "Fly.io, Inc.",
+   "issuer_state": "CA",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "SAME"
+ },
+ {
+  "company": {
+   "domain": "scale.com",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Scale AI",
+   "yc_batch": "Summer 2016",
+   "yc_status": "Active"
+  },
+  "event_id": "05ef3725d0c63d72",
+  "payload": {
+   "accession_number": "0002146511-26-000002",
+   "cik": "0002146511",
+   "date_filed": "2026-07-27",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "SAN FRANCISCO",
+   "issuer_name": "Scaler AI Labs Inc.",
+   "issuer_state": "CA",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": 2025
+  },
+  "rule": "R3",
+  "type": "form_d_filed",
+  "verdict": "DIFFERENT"
+ },
+ {
+  "company": {
+   "domain": "arist.co",
+   "hq_city": "New York City",
+   "hq_state": "NY",
+   "name": "Arist",
+   "yc_batch": "Summer 2020",
+   "yc_status": "Active"
+  },
+  "event_id": "591122924e68fa68",
+  "payload": {
+   "accession_number": "0001934857-26-000003",
+   "cik": "0001934857",
+   "date_filed": "2026-07-27",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "SAN FRANCISCO",
+   "issuer_name": "Arist Holdings Inc.",
+   "issuer_state": "CA",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "SAME"
+ },
+ {
+  "company": {
+   "domain": "notabene.id",
+   "hq_city": "New York City",
+   "hq_state": "NY",
+   "name": "Notabene",
+   "yc_batch": "Summer 2020",
+   "yc_status": "Active"
+  },
+  "event_id": "33f76a8a4b8fdfae",
+  "payload": {
+   "accession_number": "0001880160-26-000003",
+   "cik": "0001880160",
+   "date_filed": "2026-07-30",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "Brooklyn",
+   "issuer_name": "Notabene, Inc.",
+   "issuer_state": "NY",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "SAME"
+ },
+ {
+  "company": {
+   "domain": "infera.bio",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Infera",
+   "yc_batch": "Spring 2026",
+   "yc_status": "Active"
+  },
+  "event_id": "97d274007c310009",
+  "payload": {
+   "accession_number": "0002142121-26-000001",
+   "cik": "0002142121",
+   "date_filed": "2026-07-30",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "MENLO PARK",
+   "issuer_name": "Inferra Inc.",
+   "issuer_state": "CA",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": 2026
+  },
+  "rule": "R3",
+  "type": "form_d_filed",
+  "verdict": "DIFFERENT"
+ },
+ {
+  "company": {
+   "domain": "grai.io",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Grai",
+   "yc_batch": "Summer 2022",
+   "yc_status": "Inactive"
+  },
+  "event_id": "ba33fc502029d632",
+  "payload": {
+   "accession_number": "0002147605-26-000001",
+   "cik": "0002147605",
+   "date_filed": "2026-07-30",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other",
+   "issuer_city": "WILMINGTON",
+   "issuer_name": "GRAI, Inc.",
+   "issuer_state": "DE",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": 2025
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "UNCLEAR"
+ },
+ {
+  "company": {
+   "domain": "hilstart.io",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Hilstart",
+   "yc_batch": "Summer 2026",
+   "yc_status": "Active"
+  },
+  "event_id": "21b2af294e2ed82c",
+  "payload": {
+   "accession_number": "0002147638-26-000001",
+   "cik": "0002147638",
+   "date_filed": "2026-07-31",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "WILMINGTON",
+   "issuer_name": "HILstart, Inc.",
+   "issuer_state": "DE",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": 2026
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "SAME"
+ },
+ {
+  "company": {
+   "domain": "janet.ai",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Janet AI",
+   "yc_batch": "Summer 2025",
+   "yc_status": "Active"
+  },
+  "event_id": "8b487cb107144d60",
+  "payload": {
+   "accession_number": "0002147912-26-000001",
+   "cik": "0002147912",
+   "date_filed": "2026-07-31",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "SARATOGA",
+   "issuer_name": "Janet AI, Inc.",
+   "issuer_state": "CA",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": 2025
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "SAME"
+ },
+ {
+  "company": {
+   "domain": "hub.xyz",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Hub",
+   "yc_batch": "Spring 2026",
+   "yc_status": "Active"
+  },
+  "event_id": "92d83de7837a9cfd",
+  "payload": {
+   "accession_number": "0002148604-26-000001",
+   "cik": "0002148604",
+   "date_filed": "2026-08-06",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Manufacturing",
+   "issuer_city": "CHARLOTTE",
+   "issuer_name": "Hub Corp",
+   "issuer_state": "NC",
+   "jurisdiction_of_inc": "NORTH CAROLINA",
+   "previous_names": [],
+   "year_of_inc": 2024
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "DIFFERENT"
+ },
+ {
+  "company": {
+   "domain": "djamo.com",
+   "hq_city": null,
+   "hq_state": null,
+   "name": "Djamo",
+   "yc_batch": "Winter 2021",
+   "yc_status": "Active"
+  },
+  "event_id": "b6984f9b89daef04",
+  "payload": {
+   "accession_number": "0001952394-26-000002",
+   "cik": "0001952394",
+   "date_filed": "2026-08-10",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "WILMINGTON",
+   "issuer_name": "Djamo Inc.",
+   "issuer_state": "DE",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "SAME"
+ },
+ {
+  "company": {
+   "domain": "alpaca.markets",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Alpaca",
+   "yc_batch": "Winter 2019",
+   "yc_status": "Active"
+  },
+  "event_id": "3926e6e4f265a84f",
+  "payload": {
+   "accession_number": "0002149786-26-000001",
+   "cik": "0002149786",
+   "date_filed": "2026-08-13",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Computers",
+   "issuer_city": "MENLO PARK",
+   "issuer_name": "AlpacaX Inc.",
+   "issuer_state": "CA",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": 2025
+  },
+  "rule": "R3",
+  "type": "form_d_filed",
+  "verdict": "DIFFERENT"
+ },
+ {
+  "company": {
+   "domain": "superset.sh",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Superset",
+   "yc_batch": "Spring 2026",
+   "yc_status": "Active"
+  },
+  "event_id": "5096f637e5015772",
+  "payload": {
+   "accession_number": "0002150111-26-000001",
+   "cik": "0002150111",
+   "date_filed": "2026-08-14",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other",
+   "issuer_city": "SAN FRANCISCO",
+   "issuer_name": "Superset Inc.",
+   "issuer_state": "CA",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": 2026
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "SAME"
+ },
+ {
+  "company": {
+   "domain": "scale.com",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Scale AI",
+   "yc_batch": "Summer 2016",
+   "yc_status": "Active"
+  },
+  "event_id": "314a484370ce91e8",
+  "payload": {
+   "accession_number": "0002146511-26-000003",
+   "cik": "0002146511",
+   "date_filed": "2026-08-18",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "SAN FRANCISCO",
+   "issuer_name": "Scaler AI Labs Inc.",
+   "issuer_state": "CA",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": 2025
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "DIFFERENT"
+ },
+ {
+  "company": {
+   "domain": "whatnot.com",
+   "hq_city": "Los Angeles",
+   "hq_state": "CA",
+   "name": "Whatnot",
+   "yc_batch": "Winter 2020",
+   "yc_status": "Active"
+  },
+  "event_id": "ea2f1221722eeb19",
+  "payload": {
+   "accession_number": "0001844768-26-000001",
+   "cik": "0001844768",
+   "date_filed": "2026-08-18",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "SAN FRANCISCO",
+   "issuer_name": "Whatnot Inc.",
+   "issuer_state": "CA",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "SAME"
+ },
+ {
+  "company": {
+   "domain": "hilstart.io",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Hilstart",
+   "yc_batch": "Summer 2026",
+   "yc_status": "Active"
+  },
+  "event_id": "1ec7687654523e4b",
+  "payload": {
+   "accession_number": "0002147638-26-000002",
+   "cik": "0002147638",
+   "date_filed": "2026-08-24",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "WILMINGTON",
+   "issuer_name": "HILstart, Inc.",
+   "issuer_state": "DE",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": 2026
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "SAME"
+ },
+ {
+  "company": {
+   "domain": "kalshi.com",
+   "hq_city": "New York City",
+   "hq_state": "NY",
+   "name": "Kalshi",
+   "yc_batch": "Winter 2019",
+   "yc_status": "Active"
+  },
+  "event_id": "3c216e96f779f143",
+  "payload": {
+   "accession_number": "0001231919-26-001066",
+   "cik": "0001806928",
+   "date_filed": "2026-08-25",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "NEW YORK",
+   "issuer_name": "Kalshi Inc.",
+   "issuer_state": "NY",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "SAME"
+ },
+ {
+  "company": {
+   "domain": "vanta.com",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Vanta",
+   "yc_batch": "Winter 2018",
+   "yc_status": "Active"
+  },
+  "event_id": "6c9a5d81a0e5ac83",
+  "payload": {
+   "accession_number": "0001754180-26-000002",
+   "cik": "0001754180",
+   "date_filed": "2026-08-31",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other",
+   "issuer_city": "VANCOUVER",
+   "issuer_name": "VANTA HOLDINGS INC.",
+   "issuer_state": "A1",
+   "jurisdiction_of_inc": "BRITISH COLUMBIA, CANADA",
+   "previous_names": [],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "DIFFERENT"
+ },
+ {
+  "company": {
+   "domain": "modalup.com",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Modal",
+   "yc_batch": "Winter 2016",
+   "yc_status": "Inactive"
+  },
+  "event_id": "220c950cb8e22090",
+  "payload": {
+   "accession_number": "0002088132-26-000002",
+   "cik": "0002088132",
+   "date_filed": "2026-08-31",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "NEW YORK",
+   "issuer_name": "Modal Labs, Inc.",
+   "issuer_state": "NY",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [
+    "Polyester, Inc."
+   ],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "DIFFERENT"
+ },
+ {
+  "company": {
+   "domain": "modalup.com",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Modal",
+   "yc_batch": "Winter 2016",
+   "yc_status": "Inactive"
+  },
+  "event_id": "e4fbbc25096ba9b8",
+  "payload": {
+   "accession_number": "0002088132-26-000003",
+   "cik": "0002088132",
+   "date_filed": "2026-08-31",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "NEW YORK",
+   "issuer_name": "Modal Labs, Inc.",
+   "issuer_state": "NY",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [
+    "Polyester, Inc."
+   ],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "DIFFERENT"
+ },
+ {
+  "company": {
+   "domain": "sylvian.ai",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Sylvian",
+   "yc_batch": "Fall 2025",
+   "yc_status": "Inactive"
+  },
+  "event_id": "8483f59052cc843a",
+  "payload": {
+   "accession_number": "0002152408-26-000001",
+   "cik": "0002152408",
+   "date_filed": "2026-09-02",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "SAN FRANCISCO",
+   "issuer_name": "Sylvan Labs, Inc.",
+   "issuer_state": "CA",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": 2025
+  },
+  "rule": "R3",
+  "type": "form_d_filed",
+  "verdict": "DIFFERENT"
+ },
+ {
+  "company": {
+   "domain": "sensible.bio",
+   "hq_city": null,
+   "hq_state": null,
+   "name": "Sensible Biotechnologies",
+   "yc_batch": "Summer 2021",
+   "yc_status": "Active"
+  },
+  "event_id": "02308e248a25d1b9",
+  "payload": {
+   "accession_number": "0001964363-26-000003",
+   "cik": "0001964363",
+   "date_filed": "2026-09-02",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Biotechnology",
+   "issuer_city": "Oxford, Oxfordshire",
+   "issuer_name": "Sensible Biotechnologies, Inc.",
+   "issuer_state": "X0",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": 2021
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "SAME"
+ },
+ {
+  "company": {
+   "domain": "arpio.io",
+   "hq_city": "Durham",
+   "hq_state": "NC",
+   "name": "Arpio",
+   "yc_batch": "Winter 2021",
+   "yc_status": "Active"
+  },
+  "event_id": "ede1eb2bc7cdd1b9",
+  "payload": {
+   "accession_number": "0001989412-26-000002",
+   "cik": "0001989412",
+   "date_filed": "2026-09-03",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "Durham",
+   "issuer_name": "Arpio, Inc.",
+   "issuer_state": "NC",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "SAME"
+ },
+ {
+  "company": {
+   "domain": "protocol.ai",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Protocol Labs",
+   "yc_batch": "Summer 2014",
+   "yc_status": "Active"
+  },
+  "event_id": "ee0ed1fca7f5f728",
+  "payload": {
+   "accession_number": "0002153670-26-000001",
+   "cik": "0002153670",
+   "date_filed": "2026-09-04",
+   "entity_type": "Limited Liability Company",
+   "form_type": "D",
+   "industry_group_type": "Other",
+   "issuer_city": "Jacksonville Beach",
+   "issuer_name": "Protocol Labs LLC",
+   "issuer_state": "FL",
+   "jurisdiction_of_inc": "WYOMING",
+   "previous_names": [],
+   "year_of_inc": 2026
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "DIFFERENT"
+ },
+ {
+  "company": {
+   "domain": "salemroboticsinc.com",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Salem Robotics Inc",
+   "yc_batch": "Summer 2026",
+   "yc_status": "Active"
+  },
+  "event_id": "f4e252381a9adcf5",
+  "payload": {
+   "accession_number": "0002134746-26-000002",
+   "cik": "0002134746",
+   "date_filed": "2026-09-08",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "AUSTIN",
+   "issuer_name": "Salem Robotics, Inc.",
+   "issuer_state": "TX",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": 2024
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "SAME"
+ },
+ {
+  "company": {
+   "domain": "ncompass.tech",
+   "hq_city": "New York City",
+   "hq_state": "NY",
+   "name": "nCompass Technologies",
+   "yc_batch": "Winter 2024",
+   "yc_status": "Active"
+  },
+  "event_id": "1c799ffb7653d469",
+  "payload": {
+   "accession_number": "0001563190-26-000144",
+   "cik": "0001563190",
+   "date_filed": "2026-09-16",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Residential",
+   "issuer_city": "NEW YORK",
+   "issuer_name": "Compass, Inc.",
+   "issuer_state": "NY",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "DIFFERENT"
+ },
+ {
+  "company": {
+   "domain": "jasper.ai",
+   "hq_city": "Austin",
+   "hq_state": "TX",
+   "name": "Jasper.ai",
+   "yc_batch": "Winter 2018",
+   "yc_status": "Active"
+  },
+  "event_id": "b3797e0f4232244e",
+  "payload": {
+   "accession_number": "0002141961-26-000003",
+   "cik": "0002141961",
+   "date_filed": "2026-09-21",
+   "entity_type": "Limited Partnership",
+   "form_type": "D",
+   "industry_group_type": "Insurance",
+   "issuer_city": "George Town",
+   "issuer_name": "Jasper Holdings LP",
+   "issuer_state": "E9",
+   "jurisdiction_of_inc": "CAYMAN ISLANDS",
+   "previous_names": [],
+   "year_of_inc": 2026
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "DIFFERENT"
+ },
+ {
+  "company": {
+   "domain": "supabase.com",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Supabase",
+   "yc_batch": "Summer 2020",
+   "yc_status": "Active"
+  },
+  "event_id": "ec458f1ccc966fb5",
+  "payload": {
+   "accession_number": "0001829334-26-000003",
+   "cik": "0001829334",
+   "date_filed": "2026-09-22",
+   "entity_type": "Corporation",
+   "form_type": "D/A",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "Dover",
+   "issuer_name": "Supabase, Inc.",
+   "issuer_state": "DE",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_amendment",
+  "verdict": "SAME"
+ },
+ {
+  "company": {
+   "domain": "ncompass.tech",
+   "hq_city": "New York City",
+   "hq_state": "NY",
+   "name": "nCompass Technologies",
+   "yc_batch": "Winter 2024",
+   "yc_status": "Active"
+  },
+  "event_id": "b169b50e236b5c8b",
+  "payload": {
+   "accession_number": "0001563190-26-000152",
+   "cik": "0001563190",
+   "date_filed": "2026-09-24",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Residential",
+   "issuer_city": "NEW YORK",
+   "issuer_name": "Compass, Inc.",
+   "issuer_state": "NY",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "DIFFERENT"
+ },
+ {
+  "company": {
+   "domain": "trymanatee.com",
+   "hq_city": "College Park",
+   "hq_state": "MD",
+   "name": "Manatee",
+   "yc_batch": "Summer 2022",
+   "yc_status": "Inactive"
+  },
+  "event_id": "2101aaec83f60db6",
+  "payload": {
+   "accession_number": "0001817367-26-000002",
+   "cik": "0001817367",
+   "date_filed": "2026-09-24",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other",
+   "issuer_city": "DENVER",
+   "issuer_name": "Manatee, Inc.",
+   "issuer_state": "CO",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "DIFFERENT"
+ },
+ {
+  "company": {
+   "domain": "sunflowerclinic.com",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Sunflower",
+   "yc_batch": "Summer 2026",
+   "yc_status": "Active"
+  },
+  "event_id": "4c1782d02e6c5b64",
+  "payload": {
+   "accession_number": "0001876339-26-000003",
+   "cik": "0001876339",
+   "date_filed": "2026-09-28",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "SAN CARLOS",
+   "issuer_name": "Sunflower Labs Inc.",
+   "issuer_state": "CA",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [
+    "BBot, Inc."
+   ],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "DIFFERENT"
+ },
+ {
+  "company": {
+   "domain": "exa.ai",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Exa",
+   "yc_batch": "Summer 2021",
+   "yc_status": "Active"
+  },
+  "event_id": "ce7fd1e5471674ac",
+  "payload": {
+   "accession_number": "0002024864-26-000003",
+   "cik": "0002024864",
+   "date_filed": "2026-09-28",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "San Francisco",
+   "issuer_name": "Exa Labs Inc.",
+   "issuer_state": "CA",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [
+    "Metaphor Systems, Inc."
+   ],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "SAME"
+ },
+ {
+  "company": {
+   "domain": "mireye.com",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Mireye",
+   "yc_batch": "Summer 2026",
+   "yc_status": "Active"
+  },
+  "event_id": "6864df35580373b3",
+  "payload": {
+   "accession_number": "0002157072-26-000001",
+   "cik": "0002157072",
+   "date_filed": "2026-09-30",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "SAN BRUNO",
+   "issuer_name": "Mireye Inc.",
+   "issuer_state": "CA",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": 2026
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "SAME"
+ },
+ {
+  "company": {
+   "domain": "axle.insure",
+   "hq_city": "New York City",
+   "hq_state": "NY",
+   "name": "Axle",
+   "yc_batch": "Summer 2022",
+   "yc_status": "Active"
+  },
+  "event_id": "82cc3be81738834d",
+  "payload": {
+   "accession_number": "0001951844-26-000005",
+   "cik": "0001951844",
+   "date_filed": "2026-10-01",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other Technology",
+   "issuer_city": "ATLANTA",
+   "issuer_name": "Axle Labs, Inc.",
+   "issuer_state": "GA",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": 2022
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "SAME"
+ },
+ {
+  "company": {
+   "domain": "altaytherapeutics.com",
+   "hq_city": "San Francisco",
+   "hq_state": "CA",
+   "name": "Altay Therapeutics",
+   "yc_batch": "Winter 2020",
+   "yc_status": "Active"
+  },
+  "event_id": "3ad4972f766dc56a",
+  "payload": {
+   "accession_number": "0002157551-26-000001",
+   "cik": "0002157551",
+   "date_filed": "2026-10-02",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Biotechnology",
+   "issuer_city": "SAN CARLOS",
+   "issuer_name": "Altay Therapeutics, Inc.",
+   "issuer_state": "CA",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "SAME"
+ },
+ {
+  "company": {
+   "domain": "ncompass.tech",
+   "hq_city": "New York City",
+   "hq_state": "NY",
+   "name": "nCompass Technologies",
+   "yc_batch": "Winter 2024",
+   "yc_status": "Active"
+  },
+  "event_id": "9665f653c1868eab",
+  "payload": {
+   "accession_number": "0001563190-26-000153",
+   "cik": "0001563190",
+   "date_filed": "2026-10-06",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Residential",
+   "issuer_city": "NEW YORK",
+   "issuer_name": "Compass, Inc.",
+   "issuer_state": "NY",
+   "jurisdiction_of_inc": "DELAWARE",
+   "previous_names": [],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "DIFFERENT"
+ },
+ {
+  "company": {
+   "domain": "echothat.ai",
+   "hq_city": null,
+   "hq_state": null,
+   "name": "Echo",
+   "yc_batch": "Winter 2023",
+   "yc_status": "Inactive"
+  },
+  "event_id": "f4a316ac24fc5171",
+  "payload": {
+   "accession_number": "0001062993-26-005252",
+   "cik": "0001773838",
+   "date_filed": "2026-10-09",
+   "entity_type": "Corporation",
+   "form_type": "D",
+   "industry_group_type": "Other",
+   "issuer_city": "CALGARY",
+   "issuer_name": "Echo Ltd.",
+   "issuer_state": "A0",
+   "jurisdiction_of_inc": "ALBERTA, CANADA",
+   "previous_names": [],
+   "year_of_inc": null
+  },
+  "rule": "R2",
+  "type": "form_d_filed",
+  "verdict": "DIFFERENT"
+ }
+]

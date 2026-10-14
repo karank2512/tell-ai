@@ -2,16 +2,61 @@
 
 Spec: `docs/SPEC.md` section 6 (normalization, rules, review queue, gold set), section 5
 (`company_aliases`, `review_queue`), section 12 (Resolution test family). Code:
-`tell/resolve/normalize.py`, `tell/resolve/aliases.py` (the alias rule), `tell/resolve/match.py`,
-`tell/resolve/hygiene.py` (alias and review-queue maintenance), `tell/resolve/review.py`,
-`tell/resolve/review_app.py` (Streamlit, optional). CLI: `tell resolve run [--limit N]
-[--retry]`, `tell resolve backfill-aliases`, `tell resolve review-export PATH`, `tell resolve
-review-import PATH`, `tell resolve stats`, `tell resolve prune-aliases [--dry-run|--apply]`,
-`tell resolve close-junk-reviews [--dry-run|--apply]`. Tests: `tests/resolve/` (alias rule,
-rules, resolver, hygiene, review round trip, CLI) and `tests/test_resolve.py` (gold-set
-precision and recall). Decisions that go beyond the spec's wording:
-`docs/decisions/0018-entity-resolution-rule-refinements.md`,
-`docs/decisions/0033-alias-hygiene.md`.
+`tell/resolve/normalize.py`, `tell/resolve/aliases.py` (the alias rule, distinctive tokens),
+`tell/resolve/guards.py` (Form D guards), `tell/resolve/match.py`, `tell/resolve/hygiene.py`
+(alias and review-queue maintenance), `tell/resolve/relink.py` (Form D link repair),
+`tell/resolve/review.py`, `tell/resolve/review_app.py` (Streamlit, optional). CLI: `tell
+resolve run [--limit N] [--retry]`, `tell resolve backfill-aliases`, `tell resolve
+review-export PATH`, `tell resolve review-import PATH`, `tell resolve stats`, `tell resolve
+prune-aliases [--dry-run|--apply]`, `tell resolve close-junk-reviews [--dry-run|--apply]`,
+`tell resolve relink-formd [--dry-run|--apply]`. Tests: `tests/resolve/` (alias rule, rules,
+Form D guards on production's own links, resolver, hygiene, relink repair, review round trip,
+CLI) and `tests/test_resolve.py` (gold-set precision and recall). Decisions that go beyond
+the spec's wording: `docs/decisions/0018-entity-resolution-rule-refinements.md`,
+`docs/decisions/0033-alias-hygiene.md`, `docs/decisions/0034-form-d-linking-guards.md`
+(proposed).
+
+## Production measurement 2026-10-14
+
+**Read this before quoting any number below.** On 2026-10-14 production had auto-linked 41
+Form D filings to the 6,246 YC companies. Each was checked by hand against the SEC filing
+and the company's site: 20 same company, 20 different, 1 unclear. **Production precision
+was 0.50 (20 of 40 decided)**, while the gold set reported 1.0000.
+
+| Rule | Links | Same | Different | Unclear |
+| --- | --- | --- | --- | --- |
+| R3 (fuzzy >= 92 + state) | 5 | 0 | 5 | 0 |
+| R2 (exact alias) | 36 | 20 | 15 | 1 |
+| Total | 41 | 20 | 20 | 1 |
+
+- R3: all 5 were one-word near misses (Compass vs nCompass, Inferra vs Infera, AlpacaX vs
+  Alpaca, Sylvan vs Sylvian, Scaler AI vs Scale AI).
+- R2: common-word brands after `Labs` / `Holdings` were stripped (Payload, Hub, Manatee,
+  Echo, Modal Labs, Sunflower Labs, Overlord Labs, Protocol Labs, Vanta Holdings, Jasper
+  Holdings LP); issuers that were not Delaware corporations (a Cayman LP, a Wyoming LLC,
+  Canadian corporations, a North Carolina corporation); incorporation years inconsistent
+  with the YC batch; companies listed Inactive or Acquired. 4 of the 15 were knock-ons of
+  the wrong R3 links, which had written the issuer's name as an exact alias.
+- All 20 right links: a Delaware corporation, an Active YC company, an incorporation year
+  that fits the batch.
+- Every wrong link also wrote `edgar` aliases and set `companies.legal_name` and
+  `companies.cik`, which the backtest cohort trusts.
+- 788 R5 review items were open: 405 funds and pooled vehicles, and most of the rest had a
+  two-token alias such as `lsk technologies` or `ai insurance` as top candidate at 85.71,
+  sharing only the descriptor word with the issuer.
+
+Why the gold set missed it: its legal names are mostly the brand plus a suffix, and no gold
+name is an unrelated company that happens to share a brand word. That is the production
+case. The rules that answer it (ADR 0034) are in [Form D guards](#form-d-guards-adr-0034)
+below; the case table is a test fixture (`tests/resolve/formd_links_20261014.json`).
+
+Under the new rules, on a local copy of production taken read-only the same day,
+`tell resolve relink-formd --apply` keeps exactly the 20 links judged SAME, unlinks the
+other 21 (20 to review, Jasper Holdings LP to R6), deletes the 7 `edgar` aliases the wrong
+links minted, and resets 16 legal names and 16 CIKs; a second run changes nothing. `tell
+resolve close-junk-reviews --apply` then closes 736 of 826 open items (395 pooled funds,
+341 descriptor-only), leaving 90. Re-running the resolver over every unlinked EDGAR event
+makes no new link.
 
 The domain is the identity. ATS postings arrive already linked (discovery found the board on
 the company's domain). Form D filings, other EDGAR filings and the occasional news item
@@ -90,10 +135,13 @@ prune-aliases` deletes the failing `manual` rows. It never deletes an `edgar`, `
 unless `--apply` is given.
 
 Linking a filing, whether by the resolver or by a review verdict, goes through one function
-(`link_event`): it sets `company_id`, fills `companies.cik` (when empty and not held by
-another company) and `companies.legal_name` (when empty), and adds the issuer name and every
-`issuerPreviousNameList` entry as aliases (source `edgar`). That is how renamed companies keep
-their history: a later filing under a former name is an exact alias (R2). A review verdict
+(`link_event`): it sets `company_id` and, for a **trusted** link only, fills `companies.cik`
+(when empty and not held by another company) and `companies.legal_name` (when empty), and
+adds the issuer name and every `issuerPreviousNameList` entry as aliases (source `edgar`).
+That is how renamed companies keep their history: a later filing under a former name is an
+exact alias (R2). Trusted means R1, R2 after the Form D guards, or a human review verdict
+(ADR 0034); an R4 link of an EDGAR event writes nothing but `company_id`, so a fuzzy link
+can never mint the exact alias that links the issuer's next filing. A review verdict
 additionally writes the queue item's name as a `manual` alias.
 
 ## Rules (`match_name`), top to bottom; the first that fires sets the confidence
@@ -102,9 +150,9 @@ additionally writes the queue item's name as a `manual` alias.
 | --- | --- | --- | --- |
 | R1 domain | the source URL is on the watched domain (`on_domain_company_id`: board found by discovery, company RSS) | 0.98 | auto-link |
 | R2 exact alias | normalized name, or its alt form, equals an alias held by exactly one company | 0.95 | auto-link |
-| R3 name + geography | `rapidfuzz.fuzz.token_set_ratio(norm, alias) >= 92`, issuer state == `hq_state` (city == `hq_city` when either state is missing), the geography singles out **exactly one** company, and the superset guard holds | 0.90 | auto-link, logged |
+| R3 name + geography | `rapidfuzz.fuzz.token_set_ratio(norm, alias) >= 92`, issuer state == `hq_state` (city == `hq_city` when either state is missing), the geography singles out **exactly one** company, and the superset guard holds | 0.90 | auto-link, logged; **review (R5) for a Form D** (ADR 0034) |
 | R4 name only, unique | ratio >= 95, exactly one candidate company (ratio >= 85) in the **whole table**, and the superset guard holds | 0.85 | auto-link, logged |
-| R5 ambiguous | ratio >= 85 with two or more candidate companies, or one candidate not linked above | 0.60 | review queue |
+| R5 ambiguous | ratio >= 85 with two or more candidate companies, or one candidate not linked above, and the candidate shares a distinctive token with the name (ADR 0034); or a Form D auto-link that failed a guard | 0.60 | review queue |
 | R6 none | otherwise | 0 | unlinked event, kept with `company_id NULL` |
 
 Candidates are scored with `token_set_ratio` against every alias in both the plain and the
@@ -133,6 +181,48 @@ and kept current as the run adds aliases.
 The ticket asked for "exactly that token as its whole name". Read literally, that drops the
 gold set's correct R3 link `QuikNode, Inc.` -> QuickNode, so the whole-word comparison is
 kept (ADR 0033). The rules' thresholds and confidences are unchanged.
+
+### Form D guards (ADR 0034)
+
+Applied when the event is a `form_d_filed` or `form_d_amendment`; the resolver passes the
+issuer's facts from the payload (`tell.resolve.guards.IssuerFacts`) and the index holds each
+company's `yc_status` / `yc_batch` (migration 0008, written by the YC seeder). News, ATS and
+other EDGAR forms are matched without them. The rule order and confidences stay as above.
+
+- **(e) Pooled vehicles are never candidates.** Industry group "Pooled Investment Fund", or a
+  vehicle's legal-form token in the name (`fund`, `funds`, `L.P.`/`LP`, `SPV`, `Master`,
+  `Feeder`, `Trust`, "a series of"): R6 at once, `excluded = "pooled_fund"` and
+  `fund_signals` in the audit, no review item.
+- **(a) R3 is review-only.** A Form D that R3 would link is R5 with `guard_failed` starting
+  `r3_review_only`.
+- **(b) Delaware corporation.** An R2 or R4 link needs `entity_type` Corporation and
+  `jurisdiction_of_inc` DELAWARE (`entity_type_not_corporation`, `jurisdiction_not_delaware`).
+- **(c) Active YC company.** When the company's YC status is known it must be Active
+  (`yc_status_not_active`; Inactive, Acquired and Public fail).
+- **(d) Incorporation year fits the batch.** `year_of_inc` must not be later than the batch
+  year (`incorporated_after_batch`). The payload's `year_of_inc` is `null` when the filer
+  checked "over five years" (or "yet to be formed"); such an issuer is not linked to a batch
+  from the filing year minus 2 on (`over_five_years_for_recent_batch`; for 2026 filings,
+  batches from 2024 on).
+
+A failed guard demotes the auto-link to **R5 review, never R6**: the audit record and the
+review item carry `guard_failed`, `demoted_from` and `proposed_company_id`, so the reviewer
+sees which company was proposed and why it was held back. A human verdict links it with full
+enrichment.
+
+### Distinctive-token floor for R5 (ADR 0034)
+
+A candidate becomes a review item only if one of its aliases at or above 85 shares a
+**distinctive** token with the name (`tell.resolve.aliases.shares_distinctive_token`): not
+filler (`GENERIC_ALIAS_TOKENS`) and not a descriptor (`DESCRIPTOR_TOKENS`: `technologies`,
+`therapeutics`, `insurance`, `health`, `bio`, `biosciences`, `robotics`, `energy`, `systems`,
+`solutions`, `software`, `labs`, `studio`, `network`, `data`, `analytics`, `security`,
+`payments`, `finance`, `capital`, `medical`, `diagnostics`, `pharma`, `foods` and close
+variants). Tokens of 4 or more characters one edit apart count as shared, so a one-letter
+typo (`acmee` / `acme`, `beakon health` / `beacon health`) still reaches a human. "Nimbus
+Technologies" against `h3x technologies` (85.71) shares only `technologies` and is R6. The
+floor applies to every source but only removes review items; the auto-link rules and the
+guard demotions are untouched.
 
 ### The superset guard (R3 and R4)
 
@@ -201,6 +291,12 @@ Every decision writes `payload["match"]` on the event:
 }
 ```
 
+A Form D demoted by a guard records `"rule": "R5"` plus `"guard_failed": [...]`,
+`"demoted_from"` and `"proposed_company_id"`; a pooled vehicle records `"rule": "R6"`,
+`"excluded": "pooled_fund"` and `"fund_signals"`. An event changed by `relink-formd` also
+carries `"previous"` (the old record plus the old `company_id`), `"relinked_by":
+"relink_formd"` and `"relink_reasons"`; a later `resolve run --retry` keeps `previous`.
+
 `candidates` is at most five entries, each with the company's best alias, its
 `token_set_ratio` and the guard value `sort_ratio`. A news event keeps its collector-side
 rule under `source_rule`; a pair a human already rejected is marked `"rejected": true` and
@@ -242,13 +338,30 @@ CSV is the default:
    the item `rejected` and the resolver skips the same (name, candidates) pair from then on.
    Errors are reported per row and never stop the import.
 
-`tell resolve close-junk-reviews [--dry-run|--apply]` (ADR 0033) re-runs the matcher on every
-open item with the current rules. An item with no candidate left at or above 85 is closed as
+`tell resolve close-junk-reviews [--dry-run|--apply]` (ADR 0033, 0034) re-runs the matcher on
+every open item with the current rules, including the Form D guards when the item's event is
+a Form D. An item the rules no longer send to review (no candidate left at or above 85, only
+descriptor-sharing candidates, or a pooled-fund issuer; `by_reason` counts them) is closed as
 `rejected`, with `verdict = "reject"` and `resolved_by = "alias_hygiene"`. Its candidates
 stay in the payload as the audit trail, and the rejected-pair memory keeps it from coming
 back. Items that still have a real candidate stay open, even when the new rules would now
 auto-link them; the command never links and never deletes. The report counts closed items
 by the aliases that caused them and by reason (`too_short`, `single_token_superset`, ...).
+
+`tell resolve relink-formd [--dry-run|--apply]` (ADR 0034) re-evaluates every linked Form D
+event under the current rules. The alias index is built without the `edgar` aliases those
+events could have written, unless a human-verified or non-Form D EDGAR link of the same
+company carries the name; a kept trusted link puts its names back and the pass repeats until
+nothing changes, so a renamed company's filings still find each other but a wrong link
+cannot support itself. A link is kept when it is still an auto-link to the same company, or
+when its CIK is the company's and was not written only by failing links. A failing link is
+unlinked (or moved, when it is now an auto-link to another company), its old record goes
+under `payload.match.previous`, an R5 decision opens one review item, and the enrichment it
+wrote is removed: an `edgar` alias equal to an unlinked event's normalized issuer name or
+previous name that no still-linked event of the company carries (never the company's own
+name or domain label), and `legal_name` / `cik` when they are an unlinked event's and no
+still-linked event has them. It prints the counts and every change as `(event_id, company,
+reason)`; a second run changes nothing.
 
 The Streamlit page (`streamlit run tell/resolve/review_app.py`) offers the same three buttons
 over the same functions. It refuses to open unless `TELL_REVIEW_PASSWORD` is set and compares
@@ -345,6 +458,28 @@ multi-token aliases sharing one generic word ("Nimbus Technologies" vs `h3x tech
 The two R2 links that disappeared were "The Apple Company" -> FameGame, made through the
 platform label `apple`. The rest of the R2 links are synthetic names equal to a YC
 company's name, which R2 links by design.
+
+### Re-measured 2026-10-14 after the Form D guards (ADR 0034)
+
+`tests/test_resolve.py` now feeds every name as a Form D issuer: a Delaware corporation of
+unknown age (the gold CSV has no entity type or jurisdiction; guards (b)-(d) are tested on
+production's own links instead), against companies with no YC status or batch. So the gold
+set measures the name rules plus R3 review-only, the fund exclusion and the R5 floor.
+
+| Set | precision | recall | by rule (names) |
+| --- | --- | --- | --- |
+| public sample, names, before | 1.0000 | 1.0000 | R2 57, R3 4, R5 12, R6 22 |
+| public sample, names, after | 1.0000 | 0.9200 | R2 57, R5 16, R6 22 |
+| full private set, names, before | 1.0000 | 0.9733 | R2 371, R3 9, R5 30, R6 160 |
+| full private set, names, after | 1.0000 | 0.9433 | R2 371, R5 39, R6 160 |
+| SEC-verified slice (36 rows), before | 1.0000 | 0.78 (28/36) | |
+| SEC-verified slice (36 rows), after | 1.0000 | 0.75 (27/36) | |
+
+Every lost positive is a former R3 link that is now a review item: mostly the
+near-duplicate pairs (two companies called Rally, Roger, Flint or Method, separated only by
+geography) and `QuikNode, Inc.` -> QuickNode. No decision moved from review to R6 on the gold
+set, and the gates (precision >= 0.97, recall >= 0.85) still pass. Remember the production
+measurement above: gold-set precision is not production precision.
 
 ### Re-measured 2026-10-13: how much of the 300-row recall is real
 

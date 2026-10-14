@@ -51,6 +51,10 @@ def _formd_event(session: Session, event_id: str, name: str, state: str = "WA") 
             "issuer_city": "Seattle",
             "cik": "0000012345",
             "previous_names": [],
+            "date_filed": "2026-10-05",
+            "entity_type": "Corporation",
+            "jurisdiction_of_inc": "DELAWARE",
+            "year_of_inc": 2024,
         },
         run_id="test-run",
     )

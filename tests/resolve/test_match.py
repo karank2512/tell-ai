@@ -83,14 +83,20 @@ def _event(
 
 
 def _formd(name: str, state: str | None = "CA", **extra: Any) -> dict[str, Any]:
+    """A Form D payload of a Delaware corporation incorporated in 2024 (passes guards b-d)."""
     payload: dict[str, Any] = {
         "accession_number": "0000000000-26-000001",
         "cik": "0000012345",
         "form_type": "D",
+        "date_filed": "2026-10-05",
         "issuer_name": name,
         "issuer_city": "San Francisco",
         "issuer_state": state,
         "previous_names": [],
+        "jurisdiction_of_inc": "DELAWARE",
+        "year_of_inc": 2024,
+        "entity_type": "Corporation",
+        "industry_group_type": "Other Technology",
         "amendments": [],
     }
     payload.update(extra)
@@ -523,6 +529,8 @@ def test_resolve_links_form_d_and_enriches_company(
         "no_name": 0,
         "rejected_skipped": 0,
         "aliases_added": 2,
+        "guard_demoted": 0,
+        "pooled_funds": 0,
         "by_rule": {"R2": 1},
     }
     event = db_session.get(EventRow, "ev-acme")
@@ -708,6 +716,7 @@ def test_resolve_news_event_by_query_name(
 def test_resolve_other_edgar_forms_use_company_name(
     db_session: Session, companies: dict[str, Company]
 ) -> None:
+    """Other forms match on ``company_name``; an R4 link writes no enrichment (ADR 0034)."""
     _event(
         db_session,
         "ev-s1",
@@ -716,10 +725,25 @@ def test_resolve_other_edgar_forms_use_company_name(
     )
     stats = resolve_events(db_session, now=NOW)
     assert stats.by_rule == {"R4": 1}
+    assert stats.aliases_added == 0
     beacon = companies["beacon"]
+    event = db_session.get(EventRow, "ev-s1")
+    assert event is not None
+    assert event.company_id == beacon.id
     db_session.refresh(beacon)
-    assert (beacon.cik, beacon.legal_name) == ("0000055555", "Beacon Helth")
-    assert _aliases(db_session, beacon.id)["beacon helth"] == "edgar"
+    assert (beacon.cik, beacon.legal_name) == (None, None)
+    assert "beacon helth" not in _aliases(db_session, beacon.id)
+
+    # an exact name (R2) is trusted and enriches
+    _event(
+        db_session,
+        "ev-s1-exact",
+        {"accession_number": "z", "cik": "0000055555", "company_name": "Beacon Health Inc"},
+        type_="form_s1_filed",
+    )
+    assert resolve_events(db_session, now=NOW).by_rule == {"R2": 1}
+    db_session.refresh(beacon)
+    assert (beacon.cik, beacon.legal_name) == ("0000055555", "Beacon Health Inc")
 
 
 def test_resolve_skips_sources_without_company_names(

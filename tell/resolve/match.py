@@ -41,6 +41,23 @@ Interpretation notes (recorded in ``docs/methods/entity-resolution.md`` and ADR 
   found by exact equality; it never scores against a longer name, so ``token_set_ratio``
   cannot score "Arboretum Apple a Series of CGF2026 LLC" 100 against ``apple``.
   Multi-token aliases are scored as before.
+* Form D guards (ADR 0034, :mod:`tell.resolve.guards`), applied when ``match_name`` gets
+  the issuer's facts (the resolver passes them for ``form_d_filed`` / ``form_d_amendment``
+  events; news, ATS and other EDGAR forms are matched as before): (e) a pooled investment
+  vehicle is no candidate for an operating company and goes straight to R6, with no review
+  item; (a) an R3 link becomes R5 review (``r3_review_only``); (b)-(d) an R2 or R4 link
+  whose issuer is not a Delaware corporation, whose company's YC status is known and not
+  Active, or whose incorporation year does not fit the YC batch becomes R5 review. A
+  demoted decision records ``guard_failed`` (and ``demoted_from``); a guard never demotes
+  to R6.
+* Distinctive-token floor (ADR 0034): an R5 review candidate must share a distinctive
+  token with the name (:func:`tell.resolve.aliases.shares_distinctive_token`; not filler,
+  not a descriptor such as ``technologies`` / ``therapeutics``). A name whose only
+  candidates share a descriptor is R6. Auto-link rules and guard demotions are unaffected.
+* Enrichment (ADR 0034): only a trusted link writes ``edgar`` aliases, ``legal_name`` and
+  ``cik``: R1, R2 (after its guards), or a human review verdict. An R4 link of an EDGAR
+  event links the event and writes nothing else, so a fuzzy link can never mint the exact
+  alias that makes the next filing an R2.
 
 Every decision is written into ``events.payload["match"]`` as
 ``{rule, ratio, candidates[:5], confidence, resolved_at}`` so a wrong link can be audited.
@@ -64,7 +81,20 @@ from sqlalchemy.orm import Session
 from tell.collectors.base import iso_utc
 from tell.db import upsert
 from tell.models import ALIAS_SOURCES, AtsBoard, Company, CompanyAlias, EventRow, ReviewQueueItem
-from tell.resolve.aliases import alias_problem, is_single_token, label_alias_problem
+from tell.resolve.aliases import (
+    alias_problem,
+    is_single_token,
+    label_alias_problem,
+    shares_distinctive_token,
+)
+from tell.resolve.guards import (
+    FORM_D_TYPES,
+    R3_REVIEW_ONLY,
+    CompanyFacts,
+    IssuerFacts,
+    fund_signals,
+    guard_failures,
+)
 from tell.resolve.normalize import domain_label, normalize_name, normalize_name_alt, slug_words
 
 __all__ = [
@@ -76,6 +106,7 @@ __all__ = [
     "REVIEW_KIND",
     "REVIEW_RATIO",
     "RULES",
+    "TRUSTED_RULES",
     "UNIQUE_RATIO",
     "AliasIndex",
     "Candidate",
@@ -84,6 +115,7 @@ __all__ = [
     "add_aliases",
     "backfill_aliases",
     "guard_ratio",
+    "issuer_facts",
     "link_event",
     "match_name",
     "resolve_events",
@@ -98,6 +130,9 @@ Action = Literal["auto_link", "review", "unlinked"]
 
 RULES: tuple[str, ...] = ("R1", "R2", "R3", "R4", "R5", "R6")
 AUTO_LINK_RULES: frozenset[str] = frozenset({"R1", "R2", "R3", "R4"})
+TRUSTED_RULES: frozenset[str] = frozenset({"R1", "R2", "manual"})
+"""Links that write enrichment (``edgar`` aliases, ``legal_name``, ``cik``; ADR 0034): R1,
+R2 after its guards, and a human review verdict (``manual``)."""
 CONFIDENCE: dict[str, float] = {
     "R1": 0.98,
     "R2": 0.95,
@@ -200,6 +235,10 @@ class Candidate:
     alias: str
     ratio: float
     sort_ratio: float = 0.0
+    distinctive: bool = True
+    """Whether one of the company's aliases at or above :data:`REVIEW_RATIO` shares a
+    distinctive token with the name (ADR 0034); only such a candidate makes an R5 item.
+    Not part of the audit record."""
 
     @property
     def guarded(self) -> bool:
@@ -225,16 +264,36 @@ class MatchDecision:
     ratio: float | None
     candidates: list[Candidate]
     action: Action
+    guard_failed: list[str] = field(default_factory=list)
+    """Form D guards the auto-link failed (ADR 0034); the decision is then R5."""
+    demoted_from: str | None = None
+    """The auto-link rule a failed guard demoted (``R2`` / ``R3`` / ``R4``)."""
+    proposed_company_id: int | None = None
+    """The company the demoted auto-link would have linked."""
+    fund_signals: list[str] = field(default_factory=list)
+    """Why a Form D issuer is a pooled investment vehicle (guard e); the decision is then R6."""
 
     def audit(self, *, now: datetime) -> dict[str, Any]:
-        """The ``payload["match"]`` record: ``{rule, ratio, candidates[:5], confidence, resolved_at}``."""
-        return {
+        """The ``payload["match"]`` record: ``{rule, ratio, candidates[:5], confidence, resolved_at}``.
+
+        Plus ``guard_failed`` / ``demoted_from`` / ``proposed_company_id`` for a demoted
+        Form D link and ``excluded = "pooled_fund"`` / ``fund_signals`` for a fund issuer.
+        """
+        record: dict[str, Any] = {
             "rule": self.rule,
             "ratio": self.ratio,
             "candidates": [c.to_dict() for c in self.candidates[:CANDIDATE_LIMIT]],
             "confidence": self.confidence,
             "resolved_at": iso_utc(now),
         }
+        if self.guard_failed:
+            record["guard_failed"] = list(self.guard_failed)
+            record["demoted_from"] = self.demoted_from
+            record["proposed_company_id"] = self.proposed_company_id
+        if self.fund_signals:
+            record["excluded"] = "pooled_fund"
+            record["fund_signals"] = list(self.fund_signals)
+        return record
 
 
 def _geo_key(state: str | None) -> str | None:
@@ -300,6 +359,7 @@ class AliasIndex:
         self,
         entries: Iterable[tuple[str, int]] = (),
         geography: Mapping[int, tuple[str | None, str | None]] | None = None,
+        facts: Mapping[int, CompanyFacts] | None = None,
     ) -> None:
         self._companies: dict[str, set[int]] = {}
         self._aliases: list[str] = []
@@ -315,6 +375,8 @@ class AliasIndex:
         self._by_alt: dict[str, set[str]] = {}
         """alt form -> aliases that fold to it (so :meth:`exact` is a dict lookup)."""
         self._geo: dict[int, tuple[str | None, str | None]] = {}
+        self._facts: dict[int, CompanyFacts] = dict(facts or {})
+        """company -> YC status and batch, for the Form D guards."""
         if geography:
             for company_id, (state, city) in geography.items():
                 self._geo[company_id] = (_geo_key(state), _city_key(city))
@@ -322,28 +384,47 @@ class AliasIndex:
             self.add(alias, company_id)
 
     @classmethod
-    def from_session(cls, session: Session) -> AliasIndex:
-        """Load ``company_aliases`` and ``companies`` (name normalized, ``hq_state``/``hq_city``).
+    def from_session(
+        cls, session: Session, *, skip_edgar: Iterable[tuple[int, str]] = ()
+    ) -> AliasIndex:
+        """Load ``company_aliases`` and ``companies`` (name normalized, ``hq_state``/``hq_city``,
+        ``yc_status``/``yc_batch``).
 
         A stored ``manual`` alias that is the company's bare domain label and fails the
         label rule (``apple`` for a company keyed by ``apple.com``, ``ramp`` from
         ``ramp.com``) is skipped like any failing alias, unless a review verdict wrote it
         (:func:`review_alias_pairs`), so the matcher behaves the same before and after
-        ``tell resolve prune-aliases`` (ADR 0033).
+        ``tell resolve prune-aliases`` (ADR 0033). ``skip_edgar`` names ``(company_id,
+        alias)`` pairs whose ``edgar`` row is left out (``tell resolve relink-formd``
+        re-earns them).
         """
         companies = session.execute(
-            select(Company.id, Company.name, Company.domain, Company.hq_state, Company.hq_city)
+            select(
+                Company.id,
+                Company.name,
+                Company.domain,
+                Company.hq_state,
+                Company.hq_city,
+                Company.yc_status,
+                Company.yc_batch,
+            )
         ).all()
-        index = cls(geography={cid: (state, city) for cid, _, _, state, city in companies})
+        index = cls(
+            geography={row[0]: (row[3], row[4]) for row in companies},
+            facts={row[0]: CompanyFacts(yc_status=row[5], yc_batch=row[6]) for row in companies},
+        )
         owners: dict[int, tuple[str, str]] = {}
-        for cid, name, domain, _, _ in companies:
+        for cid, name, domain, *_ in companies:
             owners[cid] = (name, domain)
             index.add(normalize_name(name), cid)
         human = review_alias_pairs(session)
+        skipped = set(skip_edgar)
         rows = session.execute(
             select(CompanyAlias.alias, CompanyAlias.company_id, CompanyAlias.source)
         )
         for alias, cid, source in rows:
+            if source == "edgar" and (cid, alias) in skipped:
+                continue
             owner = owners.get(cid)
             if (
                 source == "manual"
@@ -382,6 +463,10 @@ class AliasIndex:
 
     def set_geography(self, company_id: int, state: str | None, city: str | None) -> None:
         self._geo[company_id] = (_geo_key(state), _city_key(city))
+
+    def company_facts(self, company_id: int) -> CompanyFacts | None:
+        """The company's YC status and batch, when the index was built with them."""
+        return self._facts.get(company_id)
 
     def _exact_aliases(self, norm: str, alt: str) -> set[str]:
         """Aliases equal to ``norm`` or ``alt``, or whose alt form equals ``alt``."""
@@ -448,18 +533,31 @@ class AliasIndex:
         best_alias: dict[int, tuple[float, float, str]] = {}
         """company -> (ratio, that alias's sort ratio, alias): the alias shown in the audit."""
         best_sort: dict[int, float] = {}
+        distinctive: set[int] = set()
+        names = [form for form in (norm, alt) if form]
         for alias, ratio in scored.items():
             sort_ratio = guard_ratio(norm, alias)
             if alt:
                 sort_ratio = max(sort_ratio, guard_ratio(alt, self._alt_of[alias]))
+            shares = ratio >= REVIEW_RATIO and shares_distinctive_token(
+                names, (alias, self._alt_of[alias])
+            )
             for company_id in self._companies[alias]:
+                if shares:
+                    distinctive.add(company_id)
                 best_sort[company_id] = max(best_sort.get(company_id, 0.0), sort_ratio)
                 current = best_alias.get(company_id)
                 if current is None or _better_alias((ratio, sort_ratio, alias), current):
                     best_alias[company_id] = (ratio, sort_ratio, alias)
         ranked = sorted(
             (
-                Candidate(company_id, alias, round(ratio, 2), round(best_sort[company_id], 2))
+                Candidate(
+                    company_id,
+                    alias,
+                    round(ratio, 2),
+                    round(best_sort[company_id], 2),
+                    company_id in distinctive,
+                )
                 for company_id, (ratio, _, alias) in best_alias.items()
             ),
             key=lambda c: (-c.ratio, -c.sort_ratio, c.company_id),
@@ -536,34 +634,44 @@ def _decision(
     )
 
 
-def match_name(
-    session: Session,
-    name: str,
-    *,
-    state: str | None = None,
-    city: str | None = None,
-    on_domain_company_id: int | None = None,
-    index: AliasIndex | None = None,
+def _demote(decision: MatchDecision, failed: list[str]) -> MatchDecision:
+    """``decision`` as an R5 review item that records the guards it failed (ADR 0034)."""
+    demoted = _decision("R5", None, decision.ratio, decision.candidates)
+    demoted.guard_failed = failed
+    demoted.demoted_from = decision.rule
+    demoted.proposed_company_id = decision.company_id
+    return demoted
+
+
+def _guarded(
+    decision: MatchDecision, issuer: IssuerFacts | None, index: AliasIndex
 ) -> MatchDecision:
-    """Apply R1-R6 to ``name`` and return the first rule that fires.
+    """Apply the Form D guards to an auto-link (no-op without issuer facts)."""
+    if issuer is None or decision.action != "auto_link" or decision.company_id is None:
+        return decision
+    failed = guard_failures(issuer, index.company_facts(decision.company_id))
+    if decision.rule == "R3":
+        failed = [R3_REVIEW_ONLY, *failed]
+    return _demote(decision, failed) if failed else decision
 
-    ``index`` (an :class:`AliasIndex`) avoids reloading the alias table on every call;
-    without one the table is read from ``session``.
-    """
-    idx = index if index is not None else AliasIndex.from_session(session)
-    norm = normalize_name(name)
-    alt = normalize_name_alt(name)
-    candidates = idx.candidates(norm, alt)
+
+def _name_rules(
+    idx: AliasIndex,
+    norm: str,
+    alt: str,
+    candidates: list[Candidate],
+    *,
+    state: str | None,
+    city: str | None,
+    issuer: IssuerFacts | None,
+) -> MatchDecision:
+    """R2-R6 for a name (R1 and the fund exclusion are decided by :func:`match_name`)."""
     best = candidates[0].ratio if candidates else None
-
-    if on_domain_company_id is not None:
-        return _decision("R1", on_domain_company_id, best, candidates)
-
     exact = idx.exact(norm, alt)
     if len(exact) == 1:
         company_id = next(iter(exact))
         ratio = next((c.ratio for c in candidates if c.company_id == company_id), 100.0)
-        return _decision("R2", company_id, ratio, candidates)
+        return _guarded(_decision("R2", company_id, ratio, candidates), issuer, idx)
 
     strong = [c for c in candidates if c.ratio >= REVIEW_RATIO]
 
@@ -576,17 +684,58 @@ def match_name(
         if c.ratio >= GEO_RATIO and idx.geography_matches(c.company_id, state, city)
     ]
     if len({c.company_id for c in geo}) == 1 and geo[0].guarded:
-        return _decision("R3", geo[0].company_id, geo[0].ratio, candidates)
+        return _guarded(_decision("R3", geo[0].company_id, geo[0].ratio, candidates), issuer, idx)
 
     # R4: name only, unique in the whole table (``strong`` holds every company >= 85).
     companies = {c.company_id for c in strong}
     if strong and strong[0].ratio >= UNIQUE_RATIO and len(companies) == 1 and strong[0].guarded:
-        return _decision("R4", strong[0].company_id, strong[0].ratio, candidates)
+        return _guarded(
+            _decision("R4", strong[0].company_id, strong[0].ratio, candidates), issuer, idx
+        )
 
-    if strong:
-        return _decision("R5", None, strong[0].ratio, candidates)
+    # R5 needs a candidate that shares a distinctive token with the name (ADR 0034): a
+    # shared descriptor ("technologies", "therapeutics") is no evidence of identity.
+    reviewable = [c for c in strong if c.distinctive]
+    if reviewable:
+        return _decision("R5", None, reviewable[0].ratio, candidates)
 
     return _decision("R6", None, best, candidates)
+
+
+def match_name(
+    session: Session,
+    name: str,
+    *,
+    state: str | None = None,
+    city: str | None = None,
+    on_domain_company_id: int | None = None,
+    index: AliasIndex | None = None,
+    issuer: IssuerFacts | None = None,
+) -> MatchDecision:
+    """Apply R1-R6 to ``name`` and return the first rule that fires.
+
+    ``index`` (an :class:`AliasIndex`) avoids reloading the alias table on every call;
+    without one the table is read from ``session``. ``issuer`` (a Form D's
+    :class:`~tell.resolve.guards.IssuerFacts`) turns on the Form D guards (ADR 0034): a
+    pooled fund is R6, and an auto-link failing a guard is R5 with ``guard_failed``.
+    """
+    idx = index if index is not None else AliasIndex.from_session(session)
+    norm = normalize_name(name)
+    alt = normalize_name_alt(name)
+    candidates = idx.candidates(norm, alt)
+    best = candidates[0].ratio if candidates else None
+
+    if on_domain_company_id is not None:
+        return _decision("R1", on_domain_company_id, best, candidates)
+
+    if issuer is not None:
+        signals = fund_signals(issuer)
+        if signals:
+            excluded = _decision("R6", None, best, candidates)
+            excluded.fund_signals = signals
+            return excluded
+
+    return _name_rules(idx, norm, alt, candidates, state=state, city=city, issuer=issuer)
 
 
 # --- resolving events ------------------------------------------------------------------------
@@ -603,6 +752,10 @@ class ResolveStats:
     no_name: int = 0
     rejected_skipped: int = 0
     aliases_added: int = 0
+    guard_demoted: int = 0
+    """Form D auto-links a guard sent to review instead (ADR 0034)."""
+    pooled_funds: int = 0
+    """Form D issuers excluded as pooled investment vehicles (R6, no review item)."""
     by_rule: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -614,6 +767,8 @@ class ResolveStats:
             "no_name": self.no_name,
             "rejected_skipped": self.rejected_skipped,
             "aliases_added": self.aliases_added,
+            "guard_demoted": self.guard_demoted,
+            "pooled_funds": self.pooled_funds,
             "by_rule": dict(sorted(self.by_rule.items())),
         }
 
@@ -628,6 +783,23 @@ class _Subject:
     previous_names: tuple[str, ...]
     cik: str | None
     legal_name: str | None
+    facts: IssuerFacts | None = None
+    """The issuer's facts for a Form D event (turns on the guards); ``None`` otherwise."""
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        """The name and every previous name: what a trusted link writes as aliases."""
+        return (self.name, *self.previous_names)
+
+
+def issuer_facts(event: EventRow) -> IssuerFacts | None:
+    """The Form D guards' view of ``event``, or ``None`` for anything but a Form D."""
+    if event.source != "edgar" or event.type not in FORM_D_TYPES:
+        return None
+    name = event.payload.get("issuer_name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    return IssuerFacts.from_payload(name.strip(), event.payload)
 
 
 def _news_name(payload: Mapping[str, Any]) -> str | None:
@@ -677,6 +849,7 @@ def _subject(event: EventRow) -> _Subject | None:
         previous_names=previous,
         cik=cik if isinstance(cik, str) and cik.strip() else None,
         legal_name=name.strip() if event.source == "edgar" else None,
+        facts=issuer_facts(event),
     )
 
 
@@ -712,20 +885,29 @@ def _cik_taken(session: Session, cik: str, company_id: int) -> bool:
 
 
 def link_event(
-    session: Session, event: EventRow, company_id: int, *, index: AliasIndex | None = None
+    session: Session,
+    event: EventRow,
+    company_id: int,
+    *,
+    index: AliasIndex | None = None,
+    trusted: bool = True,
 ) -> int:
-    """Link ``event`` to ``company_id`` with the enrichment every link gets; return aliases added.
+    """Link ``event`` to ``company_id`` with the enrichment a trusted link gets; return aliases added.
 
-    Sets ``event.company_id``; for an EDGAR event fills ``companies.cik`` (when empty and
-    not held by another company) and ``companies.legal_name`` (when empty); adds the
-    event's name and every ``previous_names`` entry as aliases (source ``edgar`` /
-    ``news``, so a later filing under a former name resolves through R2). Used by the
-    resolver's auto-links and by review verdicts alike (spec section 6: "each previous
-    name becomes an alias when a filing is linked"). ``index`` is kept current when given.
+    Sets ``event.company_id``. For a trusted link (``trusted``: R1, R2 after its guards, a
+    review verdict; ADR 0034) of an EDGAR event it also fills ``companies.cik`` (when empty
+    and not held by another company) and ``companies.legal_name`` (when empty) and adds
+    the event's name and every ``previous_names`` entry as ``edgar`` aliases, so a later
+    filing under a former name resolves through R2 (spec section 6: "each previous name
+    becomes an alias when a filing is linked"). An untrusted EDGAR link (R3, R4) writes
+    nothing but ``company_id``. News links add their name as a ``news`` alias as before.
+    ``index`` is kept current when given.
     """
     event.company_id = company_id
     subject = _subject(event)
     if subject is None:
+        return 0
+    if event.source == "edgar" and not trusted:
         return 0
     company = session.get(Company, company_id)
     if company is not None and event.source == "edgar":
@@ -733,7 +915,7 @@ def link_event(
             company.cik = subject.cik
         if company.legal_name is None and subject.legal_name:
             company.legal_name = subject.legal_name
-    names = (subject.name, *subject.previous_names)
+    names = subject.names
     added = add_aliases(session, company_id, names, source=_alias_source(event.source))
     if index is not None:
         for name in names:
@@ -784,23 +966,26 @@ def _open_review_exists(session: Session, event_id: str) -> bool:
 
 def _queue_review(
     session: Session, event: EventRow, subject: _Subject, decision: MatchDecision, now: datetime
-) -> None:
-    """One open ``entity_match`` item per event; a rerun never duplicates it."""
+) -> bool:
+    """One open ``entity_match`` item per event; a rerun never duplicates it.
+
+    A guard-demoted decision adds ``guard_failed`` and ``proposed_company_id`` so the
+    reviewer sees why it was not linked. Returns whether an item was opened.
+    """
     if _open_review_exists(session, event.event_id):
-        return
-    session.add(
-        ReviewQueueItem(
-            kind=REVIEW_KIND,
-            payload={
-                "event_id": event.event_id,
-                "name": subject.name,
-                "state": subject.state,
-                "city": subject.city,
-                "candidates": [c.to_dict() for c in decision.candidates[:CANDIDATE_LIMIT]],
-            },
-            created_at=now,
-        )
-    )
+        return False
+    payload: dict[str, Any] = {
+        "event_id": event.event_id,
+        "name": subject.name,
+        "state": subject.state,
+        "city": subject.city,
+        "candidates": [c.to_dict() for c in decision.candidates[:CANDIDATE_LIMIT]],
+    }
+    if decision.guard_failed:
+        payload["guard_failed"] = list(decision.guard_failed)
+        payload["proposed_company_id"] = decision.proposed_company_id
+    session.add(ReviewQueueItem(kind=REVIEW_KIND, payload=payload, created_at=now))
+    return True
 
 
 def _unresolved_events(session: Session, *, limit: int | None, retry: bool) -> list[EventRow]:
@@ -819,10 +1004,11 @@ def resolve_events(
 ) -> ResolveStats:
     """Match every event with ``company_id NULL`` and record the decision in its payload.
 
-    Form D events are matched on ``issuer_name`` with ``issuer_state`` / ``issuer_city``;
-    other EDGAR events on ``company_name``; news events on the company name in their
-    Google News query. On auto-link the company gets its ``cik`` and ``legal_name`` when
-    those were empty, and the issuer name plus every previous name become aliases. R5
+    Form D events are matched on ``issuer_name`` with ``issuer_state`` / ``issuer_city``
+    and the Form D guards (ADR 0034); other EDGAR events on ``company_name``; news events
+    on the company name in their Google News query. On a trusted auto-link (R1, R2) the
+    company gets its ``cik`` and ``legal_name`` when those were empty, and the issuer name
+    plus every previous name become aliases; an R4 link writes only ``company_id``. R5
     opens one ``review_queue`` item per event (never twice); a pair a human already
     rejected is left unlinked instead. R6 leaves the event unlinked and kept.
 
@@ -840,15 +1026,32 @@ def resolve_events(
             stats.no_name += 1
             continue
         decision = match_name(
-            session, subject.name, state=subject.state, city=subject.city, index=index
+            session,
+            subject.name,
+            state=subject.state,
+            city=subject.city,
+            index=index,
+            issuer=subject.facts,
         )
         audit = decision.audit(now=now)
         previous = event.payload.get("match")
         if isinstance(previous, dict) and previous.get("rule") not in RULES:
             audit["source_rule"] = previous.get("rule")
+        if isinstance(previous, dict) and isinstance(previous.get("previous"), dict):
+            audit["previous"] = previous["previous"]  # a relinked event keeps its audit trail
+        if decision.guard_failed:
+            stats.guard_demoted += 1
+        if decision.fund_signals:
+            stats.pooled_funds += 1
         if decision.action == "auto_link" and decision.company_id is not None:
             stats.auto_linked += 1
-            stats.aliases_added += link_event(session, event, decision.company_id, index=index)
+            stats.aliases_added += link_event(
+                session,
+                event,
+                decision.company_id,
+                index=index,
+                trusted=decision.rule in TRUSTED_RULES,
+            )
         elif decision.action == "review":
             norm = normalize_name(subject.name)
             if _was_rejected(rejected, norm, _review_key(decision)):

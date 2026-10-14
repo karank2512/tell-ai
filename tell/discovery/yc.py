@@ -2,9 +2,9 @@
 
 Source: the community mirror ``https://yc-oss.github.io/api/companies/all.json``, a
 daily JSON export of the public Algolia index behind ``ycombinator.com/companies``
-(launched companies only). Only four fields are read, ``name``, ``website``,
-``batch`` and ``all_locations``; the pydantic model drops everything else on parse,
-so nothing about people (founders, descriptions) is ever held, let alone stored.
+(launched companies only). Only five fields are read, ``name``, ``website``,
+``batch``, ``status`` and ``all_locations``; the pydantic model drops everything else on
+parse, so nothing about people (founders, descriptions) is ever held, let alone stored.
 
 Normalisation:
 
@@ -20,10 +20,14 @@ Normalisation:
 * ``hq_city`` / ``hq_state`` / ``hq_country`` come from the first location when it
   looks like ``City, ST, USA`` (two-letter state); ``hq_country`` is then ``US``.
   Any other shape leaves the three columns ``NULL`` rather than guessing.
+* ``yc_status`` (``Active``, ``Inactive``, ``Acquired``, ``Public``) and ``yc_batch``
+  (``Summer 2021``) are stored as listed (migration 0008); the Form D linking guards read
+  them (ADR 0034).
 
 Writes are ``INSERT ... ON CONFLICT (domain) DO UPDATE`` on ``companies``: ``name``
-takes the YC value, the ``hq_*`` columns keep an existing value when YC has none, and
-the row is touched only when something changes, so a re-seed is a no-op. Within one
+takes the YC value, the ``hq_*`` and ``yc_*`` columns keep an existing value when YC has
+none, and the row is touched only when something changes, so a re-seed is a no-op and a
+changed status or batch counts as ``updated``. Within one
 seed the first record for a domain wins and later ones count as duplicates.
 
 :func:`prune_platform_companies` finds rows seeded before that guard existed
@@ -37,7 +41,7 @@ import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 import httpx
 from pydantic import BaseModel, ConfigDict, TypeAdapter
@@ -85,23 +89,29 @@ _US_COUNTRIES = frozenset({"USA", "United States", "United States of America", "
 
 
 class YcRecord(BaseModel):
-    """The four directory fields tell reads; every other field is dropped on parse."""
+    """The five directory fields tell reads; every other field is dropped on parse."""
 
     model_config = ConfigDict(extra="ignore")
 
     name: str
     website: str | None = None
     batch: str | None = None
+    status: str | None = None
     all_locations: str | None = None
 
 
 class YcCompany(TypedDict):
-    """One normalised directory entry."""
+    """One normalised directory entry.
+
+    ``status`` is optional so callers that build entries by hand (tests, older snapshots)
+    need not supply it; a missing status is stored as ``NULL``.
+    """
 
     name: str
     domain: str
     batch: str | None
     locations: str | None
+    status: NotRequired[str | None]
 
 
 @dataclass(frozen=True)
@@ -164,6 +174,7 @@ def parse_directory(raw: Any) -> tuple[list[YcCompany], int]:
                 domain=domain,
                 batch=_clean(record.batch),
                 locations=_clean(record.all_locations),
+                status=_clean(record.status),
             )
         )
     return companies, skipped
@@ -192,6 +203,8 @@ def _rows(companies: Iterable[YcCompany]) -> tuple[list[dict[str, Any]], int]:
             "hq_city": city,
             "hq_state": state,
             "hq_country": country,
+            "yc_status": company.get("status"),
+            "yc_batch": company["batch"],
         }
     return list(rows.values()), duplicates
 
@@ -204,7 +217,7 @@ def _upsert_chunk(session: Session, chunk: Sequence[dict[str, Any]]) -> tuple[in
     excluded = stmt.excluded
     merged = {
         column: func.coalesce(excluded[column], getattr(Company, column))
-        for column in ("hq_city", "hq_state", "hq_country")
+        for column in ("hq_city", "hq_state", "hq_country", "yc_status", "yc_batch")
     }
     changed = or_(
         Company.name.is_distinct_from(excluded["name"]),

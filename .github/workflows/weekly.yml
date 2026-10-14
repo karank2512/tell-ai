@@ -25,6 +25,8 @@ env:
   SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
   TELL_HTTP_USER_AGENT: "tell/0.1 (+https://github.com/${{ github.repository }})"
   TELL_DATA_REPO: ${{ vars.TELL_DATA_REPO }}
+  # The speed-vs-press alert estimate uses the deployment's ingest cadence (ADR 0029).
+  TELL_RUNS_PER_DAY: ${{ vars.TELL_RUNS_PER_DAY }}
   TELL_REPO_URL: ${{ github.server_url }}/${{ github.repository }}
   TELL_DATA_REPO_URL: ${{ github.server_url }}/${{ vars.TELL_DATA_REPO }}
   TELL_BASE_URL: ${{ vars.TELL_BASE_URL }}

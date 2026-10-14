@@ -28,7 +28,11 @@ Each page defines what a number means, how it is computed and what it cannot tel
 ### Filling the speed-vs-press cohort (13.1)
 
 The 13.1 cohort is every non-amendment Form D of the last 90 days linked to a monitored
-company by R1-R4 or CIK, and its press is the `news_funding` events from 14 days before to
+company by a trusted link: rules R1-R4 with no guard failure recorded in
+`payload.match.guard_failed`, a reviewer's link (`rule = manual`), or the issuer's CIK when
+that CIK was set by such a link. R5 and R6 matches, guard failures and CIK matches vouched for
+only by them are excluded (the 2026-10-14 production audit found 20 of 41 Form D auto-links
+were the wrong company). Its press is the `news_funding` events from 14 days before to
 60 days after each filing. Left to the scheduled jobs, that takes 90 days of daily-index
 collection, and the press of any older filing is never queried (scheduled news runs ask
 Google News for `when:7d` only). Three commands fill it within days of cutover, in order:
@@ -43,9 +47,23 @@ Google News for `when:7d` only). Three commands fill it within days of cutover, 
    budgets and redaction. Idempotent. Details: [docs/sources/news.md](../sources/news.md).
 
 Then `tell backtest speed-vs-press`. While N is under 100 the command prints a one-line hint
-naming these commands on stderr (the report itself says "sample too small"). For backfilled
-filings the daily-index time is unknown, so `alert_at` is the filing date 00:00 UTC plus the
-6-hour cadence and the report counts those estimates. When the newest posted data set ends
+naming these commands on stderr (the report itself says "sample too small").
+
+`alert_at`: EDGAR publishes a day's form index at about 02:02 UTC the next day, so no
+scheduled run sees a filing before filing date + 26 h. `alert_at` is the event's
+`observed_at` only when a scheduled run saw the filing promptly: `payload.backfill` is not
+set and `observed_at` is within 36 h of the filing date 00:00 UTC (26 h + the 6-hour cadence
++ 4 h for one late run; 54 h at the daily cadence). Filings from the quarterly data sets,
+from a catch-up run days later, or with `observed_at` before the filing date are estimated
+at filing date + 1 day 02:00 UTC + the cadence (32 h at 6 h). The cadence is a parameter of
+`build_report` / `compute` (`cadence_hours`, default 6; 24 when `TELL_RUNS_PER_DAY` is not 4,
+see `ingest_cadence_hours`). The report counts observed and estimated values, adds the median
+over observed filings only, and labels the alert median "estimated" with a notice when more
+than half are estimates, which is the case for a cohort filled by the backfill.
+
+Caveat: the SPEC window (14 days before to 60 days after the filing) misses same-round press
+published more than 14 days before the filing; such a round counts as no press, or as filing
+first, so the filing-first shares lean high. When the newest posted data set ends
 before the 90-day window, date the report at that quarter's end (`--as-of`) and widen the
 news windows to match (`--cohort-days`, `--when-days`; see the news page).
 

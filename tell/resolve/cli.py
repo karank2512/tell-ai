@@ -11,10 +11,15 @@ Commands:
 * ``stats``: counts of linked / unlinked events by rule and open review items.
 * ``prune-aliases [--dry-run | --apply]``: delete ``manual`` aliases failing the alias rule
   (ADR 0033); never ``edgar`` / ``news`` / ``ats_board`` rows or aliases a review wrote.
-* ``close-junk-reviews [--dry-run | --apply]``: close open ``entity_match`` items left with
-  no candidate under the alias rule as ``rejected`` (``resolved_by = alias_hygiene``).
+* ``close-junk-reviews [--dry-run | --apply]``: close open ``entity_match`` items the
+  current rules no longer send to review (no candidate under the alias rule, only a
+  shared descriptor word, or a pooled-fund issuer; ADR 0033 / 0034) as ``rejected``
+  (``resolved_by = alias_hygiene``).
+* ``relink-formd [--dry-run | --apply]``: re-evaluate every linked Form D event under the
+  Form D guards (ADR 0034); unlink the links that fail, open review items, and remove the
+  aliases, legal names and CIKs those links wrote. Prints the changes.
 
-The two maintenance commands are dry runs unless ``--apply`` is given.
+The three maintenance commands are dry runs unless ``--apply`` is given.
 
 Each command commits on success and prints one JSON object on stdout.
 """
@@ -33,6 +38,7 @@ from tell.db import session_scope
 from tell.models import EventRow, ReviewQueueItem
 from tell.resolve.hygiene import close_junk_reviews, prune_aliases
 from tell.resolve.match import REVIEW_KIND, backfill_aliases, resolve_events
+from tell.resolve.relink import relink_formd
 from tell.resolve.review import export_review_csv, import_review_csv
 
 app = typer.Typer(
@@ -144,3 +150,10 @@ def close_junk_reviews_command(dry_run: Annotated[bool, _DRY_RUN] = True) -> Non
     """Close open entity_match items with no candidate left under the alias rule; dry run by default."""
     with session_scope() as session:
         _echo(close_junk_reviews(session, now=utcnow(), apply=not dry_run))
+
+
+@app.command("relink-formd")
+def relink_formd_command(dry_run: Annotated[bool, _DRY_RUN] = True) -> None:
+    """Re-earn every Form D link under the ADR 0034 guards and undo what failing links wrote; dry run by default."""
+    with session_scope() as session:
+        _echo(relink_formd(session, now=utcnow(), apply=not dry_run))

@@ -2,6 +2,8 @@
 
 * :mod:`tell.resolve.normalize` is the five-step name normalization.
 * :mod:`tell.resolve.match` applies rules R1-R6 and resolves unlinked events.
+* :mod:`tell.resolve.guards` holds the Form D linking guards (ADR 0034).
+* :mod:`tell.resolve.relink` repairs Form D links made before them (``relink-formd``).
 * :mod:`tell.resolve.review` is the review-queue workflow (CSV round trip, verdicts).
 * :mod:`tell.resolve.review_app` is the optional Streamlit page over ``review``.
 * :mod:`tell.resolve.cli` is the ``tell resolve`` typer sub-app.

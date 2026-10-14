@@ -28,6 +28,7 @@ the success rate it reports.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from datetime import date, datetime
 from pathlib import Path
@@ -84,6 +85,12 @@ BudgetOption = Annotated[
 ]
 
 
+def _speed_vs_press_report(session: Session, now: datetime) -> Report:
+    """13.1 at the ingest cadence the deployment runs (``TELL_RUNS_PER_DAY``; ADR 0029)."""
+    cadence = speed_vs_press.ingest_cadence_hours(os.environ.get("TELL_RUNS_PER_DAY"))
+    return speed_vs_press.build_report(session, now, cadence_hours=cadence)
+
+
 def _echo(record: dict[str, Any]) -> None:
     typer.echo(json.dumps(record, sort_keys=True, default=str))
 
@@ -128,7 +135,7 @@ def run_public(
 ) -> None:
     """Write every public report at ``now`` into ``out``."""
     builders: dict[str, Callable[[Session, datetime], Report]] = {
-        "speed-vs-press": speed_vs_press.build_report,
+        "speed-vs-press": _speed_vs_press_report,
         "velocity-lead": _velocity_builder(formd, refresh, cache, budget),
         "noise": noise.build_report,
         "ops": ops.build_report,
@@ -180,7 +187,7 @@ def speed_vs_press_command(
     del refresh  # reads only events; the news collector runs separately
     now = _now(as_of)
     with session_scope() as session:
-        report = speed_vs_press.build_report(session, now)
+        report = _speed_vs_press_report(session, now)
     _echo(write_report(report, out).to_dict())
     if report.n < speed_vs_press.MIN_COHORT:
         typer.echo(speed_vs_press.small_cohort_hint(report.n), err=True)

@@ -57,7 +57,13 @@ def _seed(engine: Engine) -> None:
                     observed_at=NOW,
                     magnitude=Decimal(1),
                     url=f"https://example.test/{event_id}",
-                    payload={"issuer_name": name, "issuer_state": "WA", "previous_names": []},
+                    payload={
+                        "issuer_name": name,
+                        "issuer_state": "WA",
+                        "previous_names": [],
+                        "entity_type": "Corporation",
+                        "jurisdiction_of_inc": "DELAWARE",
+                    },
                     run_id="r",
                 )
             )
@@ -80,6 +86,7 @@ def test_help_lists_commands() -> None:
         "stats",
         "prune-aliases",
         "close-junk-reviews",
+        "relink-formd",
     ):
         assert command in result.output
 
@@ -180,3 +187,74 @@ def test_hygiene_commands_are_dry_runs_unless_applied(bound: Engine) -> None:
 
     result = runner.invoke(cli.app, ["stats"])
     assert _json(result.output)["review"] == {"rejected": 1}
+
+
+def test_relink_formd_is_a_dry_run_unless_applied(bound: Engine) -> None:
+    """ADR 0034: a wrong R3 link (and what it wrote) is undone only with --apply."""
+    with SessionLocal(bind=bound) as session:
+        company = Company(
+            domain="ncompass.tech",
+            name="nCompass Technologies",
+            hq_state="NY",
+            legal_name="Compass, Inc.",
+            cik="0001563190",
+            yc_status="Active",
+            yc_batch="Winter 2024",
+        )
+        session.add(company)
+        session.flush()
+        session.add(CompanyAlias(company_id=company.id, alias="ncompass", source="manual"))
+        session.add(CompanyAlias(company_id=company.id, alias="compass", source="edgar"))
+        session.add(
+            EventRow(
+                event_id="ev-compass",
+                company_id=company.id,
+                source="edgar",
+                type="form_d_filed",
+                occurred_at=NOW,
+                observed_at=NOW,
+                magnitude=Decimal(1),
+                url="https://example.test/ev-compass",
+                payload={
+                    "issuer_name": "Compass, Inc.",
+                    "issuer_state": "NY",
+                    "cik": "0001563190",
+                    "date_filed": "2026-07-17",
+                    "previous_names": [],
+                    "entity_type": "Corporation",
+                    "jurisdiction_of_inc": "DELAWARE",
+                    "year_of_inc": None,
+                    "industry_group_type": "Residential",
+                    "match": {"rule": "R3", "ratio": 93.33, "candidates": []},
+                },
+                run_id="r",
+            )
+        )
+        session.commit()
+
+    for args in (["relink-formd"], ["relink-formd", "--dry-run"]):
+        result = runner.invoke(cli.app, args)
+        assert result.exit_code == 0, result.output
+        report = _json(result.output)
+        assert (report["dry_run"], report["unlinked"]) == (True, 1)
+    applied = runner.invoke(cli.app, ["relink-formd", "--apply"])
+    assert applied.exit_code == 0, applied.output
+    report = _json(applied.output)
+    assert report["changes"] == [
+        {
+            "event_id": "ev-compass",
+            "company_id": report["changes"][0]["company_id"],
+            "company": "nCompass Technologies",
+            "old_rule": "R3",
+            "new_rule": "R5",
+            "new_company_id": None,
+            "reason": ["r3_review_only", "over_five_years_for_recent_batch"],
+        }
+    ]
+    assert (report["aliases_deleted"], report["legal_names_reset"], report["ciks_reset"]) == (
+        1,
+        1,
+        1,
+    )
+    again = _json(runner.invoke(cli.app, ["relink-formd", "--apply"]).output)
+    assert (again["scanned"], again["changes"]) == (0, [])
