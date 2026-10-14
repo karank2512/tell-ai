@@ -30,7 +30,7 @@ slug is URL-quoted when building the request.
 | `title` | `postings.title` (leading/trailing whitespace stripped; real boards carry it) |
 | `department` | `postings.department` |
 | `location` | `postings.location` (primary location) |
-| `workplaceType`, `isRemote` | `postings.remote`: `Remote` -> true, `OnSite`/`Hybrid` -> false; `isRemote` only when `workplaceType` is null (Ashby sets `isRemote: true` on hybrid roles with a remote secondary location) |
+| `workplaceType`, `isRemote` | `postings.remote`: `Remote` -> true, `OnSite`/`Hybrid` -> false; `isRemote` only when `workplaceType` is null (Ashby sets `isRemote: true` on hybrid roles with a remote secondary location); when both are null, true if `location` contains the word "remote", else `NULL` (unknown) |
 | `publishedAt` | `postings.posted_at` and the version marker (rendered with `iso_utc`) |
 | `isListed` | `false` -> posting skipped entirely |
 | `jobUrl` | `postings.url` and `events.url` |
@@ -44,8 +44,35 @@ Strings in `extra` are clipped to 500 characters. No field of this API names a p
 The pydantic contract (`AshbyJobBoard`) requires `apiVersion`, `jobs`, and per job
 `id`, `title`, `department`, `team`, `employmentType`, `location`,
 `secondaryLocations`, `isRemote`, `workplaceType`, `publishedAt`, `isListed`, `jobUrl`,
-`applyUrl`, `descriptionPlain` (the nullable ones may be `null` but must be present).
-`compensation` is optional because it only appears with `includeCompensation=true`.
+`applyUrl`, `descriptionPlain` (the nullable ones, `department`, `team`,
+`employmentType`, `isRemote`, `workplaceType`, `descriptionPlain`, may be `null` but must
+be present). `compensation` is optional because it only appears with
+`includeCompensation=true`.
+
+## Gotchas (observed 2026-10-14)
+
+One poll of every active board in the 2026-10-13 snapshot (101 boards, 1,251 jobs):
+
+| Field | Null / missing / wrong type | Handling |
+| --- | --- | --- |
+| `isRemote` | `null` on 121 jobs (35 boards), always together with `workplaceType: null` | `remote` from the word "remote" in `location` (11 of the 121), else `NULL`; `extra.isRemote` is `null`. Before this fix the strict `bool` failed the whole board, so these 35 boards were never polled |
+| `workplaceType` | `null` on the same 121 jobs | already allowed |
+| `address` | `null` on 52 jobs (16 boards) | already allowed, never kept |
+
+Every other field the contract reads was present and typed as declared on every job.
+
+One bad job never fails a board. `fetch_board` validates the envelope (`apiVersion`,
+`jobs`) strictly, then each job on its own (`validate_board`): a job that breaks
+`AshbyJob` is skipped, logged at WARNING with the board name, the job id and the field
+path (e.g. `publishedAt (missing)`), and counted in the board's `BoardRunResult.errors`;
+the rest of the board is ingested. Only when every job of a non-empty board fails does
+the board fail with the strict board-level error, so a provider-wide rename stays loud and
+never closes every posting. `tell ingest` adds the skipped jobs to `runs.errors` and names the board in
+`notes.invalid_jobs` (`{board: count}`). A skipped job is still listed, so its id is
+passed to `sync_board_postings` and its posting is never closed while it fails (its
+`last_seen_at` is refreshed; a skipped record without a usable id suppresses every
+close on that board for that poll). `parse()` on raw JSON and the generic
+contract test still use the strict model.
 
 ## Rate limit and politeness
 
@@ -90,6 +117,7 @@ All through `base.sync_board_postings`:
 | `empty_board.json` | `{"apiVersion": "1", "jobs": []}` | Hand-made from the recorded envelope. |
 | `drift.json` | `normal` without `jobs[1].publishedAt` | Derived; contract test expects `publishedAt` in the error. |
 | `updated.json` | `normal` with `jobs[2].publishedAt` bumped to `2026-09-30T09:12:44.118+00:00` | Derived; yields exactly one `job_updated`. |
+| `normal_nulls.json` | 3 jobs: OnSite; `isRemote`/`workplaceType`/`address` null with location `remote`; `isRemote`/`workplaceType` null with location `Berlin` | Live-recorded 2026-10-14 from the public `uplane` board (16 jobs), trimmed to 3; `descriptionPlain`/`descriptionHtml` cut to the heading and first sentence and checked for names; everything else verbatim. |
 
 Observed quirks kept in the fixture: a title with a leading space, `isRemote: true`
 on Hybrid roles, and `summaryComponents` entries that omit `currencyCode` (parsed as null).

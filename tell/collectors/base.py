@@ -103,7 +103,7 @@ import os
 import pkgutil
 import re
 import secrets
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -162,6 +162,7 @@ __all__ = [
     "from_epoch_ms",
     "is_manual_run",
     "iso_utc",
+    "listed_id",
     "new_run_id",
     "parse_iso",
     "r1_match",
@@ -880,7 +881,12 @@ def _repost_original(
 
 
 def _reconcile_postings(
-    session: Session, board: AtsBoard, seen: Mapping[str, ObservedPosting], now: datetime
+    session: Session,
+    board: AtsBoard,
+    seen: Mapping[str, ObservedPosting],
+    now: datetime,
+    *,
+    held: Collection[str] = frozenset(),
 ) -> _Reconciled:
     """Upsert ``postings`` for one poll and classify what happened.
 
@@ -896,7 +902,8 @@ def _reconcile_postings(
       i.e. the descriptions the tech-keyword scan has not seen yet.
 
     Repost candidates are the postings already on the board that this poll does not
-    list (see :func:`_repost_original`).
+    list (see :func:`_repost_original`); ``held`` postings (listed, but skipped as
+    invalid) are listed, so they are never candidates.
     """
     existing: dict[str, Posting] = {
         posting.external_id: posting
@@ -918,7 +925,8 @@ def _reconcile_postings(
                 url=obs.url,
             )
             _apply_observation(posting, obs, now)
-            original = _repost_original(existing.values(), seen, posting, now)
+            candidates = [p for p in existing.values() if p.external_id not in held]
+            original = _repost_original(candidates, seen, posting, now)
             session.add(posting)
             existing[external_id] = posting
             if original is None:
@@ -1063,8 +1071,12 @@ def _closed_events(
     previous_poll: datetime | None,
     run_id: str,
     now: datetime,
+    held: Collection[str] = frozenset(),
 ) -> list[Event]:
     """Close postings absent now and at the previous poll, when the polls are >= 12h apart.
+
+    ``held`` postings were listed by the provider but skipped as invalid: they are
+    present, so they are never closed.
 
     No observation is at hand for a closed posting (the provider's employment type is
     not stored), so ``is_intern`` is copied from the posting's own ``job_opened`` /
@@ -1077,6 +1089,7 @@ def _closed_events(
         posting
         for external_id, posting in existing.items()
         if external_id not in seen
+        and external_id not in held
         and posting.closed_at is None
         and posting.last_seen_at < previous_poll  # absent at the previous poll too
     ]
@@ -1226,6 +1239,7 @@ def sync_board_postings(
     *,
     run_id: str,
     now: datetime,
+    invalid: Sequence[str | None] = (),
 ) -> list[Event]:
     """Reconcile one poll of ``board`` against ``postings`` and return the events to write.
 
@@ -1255,6 +1269,15 @@ def sync_board_postings(
       Only polls that answered 200 reach this function (a 404 goes to
       :func:`record_board_not_found`, which leaves ``last_polled_at`` alone), so the
       previous poll time is always a real observation of the board.
+    * ``invalid`` has one entry per job the provider listed but the collector skipped
+      because it failed validation: the job's provider id (the ``external_id`` it would
+      have had), or ``None`` when the raw record had no usable id. A listed id is
+      present, not absent: its posting is never closed, is not a repost candidate,
+      and gets ``last_seen_at = now`` (nothing else about it changes and no
+      observation row is written, since there is no valid record). A ``None`` entry
+      means some listed posting cannot be told apart from a vanished one, so no
+      posting is closed in this poll. Absence is evidence of a close only when every
+      listed job was understood; a validation drift must never close postings.
 
     The caller writes the returned events with :func:`write_events` in the same
     transaction. Only the tech-keyword check reads ``events`` back; an unchanged rerun
@@ -1268,8 +1291,9 @@ def sync_board_postings(
     for obs in observed:
         seen.setdefault(obs.external_id, obs)
 
+    held = frozenset(i for i in invalid if i is not None) - seen.keys()
     first_poll = previous_poll is None
-    done = _reconcile_postings(session, board, seen, now)
+    done = _reconcile_postings(session, board, seen, now, held=held)
     existing = done.existing
     _record_observations(
         session, [existing[external_id] for external_id in seen], run_id=run_id, now=now
@@ -1279,9 +1303,22 @@ def sync_board_postings(
     events = _opened_events(board, done.opened, run_id=run_id, now=now, first_poll=first_poll)
     events += _reposted_events(board, done.reposted, run_id=run_id, now=now)
     events += _updated_events(board, done.changed, names, run_id=run_id, now=now)
-    events += _closed_events(
-        session, board, existing, seen, names, previous_poll=previous_poll, run_id=run_id, now=now
-    )
+    if None not in invalid:
+        events += _closed_events(
+            session,
+            board,
+            existing,
+            seen,
+            names,
+            previous_poll=previous_poll,
+            run_id=run_id,
+            now=now,
+            held=held,
+        )
+    for external_id in held:
+        held_posting = existing.get(external_id)
+        if held_posting is not None:
+            held_posting.last_seen_at = now
     events += _tech_events(
         session, board, done.worded, run_id=run_id, now=now, first_poll=first_poll
     )
@@ -1389,12 +1426,38 @@ def record_board_ok(session: Session, board: AtsBoard, *, now: datetime) -> None
 
 @dataclass(frozen=True)
 class RunResult:
-    """What ``CollectorSpec.run_fixture`` returns after replaying one fixture."""
+    """What ``CollectorSpec.run_fixture`` (and an ATS ``ingest_board``) returns.
+
+    ``errors`` counts provider records skipped because they failed validation (an
+    ATS job that breaks its model); ``fetched`` includes them. ``tell ingest`` adds
+    them to ``runs.errors`` and names the boards in ``notes.invalid_jobs``.
+    """
 
     fetched: int
     inserted: int
     skipped: int
     events: list[Event] = field(default_factory=list)
+    errors: int = 0
+
+
+def listed_id(item: object, key: str = "id") -> str | None:
+    """The provider id of a raw job record that failed validation, or ``None``.
+
+    Collectors pass these to :func:`sync_board_postings` as ``invalid`` so a listed
+    but unparseable job is never mistaken for a vanished one. A non-empty string is
+    returned as is and an integer as its decimal string (the ``external_id`` each
+    collector derives from a valid record); anything else is unusable.
+    """
+    if not isinstance(item, Mapping):
+        return None
+    value = item.get(key)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str) and value:
+        return value
+    return None
 
 
 class RunFixture(Protocol):

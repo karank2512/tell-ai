@@ -273,11 +273,16 @@ def test_ingest_discovery_job_feeds_ats() -> None:
     jobs = _load("ingest.yml")["jobs"]
     discover = jobs["discover"]
     assert discover["timeout-minutes"] == 30
-    batch = next(
-        str(s["run"]) for s in discover["steps"] if "tell discover batch" in str(s.get("run"))
-    )
-    assert "--limit 120" in batch  # fits the 30-minute timeout at about 6 s a domain
+    step = next(s for s in discover["steps"] if "tell discover batch" in str(s.get("run")))
+    batch = str(step["run"])
+    # 250 domains at the measured 4.74 s a domain (6 workers, one 4 rps budget, deeper scan
+    # included; 4.47 s before it) is about 20 minutes: inside the 22-minute wall-clock
+    # budget, which is inside the timeout.
+    assert "--limit 250" in batch
     assert "--rps 4" in batch
+    assert step["env"]["TELL_DISCOVERY_MAX_MINUTES"] == "22"
+    assert float(step["env"]["TELL_DISCOVERY_MAX_MINUTES"]) < discover["timeout-minutes"]
+    assert float(step["env"]["TELL_DISCOVERY_MAX_MINUTES"]) > 250 * 4.74 / 60
     assert jobs["ats"]["needs"] == ["preflight", "discover"]
     # A failed discovery pass never blocks polling.
     assert "cancelled()" in jobs["ats"]["if"]
@@ -285,7 +290,9 @@ def test_ingest_discovery_job_feeds_ats() -> None:
 
 def test_ingest_filings_edgar_then_news() -> None:
     filings = _load("ingest.yml")["jobs"]["filings"]
-    assert filings["timeout-minutes"] == 30
+    # EDGAR + news took 29.9 of 30 minutes on the second production run; news keeps its
+    # own 25-minute run budget inside the 45.
+    assert filings["timeout-minutes"] == 45
     steps = filings["steps"]
     assert _index(steps, "tell ingest --source edgar") < _index(steps, "tell ingest --source news")
 

@@ -22,7 +22,7 @@ Both are public and need no key. Requests go through `tell.http.fetch` with the 
 | `content[].id` | `postings.external_id` |
 | `name` | `title` (whitespace-trimmed) |
 | `releasedDate` | `posted_at`, and the version marker (`iso_utc` of the parsed value) |
-| `location.fullLocation`, else `location.city`, `region`, `country` | `location` |
+| `location.fullLocation` (empty comma-separated parts dropped), else `location.city`, `region`, `country` | `location` |
 | `location.remote` | `remote`; when the flag is absent, `true` if "remote" appears in the location text or title, else unknown (`null`) |
 | `department.label`, else `function.label` | `department` (many companies send an empty `department` object) |
 | `jobAd.sections.jobDescription.text` (detail call) | HTML stripped to plain text, hashed into `content_hash`, then discarded |
@@ -31,6 +31,8 @@ Both are public and need no key. Requests go through `tell.http.fetch` with the 
 **Public URL.** The list response has no public posting URL. The collector builds `https://jobs.smartrecruiters.com/{companyIdentifier}/{id}`, which resolves to the slugged page, using the item's `company.identifier` or, when that is missing, the board identifier. It uses a `postingUrl` only if a list item carries one. The detail call's slugged `postingUrl` is deliberately ignored, so a posting's URL does not depend on whether its detail was fetched.
 
 **Required by the contract model** (`SmartRecruitersPostingList`): top-level `offset`, `limit`, `totalFound`, `content`; per item `id`, `name`, `releasedDate`, `location` (with `country`) and `ref`. `department`, `function` and the rest are optional because real boards omit them or send them empty.
+
+**Gotchas (observed 2026-10-14).** One poll of every active board in the 2026-10-13 snapshot (10 boards, 30 postings, plus 19 detail calls) found no item breaking the contract. Absent in practice, and already optional in the model: `location.region` on 4 postings (2 boards), whose `fullLocation` then reads `"Jakarta, , Indonesia"` (stored as `Jakarta, Indonesia`), and `postingUrl` on all 30 list items (the URL is built as above). One bad item never fails a board: each list page goes through `validate_page`, which checks `offset`, `limit`, `totalFound` and `content` strictly and then each item on its own; an item that breaks `SmartRecruitersPosting` is skipped, logged at WARNING with the board, the posting id and the field path (e.g. `releasedDate (missing)`), and counted in the board's `BoardRunResult.errors`. Only when every item of a non-empty page fails does the board fail with the strict error, so a provider-wide rename stays loud. A skipped item gets no detail call. `tell ingest` adds skipped items to `runs.errors` and names the board in `notes.invalid_jobs` (`{board: count}`). A skipped item is still listed, so its id is passed to `sync_board_postings` and its posting is never closed while it fails (its `last_seen_at` is refreshed; an item without a usable id suppresses every close on that board for that poll). `parse()` on raw JSON and the generic contract test still use the strict model.
 
 **Never kept:** `creator` (a recruiter's name; the models drop unknown nested keys and the fixtures have it removed), street `address`, `postalCode`, coordinates, and any description text.
 
@@ -70,6 +72,7 @@ All events come from `base.sync_board_postings`:
 | `drift.json` | `normal` with `releasedDate` removed from the first item | Derived from `normal.json` (`drift_missing_field = "releasedDate"`) |
 | `empty_board.json` | `{"offset":0,"limit":100,"totalFound":0,"content":[]}` | Live-recorded 2026-10-05 from company `smartrecruiters` |
 | `paged_1.json`, `paged_2.json` | Pages at offset 0 and 100 with `totalFound: 150`, trimmed to 3 and 2 items | Items live-recorded from `BoschGroup` (same request), `offset`/`limit`/`totalFound` rewritten to describe a 150-posting board |
+| `normal_nulls.json` | List page, 3 postings with no `location.region`, `totalFound: 3` | Live-recorded 2026-10-14 from `bukuwarung` (one request, the whole 3-posting board); street `address` removed |
 | `detail.json` | Detail for posting `744000153523769` | Live-recorded 2026-10-05 (one request). Description sections cut to a short excerpt; `creator`, `referralUrl`, `videos`, street address and coordinates removed |
 
 All fixtures went through the same trimming: `creator` removed, `location` reduced to `city`/`region`/`country`/`remote`/`hybrid`/`fullLocation`, and `customField` cut to two entries. No file contains a person's name, an email address or a phone number.

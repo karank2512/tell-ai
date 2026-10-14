@@ -28,7 +28,7 @@ URL is built.
 | --- | --- |
 | `id` | `postings.external_id` (as a string) |
 | `title` | `title` (whitespace collapsed) |
-| `location.name` | `location` (whitespace collapsed; blank becomes `NULL`) |
+| `location.name` | `location` (whitespace collapsed; blank or `null` becomes `NULL`) |
 | `absolute_url` | `url` |
 | `first_published` | `posted_at` (ISO 8601 with offset; may be `null`) |
 | `updated_at` | version marker: `ObservedPosting.version = iso_utc(updated_at)` |
@@ -42,9 +42,33 @@ are `false`; with no usable Workplace Type, a location containing the word "remo
 (`US-Remote`, `Remote in the US`) is `true`; otherwise `NULL` (unknown).
 
 Every field above is required by the pydantic contract (`GreenhouseJobsResponse`);
-`first_published` and `metadata` must be present but may be `null` (Stripe sends
-`metadata: null` on every job). Unknown fields are allowed and ignored. The drift case
-removes `updated_at`.
+`first_published`, `metadata` and `location.name` must be present but may be `null`
+(Stripe sends `metadata: null` on every job). Unknown fields are allowed and ignored. The
+drift case removes `updated_at`.
+
+## Gotchas (observed 2026-10-14)
+
+One poll of every active board in the 2026-10-13 snapshot (36 boards, 1,918 jobs):
+
+| Field | Null / missing / wrong type | Handling |
+| --- | --- | --- |
+| `location.name` | `null` on 1 job (1 board, `podium81`); the job still lists an office | `location` stored as `NULL`, `remote` unknown unless Workplace Type says otherwise. Before this fix the strict `str` failed the whole board (1 of 36 boards never polled) |
+| `metadata` | `null` on 1,061 jobs (26 boards) | already allowed |
+
+Every other field the contract reads was present and typed as declared on every job.
+
+One bad job never fails a board. `fetch_board` validates the envelope (`jobs`,
+`meta.total`) strictly, then each job on its own (`validate_board`): a job that breaks
+`GreenhouseJob` is skipped, logged at WARNING with the board token, the job id and the
+field path (e.g. `location.name (string_type)`), and counted in the board's
+`BoardRunResult.errors`; the rest of the board is ingested. Only when every job of a
+non-empty board fails does the board fail with the strict board-level error, so a
+provider-wide rename stays loud and never closes every posting. `tell ingest` adds the skipped jobs to `runs.errors` and names the board in
+`notes.invalid_jobs` (`{board: count}`). A skipped job is still listed, so its id is
+passed to `sync_board_postings` and its posting is never closed while it fails (its
+`last_seen_at` is refreshed; a skipped record without a usable id suppresses every
+close on that board for that poll).
+`parse()` on raw JSON and the generic contract test still use the strict model.
 
 ## Rate limit and politeness
 
@@ -96,6 +120,7 @@ collector contract in `tell/collectors/base.py` globs `normal*.json`.
 | `updated.json` | `normal.json` with job 8197886's `updated_at` bumped to `2026-10-02T11:05:12-04:00` |
 | `board_meta.json` | Board `stripe`, `GET /v1/boards/stripe`, verbatim |
 | `not_found.json` | Body of the 404 for a token that does not exist, verbatim |
+| `normal_nulls.json` | Board `podium81`, `/jobs?content=true`, recorded 2026-10-14, 3 of 58 jobs: `location.name: null` (8063639), `Remote, US` (8243091) and `Lehi, Utah` (5670478); `content` cut to the first intro paragraph, `meta.total` rewritten to 3 |
 
 Other boards probed while looking for a Workplace Type example (`gitlab`, `figma`,
 `cloudflare`, `dropbox`, list without content) carry no such entry; nothing from them is

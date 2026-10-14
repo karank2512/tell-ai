@@ -76,6 +76,22 @@ class Settings(BaseSettings):
     tell_discovery_rps: float = Field(
         default=4.0, gt=0, description="Requests per second during ATS discovery."
     )
+    tell_discovery_concurrency: int = Field(
+        default=6,
+        ge=1,
+        description=(
+            "Domains discovered at once; every request still draws from the one shared "
+            "TELL_DISCOVERY_RPS budget, so this overlaps waiting, not the request rate."
+        ),
+    )
+    tell_discovery_max_minutes: float = Field(
+        default=22.0,
+        gt=0,
+        description=(
+            "Wall-clock budget of one discovery run: no new domain starts after it, "
+            "in-flight ones finish and the rest are deferred to the next run."
+        ),
+    )
     tell_http_timeout_s: float = Field(
         default=20.0, gt=0, description="Timeout in seconds for every outbound HTTP request."
     )

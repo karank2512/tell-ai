@@ -16,13 +16,23 @@ Mapping (spec section 3.3 "Fields used"):
   marker (idempotency key ``ashby:{name}:{id}:{publishedAt}``).
 * ``remote``: ``workplaceType`` decides (``Remote`` -> true, ``OnSite``/``Hybrid`` ->
   false); ``isRemote`` is only the fallback when ``workplaceType`` is null, because
-  Ashby sets ``isRemote`` on hybrid roles that list a remote secondary location.
+  Ashby sets ``isRemote`` on hybrid roles that list a remote secondary location. When
+  both are null (121 of 1,251 jobs on 35 of 101 boards, 2026-10-14), the word "remote"
+  in ``location`` means true, otherwise the flag is unknown (``None``).
 * ``descriptionPlain`` is hashed into ``content_hash`` and discarded.
 * ``extra`` keeps ``team``, ``employmentType``, ``workplaceType``, ``isRemote``,
   ``secondaryLocations`` (location names only), ``applyUrl`` and a compensation
   summary (``compensationTierSummary``, ``scrapeableCompensationSalarySummary``,
   ``summaryComponents``) only when the employer displays compensation on the posting.
 * Postings with ``isListed: false`` are skipped.
+
+One bad job never fails a board: :func:`validate_board` (the poll path) checks the
+envelope, then each job on its own; a job that breaks :class:`AshbyJob` is skipped,
+logged at WARNING with the board and the field path, and counted in
+:attr:`AshbyJobBoard.invalid_jobs` and ``BoardRunResult.errors``, which ``tell ingest``
+adds to ``runs.errors``. Its id is passed to ``sync_board_postings`` so a listed but
+invalid job is never closed. Only when every job of a non-empty board fails does the board fail, with the strict board-level error
+(provider-wide drift must stay loud and must not close every posting).
 
 Board health: a 404 is not retried (``tell.http.fetch`` never retries 4xx). Liveness
 is the shared ADR 0015 rule (``docs/decisions/0015-ats-404-and-reverification.md``):
@@ -36,7 +46,10 @@ a posting) never counts a 404 as an observation; this module never writes
 
 from __future__ import annotations
 
+import logging
+import re
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from functools import cache
@@ -45,7 +58,7 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -55,6 +68,7 @@ from tell.collectors.base import (
     ObservedPosting,
     RunResult,
     iso_utc,
+    listed_id,
     parse_iso,
     record_board_not_found,
     record_board_ok,
@@ -75,11 +89,13 @@ __all__ = [
     "AshbyCompensation",
     "AshbyJob",
     "AshbyJobBoard",
+    "BoardRunResult",
     "board_url",
     "fetch_board",
     "ingest_board",
     "parse",
     "run_fixture",
+    "validate_board",
 ]
 
 SOURCE = "ashby"
@@ -90,6 +106,9 @@ FIXTURE_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / SOURC
 FIXTURE_BOARD_IDENTIFIER = "tell-fixture"
 """Synthetic board ``run_fixture`` creates once and then reuses (normal, then updated)."""
 FIXTURE_COMPANY_DOMAIN = "ashby-fixture.invalid"
+
+_logger = logging.getLogger(__name__)
+_REMOTE_WORD = re.compile(r"\bremote\b", re.IGNORECASE)
 
 # --- the contract ----------------------------------------------------------------------
 
@@ -145,7 +164,7 @@ class AshbyJob(_AshbyModel):
     employment_type: str | None = Field(alias="employmentType")
     location: str
     secondary_locations: list[AshbySecondaryLocation] = Field(alias="secondaryLocations")
-    is_remote: bool = Field(alias="isRemote")
+    is_remote: bool | None = Field(alias="isRemote")  # null on 121 jobs (2026-10-14)
     workplace_type: str | None = Field(alias="workplaceType")
     published_at: datetime = Field(alias="publishedAt")
     is_listed: bool = Field(alias="isListed")
@@ -166,6 +185,69 @@ class AshbyJobBoard(BaseModel):
 
     api_version: str = Field(alias="apiVersion")
     jobs: list[AshbyJob]
+    _invalid_ids: tuple[str | None, ...] = PrivateAttr(default=())
+
+    @property
+    def invalid_jobs(self) -> int:
+        """Jobs :func:`validate_board` skipped because they broke :class:`AshbyJob`."""
+        return len(self._invalid_ids)
+
+    @property
+    def invalid_ids(self) -> tuple[str | None, ...]:
+        """The skipped ids (``None`` when unusable), for ``sync_board_postings``."""
+        return self._invalid_ids
+
+
+class _AshbyEnvelope(BaseModel):
+    """The board envelope with each job left raw, so one bad job cannot fail the board."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    api_version: str = Field(alias="apiVersion")
+    jobs: list[Any]
+
+
+@dataclass(frozen=True)
+class BoardRunResult(RunResult):
+    """One board poll; ``errors`` counts jobs skipped because they failed validation."""
+
+
+def _error_paths(exc: ValidationError) -> str:
+    return "; ".join(
+        f"{'.'.join(str(part) for part in err['loc']) or '<job>'} ({err['type']})"
+        for err in exc.errors()
+    )
+
+
+def validate_board(content: str | bytes, *, identifier: str) -> AshbyJobBoard:
+    """Validate a board response job by job; invalid jobs are skipped, logged and counted.
+
+    The envelope (``apiVersion``, ``jobs``) is strict. A job failing :class:`AshbyJob`
+    is dropped with one WARNING naming ``identifier``, the job id and the field paths,
+    and counted in :attr:`AshbyJobBoard.invalid_jobs`. When every job of a non-empty
+    board fails, the strict :class:`AshbyJobBoard` error is raised instead.
+    """
+    envelope = _AshbyEnvelope.model_validate_json(content)
+    valid: list[AshbyJob] = []
+    invalid_ids: list[str | None] = []
+    for index, item in enumerate(envelope.jobs):
+        try:
+            valid.append(AshbyJob.model_validate(item))
+        except ValidationError as exc:
+            job_id = listed_id(item)
+            invalid_ids.append(job_id)
+            _logger.warning(
+                "ashby board %s: skipped invalid job %s (jobs.%d): %s",
+                identifier,
+                job_id,
+                index,
+                _error_paths(exc),
+            )
+    if envelope.jobs and not valid:
+        AshbyJobBoard.model_validate_json(content)  # raises the board-level error
+    board = AshbyJobBoard(api_version=envelope.api_version, jobs=valid)
+    board._invalid_ids = tuple(invalid_ids)  # set once, right after construction
+    return board
 
 
 # --- fetch -----------------------------------------------------------------------------
@@ -196,8 +278,9 @@ def fetch_board(
 
     429/5xx are retried by :func:`tell.http.fetch` (1, 2, 4, 8 s or ``Retry-After``)
     and raise :class:`tell.http.RetryExhausted` when they persist; any other non-2xx
-    raises :class:`httpx.HTTPStatusError`. A drifted response raises
-    :class:`pydantic.ValidationError`.
+    raises :class:`httpx.HTTPStatusError`. Jobs that break the contract are skipped
+    and counted (:func:`validate_board`); a drifted envelope, or a board on which every
+    job fails, raises :class:`pydantic.ValidationError`.
     """
     response = fetch(
         board_url(identifier),
@@ -209,7 +292,7 @@ def fetch_board(
     if response.status_code == httpx.codes.NOT_FOUND:
         return None
     response.raise_for_status()
-    return AshbyJobBoard.model_validate_json(response.content)
+    return validate_board(response.content, identifier=identifier)
 
 
 # --- parse -----------------------------------------------------------------------------
@@ -219,13 +302,17 @@ def _clip(value: str | None) -> str | None:
     return None if value is None else value[:EXTRA_MAX_CHARS]
 
 
-def _remote(job: AshbyJob) -> bool:
+def _remote(job: AshbyJob) -> bool | None:
     workplace = (job.workplace_type or "").strip().lower()
     if workplace == "remote":
         return True
     if workplace in {"onsite", "hybrid"}:
         return False
-    return job.is_remote
+    if job.is_remote is not None:
+        return job.is_remote
+    if _REMOTE_WORD.search(job.location):
+        return True
+    return None
 
 
 def _compensation(job: AshbyJob) -> dict[str, Any] | None:
@@ -297,12 +384,18 @@ def parse(raw: AshbyJobBoard | str | bytes) -> list[ObservedPosting]:
 
 def _sync(
     session: Session, board: AtsBoard, response: AshbyJobBoard, *, run_id: str, now: datetime
-) -> RunResult:
-    events = sync_board_postings(session, board, parse(response), run_id=run_id, now=now)
+) -> BoardRunResult:
+    events = sync_board_postings(
+        session, board, parse(response), run_id=run_id, now=now, invalid=response.invalid_ids
+    )
     stats = write_events(session, events)
     record_board_ok(session, board, now=now)
-    return RunResult(
-        fetched=len(response.jobs), inserted=stats.inserted, skipped=stats.skipped, events=events
+    return BoardRunResult(
+        fetched=len(response.jobs) + response.invalid_jobs,
+        inserted=stats.inserted,
+        skipped=stats.skipped,
+        events=events,
+        errors=response.invalid_jobs,
     )
 
 
@@ -321,12 +414,13 @@ def ingest_board(
     client: httpx.Client | None = None,
     budget: RateBudget | None = None,
     sleep: Sleeper = time.sleep,
-) -> RunResult:
+) -> BoardRunResult:
     """Poll one Ashby board, reconcile its postings and write the resulting events.
 
     The caller owns the run (``start_run`` / ``finish_run``) and the transaction.
-    A 404 returns an empty :class:`RunResult` and goes to ``record_board_not_found``
-    (ADR 0015). Errors other than 404 propagate.
+    A 404 returns an empty result and goes to ``record_board_not_found`` (ADR 0015).
+    Jobs failing validation are skipped and counted in ``errors``; other errors
+    propagate.
     """
     _require_ashby(board)
     own_client = client is None
@@ -338,7 +432,7 @@ def ingest_board(
             http.close()
     if response is None:
         record_board_not_found(session, board, now=now)
-        return RunResult(fetched=0, inserted=0, skipped=0)
+        return BoardRunResult(fetched=0, inserted=0, skipped=0)
     return _sync(session, board, response, run_id=run_id, now=now)
 
 
@@ -374,8 +468,8 @@ def _fixture_board(session: Session) -> AtsBoard:
 
 
 def run_fixture(session: Session, case_path: Path, /, *, run_id: str, now: datetime) -> RunResult:
-    """Replay one fixture file through parse + ``sync_board_postings`` with no network."""
-    response = AshbyJobBoard.model_validate_json(case_path.read_bytes())
+    """Replay one fixture file through the poll path (``validate_board``) with no network."""
+    response = validate_board(case_path.read_bytes(), identifier=FIXTURE_BOARD_IDENTIFIER)
     return _sync(session, _fixture_board(session), response, run_id=run_id, now=now)
 
 

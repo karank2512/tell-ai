@@ -25,6 +25,8 @@ EXPECTED_ENV_VARS = {
     "TELL_RATE_ATS_RPS",
     "TELL_DISCOVERY_BUDGET",
     "TELL_DISCOVERY_RPS",
+    "TELL_DISCOVERY_CONCURRENCY",
+    "TELL_DISCOVERY_MAX_MINUTES",
     "TELL_BASE_URL",
     "TELL_API_KEY",
     "TELL_API_URL",
@@ -76,6 +78,8 @@ def test_defaults() -> None:
     assert s.tell_rate_ats_rps == 8.0
     assert s.tell_discovery_budget == 300
     assert s.tell_discovery_rps == 4.0
+    assert s.tell_discovery_concurrency == 6
+    assert s.tell_discovery_max_minutes == 22.0
     assert s.tell_base_url == "https://karank2512.github.io/tell-data"
     assert s.tell_api_key is None
     assert s.tell_api_url is None

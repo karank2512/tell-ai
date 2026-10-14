@@ -114,12 +114,57 @@ def test_batch_command(bound: Engine, router: respx.MockRouter) -> None:
         session.add(Company(domain="acme.com", name="Acme"))
         session.commit()
     _site(router, "https://acme.com", (FIXTURES / "discovery" / "oracle.html").read_bytes())
-    result = runner.invoke(cli.app, ["batch", "--limit", "5", "--rps", "1000"])
+    result = runner.invoke(
+        cli.app,
+        ["batch", "--limit", "5", "--rps", "1000", "--concurrency", "2", "--max-minutes", "5"],
+    )
     assert result.exit_code == 0, result.output
     summary = json.loads(result.output)
     assert summary["new_domains"] == 1
     assert summary["outcomes"]["unsupported"] == 1
     assert summary["errors"] == 0
+    assert (summary["concurrency"], summary["budget_exhausted"], summary["deferred"]) == (
+        2,
+        False,
+        0,
+    )
+    assert summary["elapsed_s"] >= 0
+    assert summary["seconds_per_domain"] is not None
+    assert _count(bound, AtsBoard) == 1
+
+
+def test_batch_command_commits_through_the_session(
+    bound: Engine, router: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI hands discover_batch a commit callback, so each domain is durable at once."""
+    commits: list[int] = []
+    real_commit = Session.commit
+
+    def counting(session: Session) -> None:
+        commits.append(1)
+        real_commit(session)
+
+    monkeypatch.setattr(Session, "commit", counting)
+    with SessionLocal(bind=bound) as session:
+        session.add_all(
+            [Company(domain="acme.com", name="Acme"), Company(domain="b.com", name="B")]
+        )
+        session.commit()
+    commits.clear()
+    for base in ("https://acme.com", "https://b.com"):
+        _site(router, base, (FIXTURES / "discovery" / "oracle.html").read_bytes())
+    result = runner.invoke(cli.app, ["batch", "--rps", "1000", "--concurrency", "1"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["seconds_per_domain"] is not None
+    # Run row, two domains, finish, then session_scope's own commit.
+    assert len(commits) == 5
+
+
+def test_batch_command_with_nothing_to_do(bound: Engine) -> None:
+    result = runner.invoke(cli.app, ["batch", "--rps", "1000"])
+    assert result.exit_code == 0, result.output
+    summary = json.loads(result.output)
+    assert (summary["new_domains"], summary["seconds_per_domain"]) == (0, None)
 
 
 def test_batch_command_transport_errors_do_not_crash(

@@ -13,6 +13,15 @@ machine, events, idempotency) is :mod:`tell.collectors.base`.
   (the list response carries no public URL; the detail's slugged ``postingUrl`` is
   not used so the URL stays the same whether or not a detail was fetched).
 * Never kept: ``creator`` (a recruiter's name) and the description text.
+* Optional in practice (2026-10-14, 30 postings on 10 boards): ``location.region`` is
+  absent on 4 postings (2 boards) and the list items never carry ``postingUrl``; the
+  model already allows both. One bad posting never fails a board: each list page goes
+  through :func:`validate_page`, which skips and logs (WARNING, board and field path)
+  items that break :class:`SmartRecruitersPosting` and counts them in
+  :attr:`SmartRecruitersPostingList.invalid_jobs` and ``BoardRunResult.errors`` (added
+  to ``runs.errors`` by ``tell ingest``); their ids go to ``sync_board_postings`` so a
+  listed but invalid posting is never closed. Only when every item of a non-empty page
+  fails does the board fail, with the strict error.
 * Board liveness is the shared ADR 0015 rule: a 200 calls
   :func:`~tell.collectors.base.record_board_ok`, a list-endpoint 404 calls
   :func:`~tell.collectors.base.record_board_not_found` (``dead`` after two 404s at
@@ -26,7 +35,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from html.parser import HTMLParser
@@ -34,7 +44,7 @@ from pathlib import Path
 from typing import Any, override
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -43,6 +53,7 @@ from tell.collectors.base import (
     ObservedPosting,
     RunResult,
     iso_utc,
+    listed_id,
     record_board_not_found,
     record_board_ok,
     sync_board_postings,
@@ -59,6 +70,7 @@ __all__ = [
     "PUBLIC_BASE",
     "SOURCE",
     "BoardNotFoundError",
+    "BoardRunResult",
     "SmartRecruitersPosting",
     "SmartRecruitersPostingDetail",
     "SmartRecruitersPostingList",
@@ -72,6 +84,7 @@ __all__ = [
     "parse",
     "posting_url",
     "run_fixture",
+    "validate_page",
 ]
 
 SOURCE = "smartrecruiters"
@@ -143,6 +156,91 @@ class SmartRecruitersPostingList(_Model):
     limit: int
     total_found: int = Field(alias="totalFound")
     content: list[SmartRecruitersPosting]
+    _invalid_ids: tuple[str | None, ...] = PrivateAttr(default=())
+
+    @property
+    def invalid_jobs(self) -> int:
+        """Items :func:`validate_page` skipped because they broke the posting model."""
+        return len(self._invalid_ids)
+
+    @property
+    def invalid_ids(self) -> tuple[str | None, ...]:
+        """The skipped ids (``None`` when unusable), for ``sync_board_postings``."""
+        return self._invalid_ids
+
+
+class _SmartRecruitersPage(_Model):
+    """One list page with each item left raw, so one bad item cannot fail the board."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    offset: int
+    limit: int
+    total_found: int = Field(alias="totalFound")
+    content: list[Any]
+
+
+@dataclass(frozen=True)
+class BoardRunResult(RunResult):
+    """One board poll; ``errors`` counts postings skipped because they failed validation."""
+
+
+def _error_paths(exc: ValidationError) -> str:
+    return "; ".join(
+        f"{'.'.join(str(part) for part in err['loc']) or '<posting>'} ({err['type']})"
+        for err in exc.errors()
+    )
+
+
+def _listing(
+    items: list[SmartRecruitersPosting],
+    *,
+    total_found: int,
+    invalid: Sequence[str | None],
+    offset: int = 0,
+    limit: int = PAGE_LIMIT,
+) -> SmartRecruitersPostingList:
+    listing = SmartRecruitersPostingList(
+        offset=offset, limit=limit, total_found=total_found, content=items
+    )
+    listing._invalid_ids = tuple(invalid)  # set once, right after construction
+    return listing
+
+
+def validate_page(content: str | bytes, *, identifier: str) -> SmartRecruitersPostingList:
+    """Validate one list page item by item; invalid items are skipped, logged and counted.
+
+    ``offset``, ``limit``, ``totalFound`` and ``content`` are strict. An item failing
+    :class:`SmartRecruitersPosting` is dropped with one WARNING naming ``identifier``,
+    the posting id and the field paths, and counted in
+    :attr:`SmartRecruitersPostingList.invalid_jobs`. When every item of a non-empty
+    page fails, the strict :class:`SmartRecruitersPostingList` error is raised instead.
+    """
+    page = _SmartRecruitersPage.model_validate_json(content)
+    valid: list[SmartRecruitersPosting] = []
+    invalid_ids: list[str | None] = []
+    for index, item in enumerate(page.content):
+        try:
+            valid.append(SmartRecruitersPosting.model_validate(item))
+        except ValidationError as exc:
+            posting_id = listed_id(item)
+            invalid_ids.append(posting_id)
+            _logger.warning(
+                "smartrecruiters board %s: skipped invalid posting %s (content.%d): %s",
+                identifier,
+                posting_id,
+                page.offset + index,
+                _error_paths(exc),
+            )
+    if page.content and not valid:
+        SmartRecruitersPostingList.model_validate_json(content)  # raises the page-level error
+    return _listing(
+        valid,
+        total_found=page.total_found,
+        invalid=invalid_ids,
+        offset=page.offset,
+        limit=page.limit,
+    )
 
 
 class SmartRecruitersSection(_Model):
@@ -224,7 +322,9 @@ def _label(value: SmartRecruitersLabel | None) -> str | None:
 
 def _location_text(location: SmartRecruitersLocation) -> str | None:
     if location.full_location and location.full_location.strip():
-        return location.full_location.strip()
+        # A posting without ``region`` reads "Jakarta, , Indonesia": drop the empty part.
+        pieces = (piece.strip() for piece in location.full_location.split(","))
+        return ", ".join(piece for piece in pieces if piece) or None
     parts = [location.city, location.region, location.country.upper() or None]
     text = ", ".join(part.strip() for part in parts if part and part.strip())
     return text or None
@@ -362,12 +462,15 @@ def fetch_board(
     ``offset < totalFound`` (stopping early on an empty page or after ``max_pages``).
     429 and 5xx are retried by :func:`tell.http.fetch` (backoff 1, 2, 4, 8 s, honouring
     ``Retry-After``). Raises :class:`BoardNotFoundError` on 404 and
-    :class:`httpx.HTTPStatusError` on any other 4xx.
+    :class:`httpx.HTTPStatusError` on any other 4xx. Items that break the contract are
+    skipped and counted (:func:`validate_page`); the returned listing's ``invalid_jobs``
+    is the total over all pages.
     """
     url = board_url(identifier)
     bucket = budget if budget is not None else default_budget()
     items: list[SmartRecruitersPosting] = []
     total_found = 0
+    invalid: list[str | None] = []
     offset = 0
     for _ in range(max_pages):
         response = fetch(
@@ -380,15 +483,14 @@ def fetch_board(
         if response.status_code == 404:
             raise BoardNotFoundError(identifier, str(response.request.url))
         response.raise_for_status()
-        page = SmartRecruitersPostingList.model_validate_json(response.content)
+        page = validate_page(response.content, identifier=identifier)
         items.extend(page.content)
+        invalid.extend(page.invalid_ids)
         total_found = page.total_found
         offset += PAGE_LIMIT
-        if offset >= page.total_found or not page.content:
+        if offset >= page.total_found or not (page.content or page.invalid_jobs):
             break
-    return SmartRecruitersPostingList.model_validate(
-        {"offset": 0, "limit": PAGE_LIMIT, "totalFound": total_found, "content": items}
-    )
+    return _listing(items, total_found=total_found, invalid=invalid)
 
 
 def fetch_posting_detail(
@@ -469,13 +571,13 @@ def ingest_board(
     client: httpx.Client | None = None,
     budget: RateBudget | None = None,
     sleep: Sleeper = time.sleep,
-) -> RunResult:
+) -> BoardRunResult:
     """Poll one board: list, detail for new ids, sync ``postings``, write events.
 
     On success calls ``record_board_ok`` (``last_polled_at = now``, 404 streak reset,
     a ``dead`` board revived). On a list 404 writes no events and calls
     ``record_board_not_found`` (ADR 0015). Other HTTP failures propagate and leave the
-    board untouched.
+    board untouched. Items that fail validation are skipped and counted in ``errors``.
     """
     own_client = client is None
     http = client if client is not None else make_client()
@@ -485,7 +587,7 @@ def ingest_board(
         except BoardNotFoundError as exc:
             _logger.warning("%s", exc)
             record_board_not_found(session, board, now=now)
-            return RunResult(fetched=0, inserted=0, skipped=0, events=[])
+            return BoardRunResult(fetched=0, inserted=0, skipped=0, events=[])
         known = _known_hashes(session, board)
         new_ids = list(dict.fromkeys(item.id for item in listing.content if item.id not in known))
         texts = _descriptions(http, board.identifier, new_ids, budget=budget, sleep=sleep)
@@ -497,11 +599,17 @@ def ingest_board(
         _keep_known_hash(obs, known.get(obs.external_id))
         for obs in parse(listing, identifier=board.identifier, descriptions=texts)
     ]
-    events = sync_board_postings(session, board, observed, run_id=run_id, now=now)
+    events = sync_board_postings(
+        session, board, observed, run_id=run_id, now=now, invalid=listing.invalid_ids
+    )
     stats = write_events(session, events)
     record_board_ok(session, board, now=now)
-    return RunResult(
-        fetched=len(listing.content), inserted=stats.inserted, skipped=stats.skipped, events=events
+    return BoardRunResult(
+        fetched=len(listing.content) + listing.invalid_jobs,
+        inserted=stats.inserted,
+        skipped=stats.skipped,
+        events=events,
+        errors=listing.invalid_jobs,
     )
 
 
@@ -533,15 +641,21 @@ def _fixture_board(session: Session) -> AtsBoard:
 
 
 def run_fixture(session: Session, case_path: Path, /, *, run_id: str, now: datetime) -> RunResult:
-    """Replay one list-response fixture through parse + ``sync_board_postings``, no network."""
-    listing = SmartRecruitersPostingList.model_validate_json(case_path.read_text(encoding="utf-8"))
+    """Replay one list-response fixture through the poll path (``validate_page``), no network."""
+    listing = validate_page(case_path.read_text(encoding="utf-8"), identifier=FIXTURE_IDENTIFIER)
     board = _fixture_board(session)
     observed = parse(listing, identifier=FIXTURE_IDENTIFIER)
-    events = sync_board_postings(session, board, observed, run_id=run_id, now=now)
+    events = sync_board_postings(
+        session, board, observed, run_id=run_id, now=now, invalid=listing.invalid_ids
+    )
     stats = write_events(session, events)
     record_board_ok(session, board, now=now)
-    return RunResult(
-        fetched=len(listing.content), inserted=stats.inserted, skipped=stats.skipped, events=events
+    return BoardRunResult(
+        fetched=len(listing.content) + listing.invalid_jobs,
+        inserted=stats.inserted,
+        skipped=stats.skipped,
+        events=events,
+        errors=listing.invalid_jobs,
     )
 
 

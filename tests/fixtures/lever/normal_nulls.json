@@ -1,0 +1,87 @@
+[
+ {
+  "additional": "",
+  "additionalPlain": "",
+  "categories": {
+   "commitment": "Full-time",
+   "department": "Company-Wide",
+   "location": "Madrid, Spain",
+   "team": "Open Roles",
+   "allLocations": [
+    "Madrid, Spain"
+   ]
+  },
+  "createdAt": 1786104344446,
+  "descriptionPlain": "About Us Vensure Employer Solutions is the largest privately held organization in the HR technology and service sector.",
+  "description": "<div>About Us Vensure Employer Solutions is the largest privately held organization in the HR technology and service sector.</div>",
+  "id": "fade4c5e-b0b0-4a51-a6e4-f7a12e837d0d",
+  "lists": [],
+  "salaryRange": {
+   "max": 42000,
+   "min": 37000,
+   "currency": "EUR",
+   "interval": "per-year-salary"
+  },
+  "text": "Hebrew, French or Spanish-Speaking Payroll Analyst - Lithuania, Spain",
+  "workplaceType": "hybrid",
+  "opening": "",
+  "openingPlain": "",
+  "descriptionBody": "<div>About Us Vensure Employer Solutions is the largest privately held organization in the HR technology and service sector.</div>",
+  "descriptionBodyPlain": "About Us Vensure Employer Solutions is the largest privately held organization in the HR technology and service sector.",
+  "country": null,
+  "hostedUrl": "https://jobs.lever.co/distro/fade4c5e-b0b0-4a51-a6e4-f7a12e837d0d",
+  "applyUrl": "https://jobs.lever.co/distro/fade4c5e-b0b0-4a51-a6e4-f7a12e837d0d/apply"
+ },
+ {
+  "additionalPlain": "",
+  "additional": "",
+  "categories": {
+   "commitment": "Full-time Contractor",
+   "location": "Buenos Aires",
+   "team": "Sales",
+   "allLocations": [
+    "Buenos Aires"
+   ]
+  },
+  "createdAt": 1746627128126,
+  "descriptionPlain": "Why join us?",
+  "description": "<div>Why join us?</div>",
+  "id": "e3e061af-9c83-4db0-8e2f-0ac583102809",
+  "lists": [],
+  "text": "Account Executive",
+  "country": "AR",
+  "workplaceType": "hybrid",
+  "opening": "<div>Why join us?</div>",
+  "openingPlain": "Why join us?",
+  "descriptionBody": "<div>Account Executive at Handoff You will play a key role in growing Handoff by building strong client relationships and driving adoption of our platform.</div>",
+  "descriptionBodyPlain": "Account Executive at Handoff You will play a key role in growing Handoff by building strong client relationships and driving adoption of our platform.",
+  "hostedUrl": "https://jobs.lever.co/handoff/e3e061af-9c83-4db0-8e2f-0ac583102809",
+  "applyUrl": "https://jobs.lever.co/handoff/e3e061af-9c83-4db0-8e2f-0ac583102809/apply"
+ },
+ {
+  "additionalPlain": "",
+  "additional": "",
+  "categories": {
+   "department": "Lab49",
+   "location": "New York",
+   "team": "Sales and Business Development",
+   "allLocations": [
+    "New York"
+   ]
+  },
+  "createdAt": 1765574764149,
+  "descriptionPlain": "We’re looking for a high-impact Strategic Account Manager to own and grow relationships with some of the world’s leading financial institutions.",
+  "description": "<div>We’re looking for a high-impact Strategic Account Manager to own and grow relationships with some of the world’s leading financial institutions.</div>",
+  "id": "aecbb044-eca1-4469-a341-0095d09bb22f",
+  "lists": [],
+  "text": "Strategic Account Manager, New York",
+  "country": "US",
+  "workplaceType": "onsite",
+  "opening": "",
+  "openingPlain": "",
+  "descriptionBody": "<div>We’re looking for a high-impact Strategic Account Manager to own and grow relationships with some of the world’s leading financial institutions.</div>",
+  "descriptionBodyPlain": "We’re looking for a high-impact Strategic Account Manager to own and grow relationships with some of the world’s leading financial institutions.",
+  "hostedUrl": "https://jobs.lever.co/ion/aecbb044-eca1-4469-a341-0095d09bb22f",
+  "applyUrl": "https://jobs.lever.co/ion/aecbb044-eca1-4469-a341-0095d09bb22f/apply"
+ }
+]

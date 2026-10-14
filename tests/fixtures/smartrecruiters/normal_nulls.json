@@ -1,0 +1,181 @@
+{
+  "offset": 0,
+  "limit": 100,
+  "totalFound": 3,
+  "content": [
+    {
+      "id": "743999715360890",
+      "name": "Growth Lead",
+      "uuid": "c13db85d-38bb-4ddb-bf9f-7c0d6b40ee98",
+      "jobAdId": "ce345924-c6f9-45df-81d8-c32d24e55f4a",
+      "defaultJobAd": true,
+      "refNumber": "REF3T",
+      "company": {
+        "identifier": "BukuWarung",
+        "name": "BukuWarung"
+      },
+      "releasedDate": "2020-07-15T10:05:25.000Z",
+      "location": {
+        "city": "Jakarta",
+        "country": "id",
+        "remote": false,
+        "hybrid": false,
+        "fullLocation": "Jakarta, , Indonesia"
+      },
+      "industry": {
+        "id": "internet",
+        "label": "Internet"
+      },
+      "department": {},
+      "function": {
+        "id": "marketing",
+        "label": "Marketing"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "mid_senior_level",
+        "label": "Mid-Senior Level"
+      },
+      "customField": [
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "id",
+          "valueLabel": "Indonesia"
+        },
+        {
+          "fieldId": "5f03f8177a414849c9dc8a0d",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "BukuWarung"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/bukuwarung/postings/743999715360890",
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    },
+    {
+      "id": "743999715360825",
+      "name": "Junior Data Analyst",
+      "uuid": "235eec95-bf89-4a73-a08c-8b931d0ea2ed",
+      "jobAdId": "a74fa412-ddd6-49f6-b2fe-7823dbc3c02b",
+      "defaultJobAd": true,
+      "refNumber": "REF2N",
+      "company": {
+        "identifier": "BukuWarung",
+        "name": "BukuWarung"
+      },
+      "releasedDate": "2020-07-15T10:04:33.000Z",
+      "location": {
+        "city": "Jakarta",
+        "country": "id",
+        "remote": false,
+        "hybrid": false,
+        "fullLocation": "Jakarta, , Indonesia"
+      },
+      "industry": {
+        "id": "internet",
+        "label": "Internet"
+      },
+      "department": {},
+      "function": {
+        "id": "analyst",
+        "label": "Analyst"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "entry_level",
+        "label": "Entry Level"
+      },
+      "customField": [
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "id",
+          "valueLabel": "Indonesia"
+        },
+        {
+          "fieldId": "5f03f8177a414849c9dc8a0d",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "BukuWarung"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/bukuwarung/postings/743999715360825",
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    },
+    {
+      "id": "743999715360726",
+      "name": "Android Developer",
+      "uuid": "272ba79a-f2de-472b-840f-29f109ffd85b",
+      "jobAdId": "f4c98faa-a5c1-41d2-b3de-1823c7865a5f",
+      "defaultJobAd": true,
+      "refNumber": "REF4Q",
+      "company": {
+        "identifier": "BukuWarung",
+        "name": "BukuWarung"
+      },
+      "releasedDate": "2020-07-15T10:03:04.000Z",
+      "location": {
+        "city": "Jakarta Pusat",
+        "country": "id",
+        "remote": false,
+        "hybrid": false,
+        "fullLocation": "Jakarta Pusat, , Indonesia"
+      },
+      "industry": {
+        "id": "internet",
+        "label": "Internet"
+      },
+      "department": {},
+      "function": {
+        "id": "marketing",
+        "label": "Marketing"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "associate",
+        "label": "Associate"
+      },
+      "customField": [
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "id",
+          "valueLabel": "Indonesia"
+        },
+        {
+          "fieldId": "5f03f8177a414849c9dc8a0d",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "BukuWarung"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/bukuwarung/postings/743999715360726",
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    }
+  ]
+}

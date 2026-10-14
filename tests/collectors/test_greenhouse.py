@@ -37,6 +37,7 @@ from tests.collectors import _board_liveness as liveness
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "greenhouse"
 NORMAL = FIXTURES / "normal.json"
 NORMAL_AIRBNB = FIXTURES / "normal_airbnb.json"
+NORMAL_NULLS = FIXTURES / "normal_nulls.json"
 EMPTY = FIXTURES / "empty_board.json"
 DRIFT = FIXTURES / "drift.json"
 UPDATED = FIXTURES / "updated.json"
@@ -87,7 +88,9 @@ def test_collector_is_registered_as_ats() -> None:
     assert "greenhouse" in [spec.source for spec in discover_collectors()]
 
 
-@pytest.mark.parametrize("path", [NORMAL, NORMAL_AIRBNB, UPDATED, EMPTY], ids=lambda p: p.name)
+@pytest.mark.parametrize(
+    "path", [NORMAL, NORMAL_AIRBNB, NORMAL_NULLS, UPDATED, EMPTY], ids=lambda p: p.name
+)
 def test_fixtures_validate(path: Path) -> None:
     GreenhouseJobsResponse.model_validate_json(path.read_text(encoding="utf-8"))
 
@@ -126,6 +129,66 @@ def test_first_published_and_metadata_may_be_null_but_not_missing() -> None:
     del doc["jobs"][0]["first_published"]
     with pytest.raises(pydantic.ValidationError, match="first_published"):
         parse(doc)
+
+
+def test_location_name_may_be_null_but_location_may_not_be_missing() -> None:
+    doc = _json(NORMAL)
+    doc["jobs"][0]["location"] = {"name": None}
+    assert parse(doc)[0].location is None
+    doc["jobs"][0]["location"] = {}
+    with pytest.raises(pydantic.ValidationError, match=r"location\.name"):
+        parse(doc)
+
+
+def test_nulls_fixture_parses_with_a_null_location() -> None:
+    """Real 2026-10-14 jobs from board ``podium81``; one has ``location.name: null``."""
+    by_id = {p.external_id: p for p in parse(NORMAL_NULLS.read_text(encoding="utf-8"))}
+    assert set(by_id) == {"8063639", "8243091", "5670478"}
+    null_location = by_id["8063639"]
+    assert null_location.location is None
+    assert null_location.remote is None
+    assert null_location.title == "Customer Success Manager"
+    assert null_location.extra["offices"] == ["Melbourne"]
+    assert by_id["8243091"].location == "Remote, US"
+    assert by_id["8243091"].remote is True
+    assert by_id["5670478"].location == "Lehi, Utah"
+    assert by_id["5670478"].remote is None
+
+
+def test_validate_board_skips_one_invalid_job_and_logs_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    doc = _json(NORMAL)
+    del doc["jobs"][1]["updated_at"]
+    bad_id = doc["jobs"][1]["id"]
+    with caplog.at_level("WARNING", logger="tell.collectors.greenhouse"):
+        response = greenhouse.validate_board(json.dumps(doc), identifier="stripe")
+    assert len(response.jobs) == 4
+    assert bad_id not in [job.id for job in response.jobs]
+    assert response.invalid_jobs == 1
+    assert response.invalid_ids == (str(bad_id),)
+    (record,) = caplog.records
+    assert record.levelname == "WARNING"
+    message = record.getMessage()
+    assert "stripe" in message
+    assert str(bad_id) in message
+    assert "updated_at (missing)" in message
+
+
+def test_validate_board_fails_loudly_when_every_job_fails() -> None:
+    with pytest.raises(pydantic.ValidationError, match=r"jobs\.0\.updated_at"):
+        greenhouse.validate_board(DRIFT.read_bytes(), identifier="stripe")
+
+
+def test_validate_board_envelope_stays_strict() -> None:
+    with pytest.raises(pydantic.ValidationError, match="meta"):
+        greenhouse.validate_board(json.dumps({"jobs": []}), identifier="stripe")
+    with pytest.raises(pydantic.ValidationError, match="jobs"):
+        greenhouse.validate_board(json.dumps({"meta": {"total": 0}}), identifier="stripe")
+    doc = _json(NORMAL)
+    doc["jobs"].append(None)
+    response = greenhouse.validate_board(json.dumps(doc), identifier="stripe")
+    assert (response.invalid_jobs, response.invalid_ids) == (1, (None,))
 
 
 # --- parse -------------------------------------------------------------------------------
@@ -497,6 +560,56 @@ def test_ingest_board_writes_postings_and_events(
     assert stored.remote is True
     assert stored.version_marker == "2026-09-25T20:44:31+00:00"
     assert stored.content_hash is not None
+
+
+@pytest.mark.db
+@respx.mock
+def test_ingest_board_skips_and_counts_one_invalid_job(
+    db_session: Session, client: httpx.Client, budget: RateBudget
+) -> None:
+    doc = _json(NORMAL)
+    doc["jobs"][0]["location"] = {"name": 7}
+    respx.get(JOBS_URL).mock(return_value=httpx.Response(200, json=doc))
+    board = _board(db_session)
+    result = ingest_board(db_session, board, run_id="r1", now=NOW, client=client, budget=budget)
+    assert isinstance(result, greenhouse.BoardRunResult)
+    assert (result.fetched, result.inserted, result.errors) == (5, 4, 1)
+    assert _count(db_session, Posting) == 4
+    assert board.last_polled_at == NOW
+
+
+@pytest.mark.db
+@respx.mock
+def test_ingest_board_never_closes_a_listed_but_invalid_job(
+    db_session: Session, client: httpx.Client, budget: RateBudget
+) -> None:
+    route = respx.get(JOBS_URL).mock(return_value=httpx.Response(200, content=NORMAL.read_bytes()))
+    board = _board(db_session)
+    ingest_board(db_session, board, run_id="r1", now=NOW, client=client, budget=budget)
+    doc = _json(NORMAL)
+    del doc["jobs"][0]["updated_at"]  # job 8172510 starts failing validation
+    route.mock(return_value=httpx.Response(200, json=doc))
+    for hours in (6, 18):
+        now = NOW + timedelta(hours=hours)
+        result = ingest_board(db_session, board, run_id="r2", now=now, client=client, budget=budget)
+        assert result.errors == 1
+    assert "job_closed" not in _types(db_session)
+    held = db_session.scalars(select(Posting).where(Posting.external_id == "8172510")).one()
+    assert held.closed_at is None
+
+
+@pytest.mark.db
+@respx.mock
+def test_ingest_board_polls_a_board_with_a_null_location(
+    db_session: Session, client: httpx.Client, budget: RateBudget
+) -> None:
+    respx.get(JOBS_URL).mock(return_value=httpx.Response(200, content=NORMAL_NULLS.read_bytes()))
+    board = _board(db_session)
+    result = ingest_board(db_session, board, run_id="r1", now=NOW, client=client, budget=budget)
+    assert (result.fetched, result.inserted, result.errors) == (3, 3, 0)
+    stored = db_session.scalars(select(Posting).where(Posting.external_id == "8063639")).one()
+    assert stored.location is None
+    assert stored.remote is None
 
 
 @pytest.mark.db

@@ -263,6 +263,21 @@ def test_ingest_by_domain_and_due_gap(gh_board: Engine) -> None:
         assert route.call_count == 1
 
 
+def test_ingest_counts_invalid_jobs_as_run_errors(gh_board: Engine) -> None:
+    doc = json.loads(GREENHOUSE_NORMAL.read_text(encoding="utf-8"))
+    del doc["jobs"][0]["updated_at"]
+    with respx.mock(assert_all_mocked=True) as mock:
+        _greenhouse_route(mock).respond(200, json=doc)
+        line = _json(_invoke(["ingest", "--source", "greenhouse", "--board", BOARD]))
+    assert (line["status"], line["fetched"], line["errors"]) == ("ok", 5, 1)
+    run = _runs(gh_board, "greenhouse")[0]
+    assert run.errors == 1
+    assert run.notes is not None
+    assert run.notes["invalid_jobs"] == {BOARD: 1}
+    assert run.notes["boards_polled"] == 1
+    assert "failed_boards" not in run.notes
+
+
 def test_ingest_board_failure_exits_1(gh_board: Engine) -> None:
     with respx.mock(assert_all_mocked=True) as mock:
         _greenhouse_route(mock).respond(400)

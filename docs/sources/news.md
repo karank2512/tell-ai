@@ -177,8 +177,8 @@ cases with placeholder names.
   `company_feeds.last_polled_at + 6h`. A feed answering 304 costs nothing; 404/410 marks it
   `dead`; 429/5xx sets `last_polled_at` (slow down) and counts an error.
 - Per-run budget: at most `MAX_COMPANIES = 1200` companies (1,200 Google News queries at
-  1 rps is 20 minutes, inside the 30-minute `filings` job with margin) and
-  `RUN_BUDGET = 25 minutes` of wall-clock time, checked before each company. Order:
+  1 rps is 20 minutes, inside the 45-minute `filings` job, which runs EDGAR first, with
+  margin) and `RUN_BUDGET = 25 minutes` of wall-clock time, checked before each company. Order:
   watchlist members, then companies active in the last 30 days, then the long-tail bucket;
   least recently polled first within each group, so a capped run resumes where it stopped.
   A run that hits either limit stops cleanly, keeps everything it wrote and finishes `ok`;

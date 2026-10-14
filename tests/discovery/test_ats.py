@@ -44,7 +44,7 @@ from tell.discovery.ats import (
     select_new_companies,
 )
 from tell.http import RateBudget, make_client
-from tell.models import AtsBoard, Company, ReviewQueueItem, Run
+from tell.models import ATS_VENDORS, AtsBoard, Company, ReviewQueueItem, Run
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "discovery"
 NOW = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
@@ -133,6 +133,12 @@ def test_fixtures_are_small_and_scrubbed() -> None:
 
 
 # --- patterns ----------------------------------------------------------------------------------
+
+
+def test_models_list_every_vendor_discovery_writes() -> None:
+    written = {*ats.SUPPORTED_VENDORS, *ats.UNSUPPORTED_VENDORS, *ats.LISTING_VENDORS}
+    assert set(ATS_VENDORS) == written | {ats.NO_BOARD_VENDOR}
+    assert {p.vendor for p in ats.PATTERNS} <= set(ATS_VENDORS)
 
 
 @pytest.mark.parametrize(
@@ -454,8 +460,9 @@ def test_transport_errors_and_empty_pages(
     router.get(f"{BASE}/careers").mock(side_effect=httpx.ConnectTimeout("slow"))
     no_guesses(router)
     result = discover(db_session, client)
-    # /careers failed, /jobs answered 200 with nothing on it: scanning stops there.
-    assert result.pages_checked == ("/careers", "/jobs")
+    # /careers failed, /jobs answered 200 with nothing on it: the candidates stop there
+    # and the deeper scan adds only the homepage (an empty page has no links or bundles).
+    assert result.pages_checked == ("/careers", "/jobs", "/")
     assert result.outcome == "no_board"
 
 
@@ -753,6 +760,7 @@ def test_every_result_is_one_json_log_line(
         "identifier": "acme.wd5/AcmeCareers",
         "confidence": 0.95,
         "pages_checked": ["/careers"],
+        "channels": [],
     }
 
 
@@ -878,7 +886,14 @@ def test_batch_respects_limit_and_rps(
     clock = FakeClock()
 
     batch = discover_batch(
-        db_session, client, now=NOW, limit=2, rps=4.0, clock=clock, sleep=clock.sleep
+        db_session,
+        client,
+        now=NOW,
+        limit=2,
+        rps=4.0,
+        clock=clock,
+        sleep=clock.sleep,
+        concurrency=1,
     )
 
     assert [r.domain for r in batch.results] == ["alpha.com", "bravo.com"]
@@ -902,7 +917,14 @@ def test_batch_respects_limit_and_rps(
         "outcomes": {"board": 0, "unsupported": 2, "review": 0, "no_board": 0},
         "new_domains": 2,
         "reverified": 0,
+        "concurrency": 1,
+        "budget_exhausted": False,
+        "deferred": 0,
     }
+    # finished_at is the real finish: the start plus the 0.75 s the run spent waiting.
+    assert run.started_at == NOW
+    assert run.finished_at == NOW + timedelta(seconds=0.75)
+    assert (batch.elapsed_s, batch.deferred, batch.budget_exhausted) == (0.75, 0, False)
 
 
 def test_batch_defaults_come_from_settings(
@@ -913,6 +935,7 @@ def test_batch_defaults_come_from_settings(
 ) -> None:
     monkeypatch.setenv("TELL_DISCOVERY_BUDGET", "1")
     monkeypatch.setenv("TELL_DISCOVERY_RPS", "2")
+    monkeypatch.setenv("TELL_DISCOVERY_CONCURRENCY", "1")
     get_settings.cache_clear()
     for domain, age in (("alpha.com", 9), ("bravo.com", 5)):
         _company(db_session, domain, age)
@@ -921,6 +944,7 @@ def test_batch_defaults_come_from_settings(
     batch = discover_batch(db_session, client, now=NOW, clock=clock, sleep=clock.sleep)
     assert [r.domain for r in batch.results] == ["alpha.com"]
     assert clock.sleeps == pytest.approx([0.5])
+    assert batch.concurrency == 1
 
 
 def test_batch_reverifies_due_boards(
@@ -987,23 +1011,37 @@ def test_batch_isolates_failures(
     client: httpx.Client,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A failed fetch and a failed write each cost one domain; the savepoint undoes the write."""
     _company(db_session, "alpha.com", 9)
     _company(db_session, "bravo.com", 5)
-    site(router, {"/careers": page("workable.html")}, base="https://bravo.com")
-    real = ats.discover_domain
+    charlie = _company(db_session, "charlie.com", 1)
+    for domain in ("bravo.com", "charlie.com"):
+        site(router, {"/careers": page("workable.html")}, base=f"https://{domain}")
+    real_investigate, real_store = ats._investigate, ats._store
 
-    def flaky(session: Session, client: httpx.Client, domain: str, *a: Any, **k: Any) -> Any:
+    def flaky_investigate(client: httpx.Client, domain: str, **k: Any) -> Any:
         if domain == "alpha.com":
             msg = "boom"
             raise RuntimeError(msg)
-        return real(session, client, domain, *a, **k)
+        return real_investigate(client, domain, **k)
 
-    monkeypatch.setattr(ats, "discover_domain", flaky)
-    batch = discover_batch(db_session, client, now=NOW, sleep=no_sleep)
-    assert batch.errors == ["alpha.com"]
-    assert [r.domain for r in batch.results] == ["bravo.com"]
+    def flaky_store(session: Session, company: Company, finding: Any, *a: Any) -> Any:
+        real_store(session, company, finding, *a)  # writes the board row, then fails
+        if finding.domain == "bravo.com":
+            msg = "write failed"
+            raise RuntimeError(msg)
+        return real_store(session, company, finding, *a)
+
+    monkeypatch.setattr(ats, "_investigate", flaky_investigate)
+    monkeypatch.setattr(ats, "_store", flaky_store)
+    batch = discover_batch(db_session, client, now=NOW, sleep=no_sleep, concurrency=2)
+    assert batch.errors == ["alpha.com", "bravo.com"]
+    assert [r.domain for r in batch.results] == ["charlie.com"]
+    # bravo.com's half-written board was rolled back with its savepoint.
+    [board] = boards(db_session)
+    assert (board.vendor, board.company_id) == ("workable", charlie.id)
     run = db_session.scalars(select(Run).where(Run.run_id == batch.run_id)).one()
-    assert run.errors == 1
+    assert (run.fetched, run.inserted, run.errors) == (3, 1, 2)
 
 
 def test_batch_with_injected_budget(

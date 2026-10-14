@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Founding Engineer - Acme</title>
+</head>
+<body>
+<h1>Apply for this position</h1>
+<script type="comeet-applyform" data-position-uid="1A.001"></script>
+<!-- Comeet Careers API -->
+<script>
+   window.comeetInit = function() {
+      COMEET.init({
+         "token":       "0000000000000000000000000000000000000",
+         "company-uid": "A1.000",
+         "company-name":"acme",
+         "color":       "000000"
+      });
+   };
+   (function(d, s, id) {var js, fjs = d.getElementsByTagName(s)[0]; if (d.getElementById(id)) {return; } js = d.createElement(s); js.id = id;
+   js.src = "//www.comeet.co/careers-api/api.js"; fjs.parentNode.insertBefore(js, fjs); }(document, 'script', 'comeet-jsapi'));
+</script>
+</body>
+</html>

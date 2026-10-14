@@ -3,11 +3,14 @@
 Commands:
 
 * ``domain --domain acme.com [--name "Acme"]``: run spec section 4 for one domain.
-* ``batch [--limit N] [--rps R]``: one budgeted pass (defaults ``TELL_DISCOVERY_BUDGET``
-  and ``TELL_DISCOVERY_RPS``) over new domains and boards due for re-verification.
+* ``batch [--limit N] [--rps R] [--concurrency C] [--max-minutes M]``: one budgeted pass
+  (defaults ``TELL_DISCOVERY_BUDGET``, ``TELL_DISCOVERY_RPS``,
+  ``TELL_DISCOVERY_CONCURRENCY`` and ``TELL_DISCOVERY_MAX_MINUTES``) over new domains and
+  boards due for re-verification. It commits after every domain, so a killed job keeps
+  everything finished so far.
 * ``seed-yc --file PATH | --fetch``: seed ``companies`` from the YC directory.
 
-Each command commits on success. Results print as JSON lines on stdout.
+The other commands commit on success. Results print as JSON lines on stdout.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from sqlalchemy.orm import Session
 
 from tell.collectors.base import utcnow
 from tell.db import session_scope
@@ -59,16 +63,43 @@ def batch_command(
     rps: Annotated[
         float | None, typer.Option("--rps", min=0.01, help="Requests per second (default 4).")
     ] = None,
+    concurrency: Annotated[
+        int | None,
+        typer.Option(
+            "--concurrency", min=1, help="Domains in flight at once, sharing --rps (default 6)."
+        ),
+    ] = None,
+    max_minutes: Annotated[
+        float | None,
+        typer.Option(
+            "--max-minutes", min=0.01, help="Start no new domain after this (default 22)."
+        ),
+    ] = None,
 ) -> None:
     """One budgeted discovery pass (spec section 11: <= 300 new domains at 4 rps)."""
     with session_scope() as session, make_client() as client:
-        batch = discover_batch(session, client, now=utcnow(), limit=limit, rps=rps)
+        batch = discover_batch(
+            session,
+            client,
+            now=utcnow(),
+            limit=limit,
+            rps=rps,
+            concurrency=concurrency,
+            max_minutes=max_minutes,
+            commit=Session.commit,
+        )
+        processed = batch.processed
         summary = {
             "run_id": batch.run_id,
             "new_domains": batch.new_domains,
             "reverified": batch.reverified,
             "errors": len(batch.errors),
             "outcomes": batch.outcomes,
+            "concurrency": batch.concurrency,
+            "budget_exhausted": batch.budget_exhausted,
+            "deferred": batch.deferred,
+            "elapsed_s": round(batch.elapsed_s, 1),
+            "seconds_per_domain": round(batch.elapsed_s / processed, 2) if processed else None,
         }
         typer.echo(json.dumps(summary, sort_keys=True))
 

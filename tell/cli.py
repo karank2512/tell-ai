@@ -288,10 +288,18 @@ def _tracked(source: str, work: _Work, *, with_notes: bool) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class _BoardOutcome:
+    """One board's share of an ingest run.
+
+    ``error`` is set when the whole board failed; ``invalid_jobs`` counts the jobs a
+    board that did answer skipped because they failed validation (``fetched``
+    includes them). Both count toward ``runs.errors``.
+    """
+
     identifier: str
     fetched: int = 0
     inserted: int = 0
     skipped: int = 0
+    invalid_jobs: int = 0
     error: str | None = None
 
 
@@ -361,6 +369,7 @@ def _poll_board(
         fetched=result.fetched,
         inserted=result.inserted,
         skipped=result.skipped,
+        invalid_jobs=result.errors,
     )
 
 
@@ -398,6 +407,9 @@ def _ingest_ats(
     }
     if failed:
         notes["failed_boards"] = {o.identifier: o.error for o in failed[:50]}
+    drifted = [o for o in outcomes if o.invalid_jobs]
+    if drifted:
+        notes["invalid_jobs"] = {o.identifier: o.invalid_jobs for o in drifted[:50]}
     with session_scope() as session:
         run = finish_run(
             session,
@@ -406,7 +418,7 @@ def _ingest_ats(
             fetched=sum(o.fetched for o in outcomes),
             inserted=sum(o.inserted for o in outcomes),
             skipped=sum(o.skipped for o in outcomes),
-            errors=len(failed),
+            errors=len(failed) + sum(o.invalid_jobs for o in outcomes),
             notes=notes,
         )
         return runlog_ops.run_line(run)

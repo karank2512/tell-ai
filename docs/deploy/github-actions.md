@@ -68,19 +68,27 @@ what keeps the schedules enabled until cutover.
 
 ```
 discover (30 min) ──► ats x4 (90 min each, fail-fast: false) ──┐
-filings: edgar, then news (30 min) ────────────────────────────┴─► resolve_score_publish (45 min, if: always())
+filings: edgar, then news (45 min) ────────────────────────────┴─► resolve_score_publish (45 min, if: always())
 ```
 
-1. **discover**: `tell discover batch --limit 300 --rps 4`, the SPEC section 11 budget (at
-   most 300 new domains per run at 4 requests per second; boards due for re-verification
-   are included). The SPEC places discovery inside the ATS job; it is a job of its own so
-   it runs once per workflow rather than once per vendor leg (ADR 0028). A run seeds about 1,200 domains a day, so the ~5,000 YC domains are
-   covered within a week of cutover. A failed or timed-out discovery pass never blocks the
-   ATS legs, which `need` it but run unless the whole run was cancelled.
+1. **discover**: `tell discover batch --limit 250 --rps 4` with
+   `TELL_DISCOVERY_MAX_MINUTES=22`, inside the SPEC section 11 budget (at most 300 new
+   domains per run at 4 requests per second; boards due for re-verification follow the new
+   domains). Six domains are in flight at once (`TELL_DISCOVERY_CONCURRENCY`), all sharing
+   the one 4 rps budget. Every domain is committed as it finishes and no new domain starts
+   after 22 minutes, so a slow day defers the rest to the next run instead of losing the
+   pass (the first production run, 300 serial domains, hit the 30-minute timeout and kept
+   nothing). The SPEC places discovery inside the ATS job; it is a job of its own so it
+   runs once per workflow rather than once per vendor leg (ADR 0028). At 250 domains a run,
+   once a day, the ~4,300 active YC domains take about two and a half weeks; at four runs
+   a day, about five days. A failed or timed-out discovery pass never blocks the ATS legs, which `need`
+   it but run unless the whole run was cancelled.
 2. **ats**: one matrix leg per vendor (`greenhouse`, `lever`, `ashby`, `smartrecruiters`),
    `tell ingest --source <vendor>`, then the run line in the step summary.
 3. **filings**: `tell ingest --source edgar` (8-K, S-1 and Form D from the daily index),
-   then `tell ingest --source news`; news runs even when EDGAR failed.
+   then `tell ingest --source news`; news runs even when EDGAR failed. The job timeout is
+   45 minutes (the second production run used 29.9 of the earlier 30); news still stops
+   itself after its own 25-minute run budget, so the extra room goes to EDGAR.
 4. **resolve_score_publish**: checks out `tell-data` with `TELL_DATA_PUSH_TOKEN`, then
    `tell resolve`, `tell score --all-profiles`, `tell publish --out tell-data`,
    `tell prune --out tell-data`, a commit as
@@ -99,8 +107,9 @@ The commit step retries once with `git pull --rebase` if `weekly.yml` pushed in 
 | --- | --- |
 | Each ATS vendor | 6,000 boards at 8 concurrent, ~250 ms each: under 4 minutes; 25,000 boards stays well under the 90-minute timeout |
 | EDGAR | One daily index file plus one XML per new filing: a minute or two, under 500 requests a day |
-| News | The slow one at 1 request per second: companies with activity in the last 30 days plus every watchlist member, the long tail rotated over a week; capped by its per-run budget to fit 30 minutes |
-| Discovery | Up to 300 new domains at 4 requests per second, bounded by the 30-minute timeout |
+| EDGAR + news (measured) | The second production run (2026-10-13) used 29.9 of the then 30-minute timeout; now 45 minutes |
+| News | The slow one at 1 request per second: companies with activity in the last 30 days plus every watchlist member, the long tail rotated over a week; stops itself after its 25-minute run budget |
+| Discovery (measured) | 80 real YC domains, 4 rps: serial 6.06 s a domain (5.8 s on the 2026-10-13 snapshot runs), six workers 4.47 s a domain before the deeper scan (ADR 0030) and **4.74 s a domain** with it (379.4 s for 80, re-measured 2026-10-14). 250 domains is about 20 minutes; the 22-minute budget defers anything past it; job timeout 30 minutes |
 | Resolve, score, publish, prune | A few minutes, dominated by writing account pages |
 | Total | An estimated 50 to 60 billed minutes per live run (each job is rounded up to the minute); one run a day fits the 2,000 free minutes of a private repository, four a day need the repository to be public (ADR 0029); Neon about 25 minutes of 0.25 CU per run, ~60 CU-hours a month of the 100 free |
 

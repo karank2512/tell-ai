@@ -58,7 +58,33 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 # --- allowed values (documented in the spec's DDL comments) ------------------
 
 AtsVendor = Literal[
-    "greenhouse", "lever", "ashby", "smartrecruiters", "workday", "oracle", "workable"
+    "greenhouse",
+    "lever",
+    "ashby",
+    "smartrecruiters",
+    "workday",
+    "oracle",
+    "workable",
+    "dover",
+    "gem",
+    "comeet",
+    "recruitee",
+    "personio",
+    "teamtailor",
+    "bamboohr",
+    "rippling",
+    "breezy",
+    "wellfound",
+    "jobvite",
+    "jazzhr",
+    "pinpoint",
+    "icims",
+    "homerun",
+    "join",
+    "zohorecruit",
+    "polymer",
+    "yc_waas",
+    "none",
 ]
 ATS_VENDORS: tuple[str, ...] = (
     "greenhouse",
@@ -68,10 +94,36 @@ ATS_VENDORS: tuple[str, ...] = (
     "workday",
     "oracle",
     "workable",
+    "dover",
+    "gem",
+    "comeet",
+    "recruitee",
+    "personio",
+    "teamtailor",
+    "bamboohr",
+    "rippling",
+    "breezy",
+    "wellfound",
+    "jobvite",
+    "jazzhr",
+    "pinpoint",
+    "icims",
+    "homerun",
+    "join",
+    "zohorecruit",
+    "polymer",
+    "yc_waas",
+    "none",
 )
 """``ats_boards.vendor``. The spec's DDL comment lists the first six; ``workable`` is
 added per PLAN "Decisions locked" (``docs/decisions/0003``): Workday, Oracle and Workable
-are detected by discovery but never polled (recorded with ``status='unsupported'``)."""
+are detected by discovery but never polled (recorded with ``status='unsupported'``).
+``dover`` to ``polymer`` (more ATS vendors) and ``yc_waas`` (YC Work at a Startup, a
+listing site) are recorded the same way since the 2026-10-14 recall audit
+(``docs/decisions/0030``), and ``none`` is discovery's ``no_board`` coverage marker.
+Mirrors ``tell.discovery.ats`` (``SUPPORTED_VENDORS``, ``UNSUPPORTED_VENDORS``,
+``NO_BOARD_VENDOR``); ``tests/discovery/test_ats.py`` keeps the two in step. Nothing in
+the database constrains the column."""
 
 AtsBoardStatus = Literal["active", "no_board", "dead", "paused", "unsupported"]
 ATS_BOARD_STATUSES: tuple[str, ...] = ("active", "no_board", "dead", "paused", "unsupported")

@@ -140,7 +140,7 @@ POLL_LOOKBACK: Final = timedelta(days=ROTATION_DAYS)
 """How far back the ``runs.notes["polled"]`` history is read."""
 MAX_COMPANIES: Final = 1200
 """Companies per run: 1,200 Google News queries at 1 rps is 20 minutes, inside the
-30-minute ``filings`` job with margin."""
+45-minute ``filings`` job (EDGAR first, then news) with margin."""
 RUN_BUDGET: Final = timedelta(minutes=25)
 """Wall-clock budget per run; the run stops cleanly before the next company after it."""
 DISCOVERY_RETRY: Final = timedelta(days=30)

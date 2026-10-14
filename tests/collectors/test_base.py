@@ -37,6 +37,7 @@ from tell.collectors.base import (
     finish_run,
     from_epoch_ms,
     iso_utc,
+    listed_id,
     new_run_id,
     parse_iso,
     record_board_not_found,
@@ -584,6 +585,76 @@ def test_no_closes_on_first_poll_and_exactly_12h_counts(
     poll(db_session, board, [], now=T0 + 2 * H)
     events, _ = poll(db_session, board, [], now=T0 + 14 * H)  # exactly 12h after the previous poll
     assert types_of(events) == ["job_closed"]
+
+
+def test_listed_but_invalid_postings_are_never_closed(db_session: Session, board: AtsBoard) -> None:
+    poll(db_session, board, [obs("j1"), obs("j2"), obs("j3")], now=T0)
+    # j1 and j2 are still listed but fail validation; j3 really vanished.
+    for now in (T0 + 6 * H, T0 + 18 * H):
+        events = sync_board_postings(
+            db_session, board, [], run_id="run-2", now=now, invalid=("j1", "j2", "unknown")
+        )
+        write_events(db_session, events)
+    assert [e.payload["posting_external_id"] for e in events] == ["j3"]
+    assert types_of(events) == ["job_closed"]
+    held = posting(db_session, board, "j1")
+    assert held.closed_at is None
+    assert held.last_seen_at == T0 + 18 * H
+    assert count(db_session, PostingObservation) == 3  # only the first, valid poll
+    # Valid again later: the same posting, nothing to report.
+    events, _ = poll(db_session, board, [obs("j1"), obs("j2")], now=T0 + DAY)
+    assert events == []
+
+
+def test_an_invalid_job_without_an_id_suppresses_every_close(
+    db_session: Session, board: AtsBoard
+) -> None:
+    poll(db_session, board, [obs("j1"), obs("j2")], now=T0)
+    for now in (T0 + 6 * H, T0 + 18 * H):
+        events = sync_board_postings(
+            db_session, board, [obs("j2")], run_id="run-2", now=now, invalid=(None,)
+        )
+        assert events == []
+    assert posting(db_session, board, "j1").closed_at is None
+    # Once every listed job is understood again, absence closes as usual.
+    poll(db_session, board, [obs("j2")], now=T0 + 30 * H)
+    assert posting(db_session, board, "j1").closed_at == T0 + 30 * H
+
+
+def test_a_listed_invalid_posting_is_not_a_repost_candidate(
+    db_session: Session, board: AtsBoard
+) -> None:
+    poll(db_session, board, [obs("j1")], now=T0)
+    events = sync_board_postings(
+        db_session,
+        board,
+        [obs("j2", description="Reworded.", version="v9")],
+        run_id="run-2",
+        now=T0 + DAY,
+        invalid=("j1",),
+    )
+    assert types_of(events) == ["job_opened"]
+
+
+@pytest.mark.parametrize(
+    ("item", "expected"),
+    [
+        ({"id": 8172510}, "8172510"),
+        ({"id": "abc-1"}, "abc-1"),
+        ({"id": ""}, None),
+        ({"id": True}, None),
+        ({"id": 1.5}, None),
+        ({"title": "x"}, None),
+        (None, None),
+        (["id"], None),
+    ],
+)
+def test_listed_id(item: object, expected: str | None) -> None:
+    assert listed_id(item) == expected
+
+
+def test_run_result_errors_default_to_zero() -> None:
+    assert RunResult(fetched=1, inserted=1, skipped=0).errors == 0
 
 
 def test_reappearance_after_close_clears_closed_at(db_session: Session, board: AtsBoard) -> None:

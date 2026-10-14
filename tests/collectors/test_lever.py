@@ -41,6 +41,7 @@ NORMAL = FIXTURES / "normal.json"
 EMPTY = FIXTURES / "empty_board.json"
 DRIFT = FIXTURES / "drift.json"
 UPDATED = FIXTURES / "updated.json"
+NULLS = FIXTURES / "normal_nulls.json"
 
 GLOBAL_URL = "https://api.lever.co/v0/postings/spotify"
 EU_URL = "https://api.eu.lever.co/v0/postings/spotify"
@@ -118,6 +119,53 @@ def test_other_required_fields_are_enforced(field: str) -> None:
     del raw[2][field]
     with pytest.raises(pydantic.ValidationError, match=field):
         LeverPostings.model_validate(raw)
+
+
+def test_nulls_fixture_parses() -> None:
+    """Real 2026-10-14 postings: ``country`` null, no ``department``, no ``commitment``."""
+    raw = json.loads(NULLS.read_text(encoding="utf-8"))
+    assert raw[0]["country"] is None
+    assert "department" not in raw[1]["categories"]
+    assert "commitment" not in raw[2]["categories"]
+    by_id = {p.external_id: p for p in parse(NULLS.read_bytes())}
+    payroll = by_id["fade4c5e-b0b0-4a51-a6e4-f7a12e837d0d"]
+    assert payroll.extra["country"] is None
+    assert payroll.department == "Company-Wide"
+    assert payroll.remote is False  # hybrid
+    sales = by_id["e3e061af-9c83-4db0-8e2f-0ac583102809"]
+    assert sales.department == "Sales"  # falls back to categories.team
+    assert sales.extra["department"] is None
+    manager = by_id["aecbb044-eca1-4469-a341-0095d09bb22f"]
+    assert manager.extra["commitment"] is None
+    assert manager.extra["commitment_tags"] == []
+    assert manager.extra["salary_range"] is None
+
+
+def test_validate_board_skips_one_invalid_posting_and_logs_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level("WARNING", logger="tell.collectors.lever"):
+        postings = lever.validate_board(DRIFT.read_bytes(), identifier="spotify")
+    assert [p.id for p in postings.root] == [ID_CONTRACT, ID_INTERN, ID_HYBRID]
+    assert postings.invalid_jobs == 1
+    (record,) = caplog.records
+    assert record.levelname == "WARNING"
+    assert "spotify" in record.getMessage()
+    assert ID_REMOTE in record.getMessage()
+    assert "createdAt (missing)" in record.getMessage()
+
+
+def test_validate_board_fails_loudly_when_every_posting_fails() -> None:
+    raw = _normal_raw()
+    for posting in raw:
+        del posting["createdAt"]
+    with pytest.raises(pydantic.ValidationError, match=r"0\.createdAt"):
+        lever.validate_board(json.dumps(raw), identifier="spotify")
+    with pytest.raises(pydantic.ValidationError):
+        lever.validate_board(json.dumps({"postings": []}), identifier="spotify")
+    with_junk: list[Any] = [*_normal_raw(), "not a posting"]
+    assert lever.validate_board(json.dumps(with_junk), identifier="spotify").invalid_jobs == 1
+    assert lever.validate_board(EMPTY.read_bytes(), identifier="spotify").invalid_jobs == 0
 
 
 def test_updated_differs_from_normal_in_one_created_at_only() -> None:
@@ -372,10 +420,20 @@ def test_fetch_board_other_4xx_raises_http_status_error(
         fetch_board(None, "spotify", budget=budget)
 
 
-def test_fetch_board_drift_raises_validation_error(
+def test_fetch_board_skips_a_drifted_posting(mocked: respx.MockRouter, budget: RateBudget) -> None:
+    mocked.get(GLOBAL_URL).mock(return_value=httpx.Response(200, content=DRIFT.read_bytes()))
+    postings = fetch_board(None, "spotify", budget=budget)
+    assert len(postings.root) == 3
+    assert postings.invalid_jobs == 1
+
+
+def test_fetch_board_drift_on_every_posting_raises_validation_error(
     mocked: respx.MockRouter, budget: RateBudget
 ) -> None:
-    mocked.get(GLOBAL_URL).mock(return_value=httpx.Response(200, content=DRIFT.read_bytes()))
+    raw = _normal_raw()
+    for posting in raw:
+        del posting["createdAt"]
+    mocked.get(GLOBAL_URL).mock(return_value=httpx.Response(200, json=raw))
     with pytest.raises(pydantic.ValidationError, match="createdAt"):
         fetch_board(None, "spotify", budget=budget)
 
@@ -489,6 +547,20 @@ def test_ingest_board_writes_postings_and_events(
     assert board.last_verified_at is None
     assert board.status == "active"
     assert _count(db_session, Posting) == 4
+
+
+@pytest.mark.db
+def test_ingest_board_skips_and_counts_one_invalid_posting(
+    db_session: Session, mocked: respx.MockRouter, budget: RateBudget
+) -> None:
+    mocked.get(GLOBAL_URL).mock(return_value=httpx.Response(200, content=DRIFT.read_bytes()))
+    board = _board(db_session)
+    run_id = start_run(db_session, "lever", now=NOW)
+    result = ingest_board(db_session, board, run_id=run_id, now=NOW, budget=budget)
+    assert isinstance(result, lever.BoardRunResult)
+    assert (result.fetched, result.inserted, result.errors) == (4, 3, 1)
+    assert _count(db_session, Posting) == 3
+    assert board.last_polled_at == NOW
 
 
 @pytest.mark.db

@@ -28,6 +28,7 @@ NORMAL = FIXTURES / "normal.json"
 EMPTY = FIXTURES / "empty_board.json"
 DRIFT = FIXTURES / "drift.json"
 UPDATED = FIXTURES / "updated.json"
+NULLS = FIXTURES / "normal_nulls.json"
 
 T0 = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
 H = timedelta(hours=1)
@@ -92,7 +93,7 @@ def test_collector_registration() -> None:
     assert spec.response_model is ashby.AshbyJobBoard
     assert spec.fixture_dir == FIXTURES
     assert spec.drift_missing_field == "publishedAt"
-    for path in (NORMAL, EMPTY, DRIFT, UPDATED):
+    for path in (NORMAL, EMPTY, DRIFT, UPDATED, NULLS):
         assert path.stat().st_size < 50_000, path.name
 
 
@@ -231,10 +232,14 @@ def test_unlisted_and_blank_title_postings_are_skipped() -> None:
         ("Hybrid", True, "London", False),
         (None, True, "Anywhere", True),
         (None, False, "Berlin", False),
+        (None, None, "remote", True),
+        (None, None, "United States (remote)", True),
+        (None, None, "Berlin", None),
+        (None, None, "Remotely Berlin", None),
     ],
 )
 def test_remote_flag_inference(
-    workplace: str | None, is_remote: bool, location: str, expected: bool
+    workplace: str | None, is_remote: bool | None, location: str, expected: bool | None
 ) -> None:
     data = _load(NORMAL)
     job = data["jobs"][0]
@@ -243,6 +248,73 @@ def test_remote_flag_inference(
     job["location"] = location
     (posting, *_) = ashby.parse(json.dumps(data))
     assert posting.remote is expected
+
+
+ID_NULLS_ONSITE = "14af59ec-6dd0-4d32-a7d7-8506ba93d5a0"
+ID_NULLS_REMOTE = "1400d1a6-6638-4a3e-bff7-1899e3769af2"
+ID_NULLS_UNKNOWN = "59ed9c30-26a6-4a72-bf8a-48af7bbafd75"
+
+
+def test_nulls_fixture_parses_with_unknown_remote_flags() -> None:
+    """Real 2026-10-14 jobs with ``isRemote``/``workplaceType``/``address`` null."""
+    board = ashby.AshbyJobBoard.model_validate_json(NULLS.read_bytes())
+    assert [job.is_remote for job in board.jobs] == [False, None, None]
+    by_id = _by_id(ashby.parse(board))
+    assert set(by_id) == {ID_NULLS_ONSITE, ID_NULLS_REMOTE, ID_NULLS_UNKNOWN}
+    assert by_id[ID_NULLS_ONSITE].remote is False
+    assert by_id[ID_NULLS_REMOTE].remote is True  # location "remote", both flags null
+    assert by_id[ID_NULLS_REMOTE].location == "remote"
+    assert by_id[ID_NULLS_UNKNOWN].remote is None  # location "Berlin", both flags null
+    assert by_id[ID_NULLS_UNKNOWN].extra["isRemote"] is None
+    assert by_id[ID_NULLS_UNKNOWN].extra["workplaceType"] is None
+    assert by_id[ID_NULLS_UNKNOWN].location == "Berlin"
+
+
+def test_is_remote_may_be_null_but_not_missing() -> None:
+    data = _load(NORMAL)
+    data["jobs"][0]["isRemote"] = None
+    assert ashby.AshbyJobBoard.model_validate(data).jobs[0].is_remote is None
+    del data["jobs"][0]["isRemote"]
+    with pytest.raises(pydantic.ValidationError, match="isRemote"):
+        ashby.AshbyJobBoard.model_validate(data)
+
+
+def test_validate_board_skips_one_invalid_job_and_logs_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level("WARNING", logger="tell.collectors.ashby"):
+        board = ashby.validate_board(DRIFT.read_bytes(), identifier="ramp")
+    assert [job.id for job in board.jobs] == [ID_SECURITY, ID_AE, ID_IT]
+    assert board.invalid_jobs == 1
+    (record,) = caplog.records
+    assert record.levelname == "WARNING"
+    assert "ramp" in record.getMessage()
+    assert ID_ARCHITECT in record.getMessage()
+    assert "publishedAt (missing)" in record.getMessage()
+
+
+def test_validate_board_counts_a_non_object_job() -> None:
+    data = _load(NORMAL)
+    data["jobs"].append("not a job")
+    board = ashby.validate_board(json.dumps(data), identifier="ramp")
+    assert len(board.jobs) == 4
+    assert board.invalid_jobs == 1
+
+
+def test_validate_board_fails_when_every_job_fails() -> None:
+    data = _load(NORMAL)
+    for job in data["jobs"]:
+        del job["publishedAt"]
+    with pytest.raises(pydantic.ValidationError, match=r"jobs\.0\.publishedAt"):
+        ashby.validate_board(json.dumps(data), identifier="ramp")
+
+
+def test_validate_board_envelope_stays_strict() -> None:
+    with pytest.raises(pydantic.ValidationError, match="apiVersion"):
+        ashby.validate_board(json.dumps({"jobs": []}), identifier="ramp")
+    with pytest.raises(pydantic.ValidationError, match="jobs"):
+        ashby.validate_board(json.dumps({"apiVersion": "1"}), identifier="ramp")
+    assert ashby.validate_board(EMPTY.read_bytes(), identifier="ramp").invalid_jobs == 0
 
 
 def test_compensation_hidden_by_employer_or_absent_is_not_kept() -> None:
@@ -442,11 +514,21 @@ def test_fetch_board_404_returns_none_and_403_raises(
         ashby.fetch_board(client, "locked", budget=budget)
 
 
-def test_fetch_board_drifted_response_raises(
+def test_fetch_board_skips_a_drifted_job(
     respx_mock: respx.MockRouter, client: httpx.Client, budget: RateBudget
 ) -> None:
     respx_mock.get(FULL_URL).mock(return_value=httpx.Response(200, content=DRIFT.read_bytes()))
-    with pytest.raises(pydantic.ValidationError, match="publishedAt"):
+    board = ashby.fetch_board(client, BOARD, budget=budget)
+    assert board is not None
+    assert len(board.jobs) == 3
+    assert board.invalid_jobs == 1
+
+
+def test_fetch_board_drifted_envelope_raises(
+    respx_mock: respx.MockRouter, client: httpx.Client, budget: RateBudget
+) -> None:
+    respx_mock.get(FULL_URL).mock(return_value=httpx.Response(200, json={"jobs": []}))
+    with pytest.raises(pydantic.ValidationError, match="apiVersion"):
         ashby.fetch_board(client, BOARD, budget=budget)
 
 
@@ -614,11 +696,51 @@ def test_ingest_board_rejects_other_vendors(db_session: Session) -> None:
 
 
 @pytest.mark.db
-def test_ingest_board_with_given_client_and_drift_propagates(
+def test_ingest_board_one_invalid_job_is_counted_not_fatal(
     respx_mock: respx.MockRouter, db_session: Session, client: httpx.Client, budget: RateBudget
 ) -> None:
     board = _board(db_session)
     respx_mock.get(FULL_URL).mock(return_value=httpx.Response(200, content=DRIFT.read_bytes()))
+    run_id = start_run(db_session, "ashby", now=T0)
+    result = ashby.ingest_board(
+        db_session, board, run_id=run_id, now=T0, client=client, budget=budget
+    )
+    assert isinstance(result, ashby.BoardRunResult)
+    assert result.fetched == 4
+    assert result.inserted == 3
+    assert result.errors == 1
+    assert {e.external_id for e in result.events} == {
+        f"ashby:ramp:{job_id}" for job_id in (ID_SECURITY, ID_AE, ID_IT)
+    }
+    assert board.last_polled_at == T0
+
+
+@pytest.mark.db
+def test_ingest_board_nulls_board_is_polled(
+    respx_mock: respx.MockRouter, db_session: Session, client: httpx.Client, budget: RateBudget
+) -> None:
+    board = _board(db_session)
+    respx_mock.get(FULL_URL).mock(return_value=httpx.Response(200, content=NULLS.read_bytes()))
+    run_id = start_run(db_session, "ashby", now=T0)
+    result = ashby.ingest_board(
+        db_session, board, run_id=run_id, now=T0, client=client, budget=budget
+    )
+    assert (result.fetched, result.inserted, result.errors) == (3, 3, 0)
+    remote = db_session.scalars(
+        select(Posting.remote).where(Posting.board_id == board.id).order_by(Posting.external_id)
+    ).all()
+    assert remote == [True, False, None]  # 1400d1a6, 14af59ec, 59ed9c30
+
+
+@pytest.mark.db
+def test_ingest_board_with_given_client_and_drift_propagates(
+    respx_mock: respx.MockRouter, db_session: Session, client: httpx.Client, budget: RateBudget
+) -> None:
+    board = _board(db_session)
+    data = _load(NORMAL)
+    for job in data["jobs"]:
+        del job["publishedAt"]
+    respx_mock.get(FULL_URL).mock(return_value=httpx.Response(200, json=data))
     with pytest.raises(pydantic.ValidationError):
         ashby.ingest_board(db_session, board, run_id="r", now=T0, client=client, budget=budget)
     assert not client.is_closed

@@ -1,0 +1,123 @@
+{
+  "apiVersion": "1",
+  "jobs": [
+    {
+      "id": "14af59ec-6dd0-4d32-a7d7-8506ba93d5a0",
+      "title": "AI Marketing Strategist",
+      "department": "Marketing",
+      "team": "Marketing",
+      "employmentType": "FullTime",
+      "location": "Berlin",
+      "shouldDisplayCompensationOnJobPostings": true,
+      "secondaryLocations": [
+        {
+          "location": "San Francisco",
+          "address": {
+            "postalAddress": {
+              "addressRegion": "California",
+              "addressCountry": "United States",
+              "addressLocality": "San Francisco"
+            }
+          }
+        }
+      ],
+      "publishedAt": "2026-06-10T09:40:49.314+00:00",
+      "isListed": true,
+      "isRemote": false,
+      "workplaceType": "OnSite",
+      "address": {
+        "postalAddress": {}
+      },
+      "jobUrl": "https://jobs.ashbyhq.com/uplane/14af59ec-6dd0-4d32-a7d7-8506ba93d5a0",
+      "applyUrl": "https://jobs.ashbyhq.com/uplane/14af59ec-6dd0-4d32-a7d7-8506ba93d5a0/application",
+      "descriptionHtml": "<p style=\"min-height:1.5em\"><strong>About Uplane</strong></p><p style=\"min-height:1.5em\">Companies waste billions on bad ads, mismatched landing pages, and poor budget allocation.</p>",
+      "descriptionPlain": "About Uplane\n\nCompanies waste billions on bad ads, mismatched landing pages, and poor budget allocation.",
+      "compensation": {
+        "compensationTierSummary": null,
+        "scrapeableCompensationSalarySummary": null,
+        "compensationTiers": [],
+        "summaryComponents": []
+      }
+    },
+    {
+      "id": "1400d1a6-6638-4a3e-bff7-1899e3769af2",
+      "title": "Video Producer",
+      "department": "Marketing",
+      "team": "Marketing",
+      "employmentType": "FullTime",
+      "location": "remote",
+      "shouldDisplayCompensationOnJobPostings": false,
+      "secondaryLocations": [
+        {
+          "location": "San Francisco",
+          "address": {
+            "postalAddress": {
+              "addressRegion": "California",
+              "addressCountry": "United States",
+              "addressLocality": "San Francisco"
+            }
+          }
+        },
+        {
+          "location": "Berlin",
+          "address": {
+            "postalAddress": {}
+          }
+        }
+      ],
+      "publishedAt": "2026-09-29T03:37:31.924+00:00",
+      "isListed": true,
+      "isRemote": null,
+      "workplaceType": null,
+      "address": null,
+      "jobUrl": "https://jobs.ashbyhq.com/uplane/1400d1a6-6638-4a3e-bff7-1899e3769af2",
+      "applyUrl": "https://jobs.ashbyhq.com/uplane/1400d1a6-6638-4a3e-bff7-1899e3769af2/application",
+      "descriptionHtml": "<p style=\"min-height:1.5em\"><strong>About Uplane</strong></p><p style=\"min-height:1.5em\">Companies waste billions on bad ads, mismatched landing pages, and poor budget allocation.</p>",
+      "descriptionPlain": "About Uplane\n\nCompanies waste billions on bad ads, mismatched landing pages, and poor budget allocation.",
+      "compensation": {
+        "compensationTierSummary": null,
+        "scrapeableCompensationSalarySummary": null,
+        "compensationTiers": [],
+        "summaryComponents": []
+      }
+    },
+    {
+      "id": "59ed9c30-26a6-4a72-bf8a-48af7bbafd75",
+      "title": "Growth Operations",
+      "department": "Business Development",
+      "team": "Business Development",
+      "employmentType": "FullTime",
+      "location": "Berlin",
+      "shouldDisplayCompensationOnJobPostings": false,
+      "secondaryLocations": [
+        {
+          "location": "San Francisco",
+          "address": {
+            "postalAddress": {
+              "addressRegion": "California",
+              "addressCountry": "United States",
+              "addressLocality": "San Francisco"
+            }
+          }
+        }
+      ],
+      "publishedAt": "2026-10-01T00:31:42.188+00:00",
+      "isListed": true,
+      "isRemote": null,
+      "workplaceType": null,
+      "address": {
+        "postalAddress": {}
+      },
+      "jobUrl": "https://jobs.ashbyhq.com/uplane/59ed9c30-26a6-4a72-bf8a-48af7bbafd75",
+      "applyUrl": "https://jobs.ashbyhq.com/uplane/59ed9c30-26a6-4a72-bf8a-48af7bbafd75/application",
+      "descriptionHtml": "<p style=\"min-height:1.5em\"><strong>About Uplane (YC F25)</strong></p><p style=\"min-height:1.5em\">Companies waste billions on bad ads, mismatched landing pages, and poor budget allocation.</p>",
+      "descriptionPlain": "About Uplane (YC F25)\n\nCompanies waste billions on bad ads, mismatched landing pages, and poor budget allocation.",
+      "compensation": {
+        "compensationTierSummary": null,
+        "scrapeableCompensationSalarySummary": null,
+        "compensationTiers": [],
+        "summaryComponents": []
+      }
+    }
+  ]
+}

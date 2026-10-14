@@ -103,8 +103,10 @@ jobs:
           fi
 
   # Discovery runs ahead of the ATS legs with its own budget (<= 300 new domains per run
-  # at 4 requests per second; TELL_DISCOVERY_BUDGET / TELL_DISCOVERY_RPS). A failed or
-  # timed-out discovery pass never blocks polling: `ats` needs it but runs unless the run was cancelled.
+  # at 4 requests per second; TELL_DISCOVERY_BUDGET / TELL_DISCOVERY_RPS). It commits after
+  # every domain and stops starting new ones after TELL_DISCOVERY_MAX_MINUTES, so a slow
+  # day defers domains to the next run instead of losing the pass. A failed or timed-out
+  # discovery pass never blocks polling: `ats` needs it but runs unless the run was cancelled.
   discover:
     needs: [preflight]
     if: >-
@@ -120,9 +122,14 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen
       - name: Discover boards for new domains (budgeted)
-        # 120 new domains per run, not the SPEC's 300: live discovery averages about 6 s a
-        # domain at 4 rps, so 300 overran the 30-minute timeout on the first production run.
-        run: uv run tell discover batch --limit 120 --rps 4
+        # 250 new domains per run, under the SPEC's 300: six domains in flight sharing the one
+        # 4 rps budget measured 4.74 s a domain with the deeper scan on 80 real YC domains
+        # (2026-10-14), so 250 take about 20 minutes. The 22-minute wall-clock budget below
+        # stops new domains early on a slow day; the 30-minute timeout leaves room for setup
+        # and in-flight work.
+        env:
+          TELL_DISCOVERY_MAX_MINUTES: "22"
+        run: uv run tell discover batch --limit 250 --rps 4
 
   ats:
     needs: [preflight, discover]
@@ -166,7 +173,10 @@ jobs:
       ${{ needs.preflight.outputs.enabled == 'true' &&
       (!inputs.source || inputs.source == 'edgar' || inputs.source == 'news') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 45, not 30: the second production run took 29.9 of 30 minutes. News stops itself
+    # after its own 25-minute run budget (RUN_BUDGET in tell/collectors/news.py), so EDGAR
+    # gets the rest; a slow EDGAR day no longer cuts news off mid-run.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0

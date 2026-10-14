@@ -1,0 +1,150 @@
+{
+  "jobs": [
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/podium81/jobs/8063639",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false,
+          "requires_processing_consent": false,
+          "requires_retention_consent": false,
+          "retention_period": null,
+          "demographic_data_consent_applies": false
+        }
+      ],
+      "internal_job_id": 3494152,
+      "location": {
+        "name": null
+      },
+      "metadata": null,
+      "id": 8063639,
+      "updated_at": "2026-07-14T00:53:06-04:00",
+      "requisition_id": "AU108",
+      "title": "Customer Success Manager ",
+      "company_name": "Podium",
+      "first_published": "2026-07-14T00:52:32-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;div class=&quot;content-intro&quot;&gt;&lt;p&gt;At Podium, we bring AI Employees to local businesses that turn every conversation into revenue. Trusted by 60,000+ businesses across Auto, Home Services, and Aesthetics, Podium captures and converts leads 24/7, driving both new business and repeat customers.&lt;/p&gt;&lt;/div&gt;",
+      "departments": [
+        {
+          "id": 63011,
+          "name": "Customer Success",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "offices": [
+        {
+          "id": 66243,
+          "name": "Melbourne",
+          "location": "Melbourne, Victoria, Australia",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "ai_disclaimer": null,
+      "include_ai_disclaimer": null,
+      "ai_opt_out_request_url": null
+    },
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/podium81/jobs/8243091",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false,
+          "requires_processing_consent": false,
+          "requires_retention_consent": false,
+          "retention_period": null,
+          "demographic_data_consent_applies": false
+        }
+      ],
+      "education": "education_required",
+      "internal_job_id": 3397275,
+      "location": {
+        "name": "Remote, US"
+      },
+      "metadata": null,
+      "id": 8243091,
+      "updated_at": "2026-09-30T10:55:13-04:00",
+      "requisition_id": "1262",
+      "title": "Regional Customer Success Manager (Automotive)",
+      "company_name": "Podium",
+      "first_published": "2026-09-30T10:55:13-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;div class=&quot;content-intro&quot;&gt;&lt;p&gt;At Podium, we bring AI Employees to local businesses that turn every conversation into revenue. Trusted by 60,000+ businesses across Auto, Home Services, and Aesthetics, Podium captures and converts leads 24/7, driving both new business and repeat customers.&lt;/p&gt;&lt;/div&gt;",
+      "departments": [
+        {
+          "id": 63011,
+          "name": "Customer Success",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "offices": [
+        {
+          "id": 66242,
+          "name": "Lehi",
+          "location": "Lehi, Utah, United States",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "ai_disclaimer": null,
+      "include_ai_disclaimer": null,
+      "ai_opt_out_request_url": null
+    },
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/podium81/jobs/5670478",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false,
+          "requires_processing_consent": false,
+          "requires_retention_consent": false,
+          "retention_period": null,
+          "demographic_data_consent_applies": false
+        }
+      ],
+      "education": "education_required",
+      "internal_job_id": 2777965,
+      "location": {
+        "name": "Lehi, Utah"
+      },
+      "metadata": null,
+      "id": 5670478,
+      "updated_at": "2026-10-09T11:58:48-04:00",
+      "requisition_id": "829",
+      "title": "Accounts Receivable Specialist",
+      "company_name": "Podium",
+      "first_published": "2024-02-02T19:16:01-05:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;div class=&quot;content-intro&quot;&gt;&lt;p&gt;At Podium, we bring AI Employees to local businesses that turn every conversation into revenue. Trusted by 60,000+ businesses across Auto, Home Services, and Aesthetics, Podium captures and converts leads 24/7, driving both new business and repeat customers.&lt;/p&gt;&lt;/div&gt;",
+      "departments": [
+        {
+          "id": 63007,
+          "name": "Finance",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "offices": [
+        {
+          "id": 66242,
+          "name": "Lehi",
+          "location": "Lehi, Utah, United States",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "ai_disclaimer": null,
+      "include_ai_disclaimer": null,
+      "ai_opt_out_request_url": null
+    }
+  ],
+  "meta": {
+    "total": 3
+  }
+}

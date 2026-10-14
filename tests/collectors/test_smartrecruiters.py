@@ -113,7 +113,14 @@ def test_collector_registration() -> None:
 
 @pytest.mark.parametrize(
     "name",
-    ["normal.json", "updated.json", "empty_board.json", "paged_1.json", "paged_2.json"],
+    [
+        "normal.json",
+        "normal_nulls.json",
+        "updated.json",
+        "empty_board.json",
+        "paged_1.json",
+        "paged_2.json",
+    ],
 )
 def test_list_fixtures_validate(name: str) -> None:
     sr.SmartRecruitersPostingList.model_validate_json(_text(name))
@@ -226,6 +233,50 @@ def test_parse_remote_flag_and_location_fallbacks() -> None:
     assert postings[0].title == "Platform Engineer"
 
 
+def test_nulls_fixture_parses_without_region() -> None:
+    """Real 2026-10-14 postings (``BukuWarung``) whose ``location`` has no ``region``."""
+    listing = sr.SmartRecruitersPostingList.model_validate_json(_text("normal_nulls.json"))
+    assert all(item.location.region is None for item in listing.content)
+    postings = sr.parse(listing, identifier="bukuwarung")
+    assert [p.location for p in postings] == [
+        "Jakarta, Indonesia",  # fullLocation "Jakarta, , Indonesia"
+        "Jakarta, Indonesia",
+        "Jakarta Pusat, Indonesia",
+    ]
+    assert [p.remote for p in postings] == [False, False, False]
+    assert [p.department for p in postings] == ["Marketing", "Analyst", "Marketing"]
+    assert "region" not in postings[0].extra
+
+
+def test_validate_page_skips_one_invalid_item_and_logs_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level("WARNING", logger="tell.collectors.smartrecruiters"):
+        page = sr.validate_page(_text("drift.json"), identifier="BoschGroup")
+    assert len(page.content) == 2
+    assert page.invalid_jobs == 1
+    assert page.total_found == 3
+    (record,) = caplog.records
+    assert record.levelname == "WARNING"
+    message = record.getMessage()
+    assert "BoschGroup" in message
+    assert "content.0" in message
+    assert "releasedDate (missing)" in message
+
+
+def test_validate_page_fails_loudly_when_every_item_fails() -> None:
+    doc = _json("normal.json")
+    for item in doc["content"]:
+        del item["releasedDate"]
+    with pytest.raises(pydantic.ValidationError, match=r"content\.0\.releasedDate"):
+        sr.validate_page(json.dumps(doc), identifier="BoschGroup")
+    with pytest.raises(pydantic.ValidationError, match="totalFound"):
+        sr.validate_page(json.dumps({"offset": 0, "limit": 100, "content": []}), identifier="x")
+    doc = _json("normal.json")
+    doc["content"].append(42)
+    assert sr.validate_page(json.dumps(doc), identifier="BoschGroup").invalid_jobs == 1
+
+
 def test_parse_department_label_wins_over_function() -> None:
     item = _item(department={"id": "d1", "label": "R&D"}, function={"label": "Engineering"})
     blank = _item(id="2", department={"label": "  "}, function={"label": "Sales"})
@@ -307,6 +358,21 @@ def test_fetch_board_paginates_on_total_found(
         "744000153526329",
         "744000153521190",
     ]
+
+
+def test_fetch_board_counts_invalid_items_across_pages(
+    mocked: respx.MockRouter, client: httpx.Client, budget: RateBudget, sleeps: Sleeps
+) -> None:
+    first = _json("paged_1.json")
+    del first["content"][0]["location"]
+    second = _json("paged_2.json")
+    second["content"][1]["name"] = None
+    mocked.get(LIST_URL, params={"limit": "100", "offset": "0"}).respond(200, json=first)
+    mocked.get(LIST_URL, params={"limit": "100", "offset": "100"}).respond(200, json=second)
+    listing = sr.fetch_board(client, "BoschGroup", budget=budget, sleep=sleeps)
+    assert len(listing.content) == 3
+    assert listing.invalid_jobs == 2
+    assert listing.total_found == 150
 
 
 def test_fetch_board_stops_on_empty_page_and_max_pages(
@@ -488,6 +554,21 @@ def test_ingest_board_fetches_details_only_for_new_ids(
     assert posting.content_hash == content_hash(DETAIL_TEXT)
     assert board.last_polled_at == LATER
     assert board.last_verified_at is None
+
+
+@pytest.mark.db
+def test_ingest_board_skips_and_counts_one_invalid_item(
+    db_session: Session, mocked: respx.MockRouter, budget: RateBudget, sleeps: Sleeps
+) -> None:
+    board = _board(db_session)
+    mocked.get(LIST_URL, params={"limit": "100", "offset": "0"}).respond(
+        200, json=_json("drift.json")
+    )
+    mocked.get(url__startswith=f"{LIST_URL}/").respond(404)
+    result = sr.ingest_board(db_session, board, run_id="r1", now=NOW, budget=budget, sleep=sleeps)
+    assert isinstance(result, sr.BoardRunResult)
+    assert (result.fetched, result.inserted, result.errors) == (3, 2, 1)
+    assert board.last_polled_at == NOW
 
 
 @pytest.mark.db

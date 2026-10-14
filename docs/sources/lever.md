@@ -49,6 +49,31 @@ to tag `is_intern`. The raw `commitment` is always kept next to it. Nothing pers
 Lever postings carry no hiring-manager or recruiter fields in this API, and description text,
 `lists`, `additional` and `opening` are never copied.
 
+## Gotchas (observed 2026-10-14)
+
+One poll of every active board in the 2026-10-13 snapshot (14 boards, 380 postings). No
+posting broke the contract; these fields are absent or null in practice and the model
+already allows it:
+
+| Field | Null / missing | Handling |
+| --- | --- | --- |
+| `categories.department` | missing on 33 postings (6 boards) | `department` falls back to `categories.team`; `extra.department` is `null` |
+| `categories.commitment` | missing on 2 postings (1 board) | `extra.commitment` `null`, `commitment_tags` empty |
+| `salaryRange` | missing on 150 postings (10 boards) | `extra.salary_range` `null` |
+| `country` | `null` on 1 posting (1 board) | `extra.country` `null` |
+
+One bad posting never fails a board. `fetch_board` requires a JSON array, then validates
+each posting on its own (`validate_board`): a posting that breaks `LeverPosting` is
+skipped, logged at WARNING with the board, the posting id and the field path (e.g.
+`createdAt (missing)`), and counted in the board's `BoardRunResult.errors`. Only when
+every posting of a non-empty board fails does the board fail with the strict error, so a
+provider-wide rename stays loud. `tell ingest` adds the skipped postings to `runs.errors` and names the board in
+`notes.invalid_jobs` (`{board: count}`). A skipped posting is still listed, so its id is
+passed to `sync_board_postings` and its posting is never closed while it fails (its
+`last_seen_at` is refreshed; a skipped record without a usable id suppresses every
+close on that board for that poll).
+`parse()` on raw JSON and the generic contract test still use the strict model.
+
 ## Rate limit and politeness
 
 Lever publishes no rate limit.
@@ -87,8 +112,9 @@ by third parties; its site terms forbid scraping the app, which this does not to
 | `empty_board.json` | `[]`, the documented response for a board with no published postings. |
 | `drift.json` | `normal.json` with `createdAt` removed from the first posting; it must fail naming `createdAt`. |
 | `updated.json` | `normal.json` with the fourth posting's `createdAt` moved forward by 24 h (`1789545941933` → `1789632341933`). |
+| `normal_nulls.json` | Live-recorded on 2026-10-14, one posting from each of three boards: `country: null` (`distro`, with a `salaryRange`), no `categories.department` (`handoff`), no `categories.commitment` (`ion`). Description fields cut to one sentence, `lists`, `additional` and `salaryDescription` dropped. Checked for names, emails and phone numbers; none found. |
 
-Neither recorded board (Spotify; Palantir was also checked) publishes `salaryRange`.
+Neither 2026-10-05 board (Spotify; Palantir was also checked) publishes `salaryRange`.
 `tests/collectors/test_lever.py` therefore adds a `salaryRange` object in the documented shape
 (`currency`, `interval`, `min`, `max`) to a copy of a fixture posting. The EU host is tested
 with respx against the same fixture body.

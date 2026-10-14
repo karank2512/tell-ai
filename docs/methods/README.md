@@ -11,6 +11,7 @@ Each page defines what a number means, how it is computed and what it cannot tel
 | [tech-keywords.md](tech-keywords.md) | The keyword table behind `tech_mentioned_first_time` |
 | [scoring.md](scoring.md) | Contributions, decay, profiles, thresholds |
 | [publishing.md](publishing.md) | Site, static API, Slack, CSV, size budget |
+| [snapshot-2026-10-14.md](snapshot-2026-10-14.md) | Dated snapshot of 1,000 active YC companies (N = 1,000, quotable): documented-API board coverage and where the rest hire, then one poll's postings, staleness, role mix, tech keywords and duplicates |
 
 ## Backtest reports (spec section 13)
 
