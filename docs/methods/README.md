@@ -25,6 +25,30 @@ Each page defines what a number means, how it is computed and what it cannot tel
 | `ops` | 13.4 | Weeks unattended (anchored on the latest run marked `notes.manual = true`, see below), success rate, freshness p95, companies and postings, gold-set precision and recall, review-queue rate. | `tell/backtest/ops.py` |
 | `dogfood` | 13.5 | Private: written to `tell-private/reports/` only, never here. | `tell/backtest/dogfood.py` |
 
+### Filling the speed-vs-press cohort (13.1)
+
+The 13.1 cohort is every non-amendment Form D of the last 90 days linked to a monitored
+company by R1-R4 or CIK, and its press is the `news_funding` events from 14 days before to
+60 days after each filing. Left to the scheduled jobs, that takes 90 days of daily-index
+collection, and the press of any older filing is never queried (scheduled news runs ask
+Google News for `when:7d` only). Three commands fill it within days of cutover, in order:
+
+1. `tell backfill formd --quarter YYYYQn [...]` loads the SEC quarterly Form D data sets as
+   `edgar` events with `payload.backfill = true` (default `--since-days 120`; `--file` for a
+   ZIP already on disk). It needs a real `SEC_USER_AGENT` to download and refuses the
+   placeholder. Idempotent. Details: [docs/sources/edgar.md](../sources/edgar.md).
+2. `tell resolve` links the filings to companies (R1-R4; CIK matches are linked at load).
+3. `tell ingest --source news --cohort formd --when-days 120` queries Google News with
+   `when:120d` for every company linked to a Form D of the last 90 days, under the usual
+   budgets and redaction. Idempotent. Details: [docs/sources/news.md](../sources/news.md).
+
+Then `tell backtest speed-vs-press`. While N is under 100 the command prints a one-line hint
+naming these commands on stderr (the report itself says "sample too small"). For backfilled
+filings the daily-index time is unknown, so `alert_at` is the filing date 00:00 UTC plus the
+6-hour cadence and the report counts those estimates. When the newest posted data set ends
+before the 90-day window, date the report at that quarter's end (`--as-of`) and widen the
+news windows to match (`--cohort-days`, `--when-days`; see the news page).
+
 ### Manual interventions and "weeks unattended"
 
 SPEC 13.4 defines "weeks unattended" as days since the last manual intervention needed to
@@ -45,8 +69,9 @@ marker is on:
 `finished_at`); with no marked run it counts from the first run ever and the report says
 so. `tell runlog --week` prints a proxy beside it, the weeks since the last gap of more
 than 24 hours without a successful scheduled run, as a cross-check for fixes nobody marked.
-Runs of the nightly intake reader (`source = intake`, which runs in `tell-private`) are not
-pipeline runs: they count toward neither the success rate nor the anchor. Rule for the
+Runs of the nightly intake reader (`source = intake`, which runs in `tell-private`) and of
+the one-off Form D backfill (`source = edgar_backfill`) are not pipeline runs: they count
+toward neither the success rate nor the anchor. Rule for the
 operator and rationale: ADR 0028; deployment side: `docs/deploy/github-actions.md`,
 "Re-running one source".
 

@@ -172,9 +172,18 @@ def list_command() -> None:
 def speed_vs_press_command(
     as_of: AsOfOption = None, out: OutOption = METHODS_DIR, refresh: RefreshOption = False
 ) -> None:
-    """13.1: Form D filings against the first funding headline."""
+    """13.1: Form D filings against the first funding headline.
+
+    Below the 100-filing minimum it also prints a one-line hint on stderr naming the
+    commands that fill the cohort (`tell backfill formd`, `tell ingest --cohort formd`).
+    """
     del refresh  # reads only events; the news collector runs separately
-    _write(speed_vs_press.build_report, _now(as_of), out)
+    now = _now(as_of)
+    with session_scope() as session:
+        report = speed_vs_press.build_report(session, now)
+    _echo(write_report(report, out).to_dict())
+    if report.n < speed_vs_press.MIN_COHORT:
+        typer.echo(speed_vs_press.small_cohort_hint(report.n), err=True)
 
 
 @app.command("velocity-lead")

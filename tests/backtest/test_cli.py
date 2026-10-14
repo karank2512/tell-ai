@@ -14,7 +14,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
-from tell.backtest import cli
+from tell.backtest import cli, speed_vs_press
 from tell.backtest.common import INDEX_END, INDEX_START, METHODS_DIR
 from tell.db import SessionLocal
 from tests.backtest.helpers import DAY, NOW, board, company, formd, news, posting, run
@@ -79,6 +79,29 @@ def test_each_public_command(bound: Engine, tmp_path: Path) -> None:
     assert line["path"] == str(tmp_path / "velocity-lead-2026-10-01.md")
     text = (tmp_path / "velocity-lead-latest.md").read_text(encoding="utf-8")
     assert "Not yet runnable: 15 days of collection < 60." in text  # evaluated 2026-10-01 23:59:59
+
+
+def test_speed_vs_press_hints_at_the_cohort_commands(
+    bound: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = runner.invoke(cli.app, ["speed-vs-press", "--out", str(tmp_path)])
+    assert result.exit_code == 0, (result.output, result.exception)
+    (line,) = [json.loads(text) for text in result.stdout.splitlines()]
+    assert line["report"] == "speed-vs-press"
+    (hint,) = result.stderr.splitlines()
+    assert hint == speed_vs_press.small_cohort_hint(1)
+    assert hint.startswith("hint: cohort N=1 is under 100.")
+    for command in (
+        "tell backfill formd --quarter",
+        "tell resolve",
+        "tell ingest --source news --cohort formd --when-days 120",
+    ):
+        assert command in hint
+
+    monkeypatch.setattr(speed_vs_press, "MIN_COHORT", 1)
+    result = runner.invoke(cli.app, ["speed-vs-press", "--out", str(tmp_path)])
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert result.stderr == ""
 
 
 def test_refresh_writes_every_public_report_and_the_index(bound: Engine, tmp_path: Path) -> None:

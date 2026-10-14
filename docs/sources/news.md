@@ -1,7 +1,7 @@
 # News and RSS (Google News + company blog feeds)
 
 Spec: `docs/SPEC.md` sections 3.7, 8, 11 and 13.1. Collector: `tell/collectors/news.py`;
-classifier: `tell/collectors/news_classify.py`. Tests: `tests/collectors/test_news.py`,
+classifier: `tell/collectors/news_classify.py`. Tests: `tests/collectors/test_news.py`, `tests/collectors/test_news_cohort.py`,
 `tests/test_news_classify.py`, plus the generic `tests/test_contracts.py` and
 `tests/test_idempotency.py`. Schema addition: `company_feeds`
 (`docs/decisions/0014-company-feeds-table.md`). Leadership headlines are stored redacted
@@ -13,7 +13,7 @@ next run reads).
 
 | Call | URL | Used by |
 | --- | --- | --- |
-| Google News search | `GET https://news.google.com/rss/search?q=%22{company name}%22+when%3A7d&hl=en-US&gl=US&ceid=US:en` | `google_news_url`, `_poll_google_news` |
+| Google News search | `GET https://news.google.com/rss/search?q=%22{company name}%22+when%3A7d&hl=en-US&gl=US&ceid=US:en` (`when%3A120d` for the 13.1 cohort run, below) | `google_news_url`, `_poll_google_news` |
 | Blog page | `GET https://{domain}/blog` | `discover_feed` (step 1) |
 | Homepage | `GET https://{domain}/` | `discover_feed` (step 2) |
 | Advertised feed | every `<link rel="alternate" type="application/rss+xml\|application/atom+xml" href=...>` on those two pages | `discover_feed` |
@@ -186,6 +186,39 @@ cases with placeholder names.
   `budget_exhausted` (the wall clock ran out) and `polled_count`. Both limits are
   `collect()` / `ingest()` arguments (`max_companies`, `budget`), not settings.
 - Every request sends `User-Agent: tell/0.1 (+https://github.com/karank2512/tell-ai)`.
+
+## Cohort runs (SPEC 13.1 speed vs press)
+
+The 13.1 report reads `news_funding` events dated from 14 days before to 60 days after each
+Form D in its cohort. Scheduled runs only ask Google News for `when:7d`, so press about a
+backfilled filing (`tell backfill formd`, `docs/sources/edgar.md`) is never collected by them.
+The cohort run fills that gap:
+
+```sh
+uv run tell ingest --source news --cohort formd                 # when:120d, filings of the last 90 days
+uv run tell ingest --source news --cohort formd --when-days 120 --cohort-days 90 --limit 1200
+```
+
+- `--when-days N` (1-365; `google_news_url(name, N)`) sets the `when:{N}d` window; the
+  default is 7, or 120 with `--cohort`. `--cohort formd` polls `formd_cohort()`: companies
+  linked (`company_id` set, so run `tell resolve` after a backfill) to a `form_d_filed`
+  event filed in the last `--cohort-days` days (default 90), instead of the rotation.
+- Every other rule is the scheduled one: name guard, classification, leadership redaction,
+  the payload keys (`query` is the `when:120d` request URL), 1 rps, the block policy, the
+  1,200-company and 25-minute budgets (rerun to continue a capped run), the company-feed
+  cache. Idempotent: one event per article URL, so a rerun inserts nothing new.
+- `runs.notes` adds `when_days` to every news run, and `cohort`, `cohort_size`,
+  `cohort_days` to cohort runs. The 6-hour "recently polled" skip only counts runs whose
+  `when_days` is at least the one asked for (a run without the field counts as 7), so a
+  scheduled 7-day poll an hour earlier never hides a company from the 120-day cohort run,
+  while a cohort poll does satisfy a later narrower one. Cohort polls also count for the
+  rotation (`notes.polled`).
+- Events from a 120-day query are observed today but can be four months old, so the news
+  freshness p95 on `health.json` is high for the 24 hours after a cohort run.
+- Report dated in the past (`tell backtest speed-vs-press --as-of D`, e.g. when the newest
+  posted Form D data set ends before the last 90 days): use `--cohort-days` = days from D-90
+  to today, and `--when-days` = days from D-104 to today (capped at 365), so both the cohort
+  and the press window `[filing - 14d, filing + 60d]` are covered.
 
 ## Legal note
 

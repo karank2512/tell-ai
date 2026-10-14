@@ -47,6 +47,13 @@ each group) and :data:`RUN_BUDGET` of wall-clock time. A run that hits either st
 cleanly, keeps what it wrote, finishes ``ok`` and says so in ``runs.notes``
 (``deferred``, ``budget_exhausted``).
 
+Cohort runs (SPEC 13.1): ``when_days`` widens the Google News window (``when:120d``)
+and ``cohort="formd"`` polls the companies linked to a ``form_d_filed`` event in the
+last 90 days (:func:`formd_cohort`) instead of the rotation, under the same cache,
+budgets, block policy and redaction. ``runs.notes["when_days"]`` records the window, and
+a run only counts as "recently polled" for a later run asking for an equal or narrower
+window, so a scheduled 7-day poll never hides a company from the 120-day cohort run.
+
 :func:`ingest` is the entry point for ``tell ingest --source news``: it opens the
 run, calls :func:`collect` and closes the run with the notes the next run reads.
 """
@@ -85,15 +92,22 @@ from tell.collectors.base import (
     utcnow,
     write_events,
 )
+from tell.collectors.edgar_formd import FORM_D_FILED
 from tell.collectors.news_classify import classify, event_type, redact_leadership
 from tell.config import get_settings
 from tell.http import HostRateBudgets, RetryExhausted, fetch, make_client
 from tell.models import Company, CompanyFeed, EventRow, Run, WatchlistItem
 
 __all__ = [
+    "COHORTS",
+    "COHORT_DAYS",
+    "COHORT_WHEN_DAYS",
+    "COHORT_WINDOW",
     "COLLECTOR",
+    "DEFAULT_WHEN_DAYS",
     "FALLBACK_PATHS",
     "MAX_COMPANIES",
+    "MAX_WHEN_DAYS",
     "RUN_BUDGET",
     "SOURCE",
     "CompanyRef",
@@ -106,6 +120,7 @@ __all__ = [
     "derive_events",
     "discover_feed",
     "feed_links",
+    "formd_cohort",
     "google_news_url",
     "headline",
     "ingest",
@@ -145,6 +160,17 @@ RUN_BUDGET: Final = timedelta(minutes=25)
 """Wall-clock budget per run; the run stops cleanly before the next company after it."""
 DISCOVERY_RETRY: Final = timedelta(days=30)
 """A domain where discovery found no feed is not probed again for this long."""
+
+DEFAULT_WHEN_DAYS: Final = 7
+"""Google News ``when:`` window of the scheduled runs (SPEC 3.7)."""
+COHORT_WHEN_DAYS: Final = 120
+"""Google News ``when:`` window of the SPEC 13.1 cohort run (``--cohort formd``)."""
+MAX_WHEN_DAYS: Final = 365
+COHORT_DAYS: Final = 90
+"""The ``formd`` cohort: companies linked to a ``form_d_filed`` event this many days old or
+newer (the 13.1 cohort window)."""
+COHORT_WINDOW: Final = timedelta(days=COHORT_DAYS)
+COHORTS: Final[tuple[str, ...]] = ("formd",)
 
 BLOCK_STATUSES: Final = frozenset({429, 503})
 """Google News answers that mean "slow down": the run stops, nothing is retried."""
@@ -205,9 +231,15 @@ class NewsFeed(BaseModel):
 # --- URLs, names, parsing ---------------------------------------------------------------
 
 
-def google_news_url(company_name: str) -> str:
-    """The Google News RSS search URL for ``"<company name>" when:7d`` (SPEC 3.7)."""
-    query = quote_plus(f'"{company_name}" when:7d')
+def google_news_url(company_name: str, when_days: int = DEFAULT_WHEN_DAYS) -> str:
+    """The Google News RSS search URL for ``"<company name>" when:{N}d`` (SPEC 3.7).
+
+    ``when_days`` is 7 for the scheduled runs and 120 for the SPEC 13.1 cohort run.
+    """
+    if not 1 <= when_days <= MAX_WHEN_DAYS:
+        msg = f"when_days must be between 1 and {MAX_WHEN_DAYS}, got {when_days}"
+        raise ValueError(msg)
+    query = quote_plus(f'"{company_name}" when:{when_days}d')
     return f"https://{GOOGLE_NEWS_HOST}/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
 
 
@@ -403,6 +435,10 @@ class NewsRunResult:
     selected: int = 0
     deferred: int = 0
     budget_exhausted: bool = False
+    when_days: int = DEFAULT_WHEN_DAYS
+    cohort: str | None = None
+    cohort_size: int | None = None
+    cohort_days: int | None = None
 
     def record(self, session: Session, fetched: int, events: list[Event], dropped: int) -> None:
         stats = write_events(session, events)
@@ -421,7 +457,12 @@ class NewsRunResult:
             "deferred": self.deferred,
             "budget_exhausted": self.budget_exhausted,
             "blocked": self.blocked is not None,
+            "when_days": self.when_days,
         }
+        if self.cohort is not None:
+            notes["cohort"] = self.cohort
+            notes["cohort_size"] = self.cohort_size
+            notes["cohort_days"] = self.cohort_days
         if self.blocked is not None:
             notes["blocked_by"] = dict(self.blocked)
         if self.drift is not None:
@@ -438,9 +479,19 @@ def _news_runs_since(session: Session, since: datetime) -> Iterable[Mapping[str,
             yield notes
 
 
-def _polled_since(session: Session, now: datetime, since: datetime) -> dict[int, datetime]:
+def _run_when_days(notes: Mapping[str, Any]) -> int:
+    """The ``when:`` window a news run queried; runs before the field existed used 7."""
+    value = notes.get("when_days")
+    return value if isinstance(value, int) and not isinstance(value, bool) else DEFAULT_WHEN_DAYS
+
+
+def _polled_since(
+    session: Session, now: datetime, since: datetime, *, min_when_days: int = DEFAULT_WHEN_DAYS
+) -> dict[int, datetime]:
     polled: dict[int, datetime] = {}
     for notes in _news_runs_since(session, since):
+        if _run_when_days(notes) < min_when_days:
+            continue
         entries = notes.get("polled")
         if not isinstance(entries, Mapping):
             continue
@@ -463,9 +514,36 @@ def last_polled(session: Session, now: datetime) -> dict[int, datetime]:
     return _polled_since(session, now, now - POLL_LOOKBACK)
 
 
-def recently_polled(session: Session, now: datetime) -> dict[int, datetime]:
-    """Company id -> last Google News poll, for polls less than 6 hours before ``now``."""
-    return _polled_since(session, now, now - CACHE_TTL)
+def recently_polled(
+    session: Session, now: datetime, *, min_when_days: int = DEFAULT_WHEN_DAYS
+) -> dict[int, datetime]:
+    """Company id -> last Google News poll, for polls less than 6 hours before ``now``.
+
+    Only runs that queried a ``when:`` window of at least ``min_when_days`` count: a
+    scheduled 7-day poll an hour ago does not make a 120-day cohort query redundant.
+    """
+    return _polled_since(session, now, now - CACHE_TTL, min_when_days=min_when_days)
+
+
+def formd_cohort(
+    session: Session, now: datetime, *, window: timedelta = COHORT_WINDOW
+) -> list[int]:
+    """Ids of companies linked to a ``form_d_filed`` event filed in the ``window`` before ``now``.
+
+    The SPEC 13.1 cohort's companies (the report narrows further to links by R1-R4 or
+    CIK); ``--cohort formd`` queries Google News for them with ``when:120d``.
+    """
+    stmt = (
+        select(EventRow.company_id)
+        .where(
+            EventRow.type == FORM_D_FILED,
+            EventRow.company_id.is_not(None),
+            EventRow.occurred_at >= now - window,
+            EventRow.occurred_at <= now,
+        )
+        .distinct()
+    )
+    return sorted(int(company_id) for company_id in session.scalars(stmt) if company_id is not None)
 
 
 def _recent_discovery_misses(session: Session, now: datetime) -> set[int]:
@@ -478,7 +556,11 @@ def _recent_discovery_misses(session: Session, now: datetime) -> set[int]:
 
 
 def select_companies(
-    session: Session, now: datetime, *, company_ids: Sequence[int] | None = None
+    session: Session,
+    now: datetime,
+    *,
+    company_ids: Sequence[int] | None = None,
+    when_days: int = DEFAULT_WHEN_DAYS,
 ) -> list[Company]:
     """The companies due this run, in priority order (PLAN Phase 4 rotation).
 
@@ -488,10 +570,11 @@ def select_companies(
     the last 7 days (both less :data:`SCHEDULE_SLACK`). Within a group the least
     recently polled come first, then by id, so a run cut short by the budget resumes
     with the companies it left out. Explicit ``company_ids`` replace the rotation and
-    only skip companies polled less than 6 hours ago.
+    only skip companies polled less than 6 hours ago by a run whose ``when:`` window
+    was at least ``when_days``.
     """
     if company_ids is not None:
-        recent = recently_polled(session, now)
+        recent = recently_polled(session, now, min_when_days=when_days)
         chosen = session.scalars(
             select(Company).where(Company.id.in_(list(company_ids))).order_by(Company.id)
         ).all()
@@ -685,6 +768,7 @@ class _Run:
     run_id: str
     now: datetime
     misses: set[int] = field(default_factory=set)
+    when_days: int = DEFAULT_WHEN_DAYS
 
 
 def _ref(company: Company) -> CompanyRef:
@@ -697,7 +781,7 @@ def _poll_google_news(run: _Run, company: Company) -> bool:
     Raises :class:`_BlockedError` on 429/503 and :class:`pydantic.ValidationError`
     when the response no longer fits :class:`NewsFeed`.
     """
-    url = google_news_url(company.name)
+    url = google_news_url(company.name, run.when_days)
     try:
         response = _get(run.client, url, run.budgets, accept=FEED_ACCEPT)
     except RetryExhausted as exc:
@@ -838,6 +922,9 @@ def collect(
     max_companies: int = MAX_COMPANIES,
     budget: timedelta = RUN_BUDGET,
     clock: Callable[[], float] = time.monotonic,
+    when_days: int = DEFAULT_WHEN_DAYS,
+    cohort: str | None = None,
+    cohort_days: int = COHORT_DAYS,
 ) -> NewsRunResult:
     """Poll Google News and company feeds for this run's companies and write events.
 
@@ -847,19 +934,40 @@ def collect(
     Stops at the first Google News block (429/503) or contract failure; everything
     written before that stays. Flushes, never commits. The caller (normally
     :func:`ingest`) closes the run with :attr:`NewsRunResult.notes`.
+
+    ``when_days`` sets the Google News ``when:`` window (7 for scheduled runs).
+    ``cohort="formd"`` (SPEC 13.1) replaces the rotation with :func:`formd_cohort`'s
+    companies (filings in the last ``cohort_days``), as explicit ``company_ids`` would;
+    every other guard (the 6-hour cache, the company and wall-clock budgets, the block
+    policy, redaction) is unchanged.
     """
+    if cohort is not None and cohort not in COHORTS:
+        msg = f"unknown cohort {cohort!r}; known: {', '.join(COHORTS)}"
+        raise ValueError(msg)
+    if cohort is not None and company_ids is not None:
+        msg = "pass either company_ids or cohort, not both"
+        raise ValueError(msg)
+    if cohort_days < 1:
+        msg = f"cohort_days must be >= 1, got {cohort_days}"
+        raise ValueError(msg)
+    google_news_url("window check", when_days)  # rejects a bad window before any request
     http = client if client is not None else make_client()
     run = _Run(
         session=session,
         client=http,
         budgets=budgets or _default_budgets(),
-        result=NewsRunResult(),
+        result=NewsRunResult(when_days=when_days, cohort=cohort),
         run_id=run_id,
         now=now,
+        when_days=when_days,
     )
     started = clock()
     try:
-        companies = select_companies(session, now, company_ids=company_ids)
+        if cohort is not None:
+            company_ids = formd_cohort(session, now, window=timedelta(days=cohort_days))
+            run.result.cohort_size = len(company_ids)
+            run.result.cohort_days = cohort_days
+        companies = select_companies(session, now, company_ids=company_ids, when_days=when_days)
         run.result.selected = len(companies)
         run.misses = _recent_discovery_misses(session, now)
         queue = companies[: max(max_companies, 0)]
@@ -906,6 +1014,9 @@ def ingest(
     max_companies: int = MAX_COMPANIES,
     budget: timedelta = RUN_BUDGET,
     clock: Callable[[], float] = time.monotonic,
+    when_days: int = DEFAULT_WHEN_DAYS,
+    cohort: str | None = None,
+    cohort_days: int = COHORT_DAYS,
 ) -> Run:
     """One news run: ``start_run``, :func:`collect`, ``finish_run`` with the notes.
 
@@ -926,6 +1037,9 @@ def ingest(
         max_companies=max_companies,
         budget=budget,
         clock=clock,
+        when_days=when_days,
+        cohort=cohort,
+        cohort_days=cohort_days,
     )
     blocked = result.blocked is not None
     errors = result.errors + (1 if blocked else 0)

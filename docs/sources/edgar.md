@@ -13,7 +13,7 @@ Spec: SPEC §3.6, §5 rule 4, §13.2. Source value `edgar`, kind `filings`.
 | Filing folder | `https://www.sec.gov/Archives/edgar/data/{cik}/{accession-no-dashes}/` | `events.url` (the receipt) |
 | Submissions | `https://data.sec.gov/submissions/CIK{10 digits}.json` | `fileNumber` for Form D / D/A, `items` for 8-K (`filings.recent`, parallel arrays) |
 | CIK to ticker | `https://www.sec.gov/files/company_tickers_exchange.json` | `load_ticker_map()` -> `{10-digit cik: (ticker, exchange, name)}` |
-| Quarterly Form D data sets | sec.gov/dera/data/form-d (TSV in ZIP) | `load_formd_quarterly()` backtest backfill |
+| Quarterly Form D data sets | `https://www.sec.gov/files/datastandardsinnovation/data/form-d-data-sets/{YYYY}q{n}_d.zip` from 2026 Q2, `https://www.sec.gov/files/structureddata/data/form-d-data-sets/{YYYY}q{n}_d.zip` through 2026 Q1 (listed on sec.gov/dera/data/form-d, checked 2026-10-13; TSV in ZIP) | `tell backfill formd` (`edgar_backfill.download_dataset()` -> `load_formd_quarterly()`), the backtest backfill |
 
 The quarter in the index path comes from the date (`QTR1` = Jan-Mar ...). The CIK in archive
 paths is unpadded; the accession number loses its dashes. A missing daily index (404:
@@ -31,6 +31,7 @@ reads yesterday's and today's index on the New York calendar.
   (Phase 13) as configuration, never committed. Without a contact address the SEC answers
   403 "Undeclared Automated Tool".
 - EDGAR data is public domain (US government work).
+- Backfill volume: one request per quarter (`tell backfill formd`), cached locally.
 - Daily volume: one index per day plus, per Form D / D/A, one `primary_doc.xml` and one
   submissions JSON per distinct issuer CIK (cached within a run); per monitored 8-K filer one
   submissions JSON. Roughly 2 requests per Form D, so a busy day (~200 Form D) is ~400 requests.
@@ -87,6 +88,51 @@ before every original under its file number) becomes `form_d_amendment`
 daily path (so overlaps dedupe), amendments merged in memory the same way (previous
 accession first, else the latest original per file number filed on or before the D/A), no
 `company_id`.
+
+**`tell backfill formd` (`tell/collectors/edgar_backfill.py`).** The command that wires the
+loader in, so the SPEC §13.1 cohort exists days after cutover instead of after 90 days of
+daily collection:
+
+```sh
+uv run tell backfill formd --quarter 2026Q2 [--quarter 2026Q3 ...] [--since-days 120] [--cache-dir DIR]
+uv run tell backfill formd --file ~/Downloads/2026q2_d.zip      # offline: a ZIP or an unpacked directory
+uv run tell resolve                                              # link the new filings (R1-R4)
+```
+
+- **Download.** One GET per quarter through `SecClient` (`SEC_USER_AGENT`, gzip, the
+  `TELL_RATE_EDGAR_RPS` budget and the shared retry policy) to the first of
+  `dataset_urls(year, quarter)` that answers. The SEC moved the data sets: as linked on
+  2026-10-13, 2026 Q2 and Q3 live under
+  `https://www.sec.gov/files/datastandardsinnovation/data/form-d-data-sets/{YYYY}q{n}_d.zip`
+  and 2026 Q1 and earlier under `.../files/structureddata/data/form-d-data-sets/...`
+  (`FORMD_DATASET_URLS`, module constants with a test; 2008-2012 sets often end `_d_0.zip`
+  and need `--file`). Quarters from 2026 Q2 try the new location first, older ones the old;
+  a 404 or 403 moves to the other (sec.gov answers a missing file with either). The ZIP (a
+  few MB) is cached as `{YYYY}q{n}_d.zip` in `../tell-private/cache/formd/` (or
+  `--cache-dir`); a cached, readable ZIP is never fetched again. 404 at both means the
+  quarter is not posted yet (`DatasetNotPublishedError`); a 403 at both is raised as such
+  (not posted yet, or a User-Agent the SEC rejects). Either way, check the data-sets page
+  and use `--file`; it is recorded as a `failed` run.
+- **Contact guard.** While `SEC_USER_AGENT` still holds the placeholder default (it contains
+  `example.invalid`), any download is refused before a request is made: exit 2, a message on
+  stderr, no `runs` row. `--file` and cached quarters need no contact.
+- **Window.** `--since-days N` (default 120) writes only filings whose filing date is on or after
+  today (UTC) minus N days; the rest are counted in `notes.outside_window`. The 13.1 cohort is
+  the last 90 days; the 30-day margin covers a report dated a little later. Use a larger N for
+  the 13.2 retrospective (2025 Q4 to 2026 Q2).
+- **Write.** Events keep `source = 'edgar'`, `payload.backfill = true` and the daily key, inside
+  one `edgar_backfill` run (`runs.notes`: `datasets`, `since_days`, `cutoff`, `outside_window`,
+  `linked_by_cik`, `by_type`). A rerun, or a filing the daily index already delivered, inserts
+  nothing (`skipped`). An issuer whose CIK is already a company's `cik` is linked at write
+  time, as the daily path does; every other filing waits for `tell resolve`. A D/A whose
+  original is in an earlier quarter stays a `form_d_amendment` event (never scored as funding).
+- **Health.** Backfilled events are left out of the freshness p95 (`health.json`, the ops
+  report), like first-poll baselines: they measure the archive's age, not tell's lag.
+  `edgar_backfill` is not a scheduled or health source.
+- **Posting lag.** SPEC §3.6 notes the data sets were posted through 2026 Q1 as of October
+  2026. If the newest posted quarter ends before the 90-day cohort window, evaluate the report
+  at the end of that quarter (`tell backtest speed-vs-press --as-of YYYY-MM-DD`) and collect the
+  press with matching windows (`docs/sources/news.md`, "Cohort runs").
 
 ## Fixtures (`tests/fixtures/edgar/`)
 

@@ -243,6 +243,39 @@ with a comment in [`.env.example`](../.env.example).
   section 0 (the SEC requires a real contact; the default in `tell/config.py` is a
   placeholder that EDGAR refuses). Store it as the `tell-ai` secret (section 4a) and export
   it in the shell for the next step.
+- [ ] **Backfill the SPEC 13.1 cohort** (so `tell backtest speed-vs-press` has filings and
+  press within days, not after 90 days of daily collection;
+  [docs/methods/README.md, "Filling the speed-vs-press cohort"](methods/README.md)). Same
+  shell, against the production database from section 3:
+
+  ```sh
+  cd /Users/karankapur/Desktop/Tell/tell
+  export UV_PROJECT_ENVIRONMENT=$HOME/.venvs/tell
+  export DATABASE_URL='postgresql+psycopg://...'      # the Neon string; do not put it in .env
+  export SEC_USER_AGENT='tell/0.1 (<contact email>)'  # the command refuses the placeholder
+  uv run tell backfill formd --quarter 2026Q2 --quarter 2026Q3   # every quarter overlapping the last 120 days
+  uv run tell resolve                                             # link the filings (R1-R4)
+  uv run tell ingest --source news --cohort formd --when-days 120
+  uv run tell backtest speed-vs-press --out /tmp/tell-methods     # read N; weekly.yml publishes the real one
+  ```
+
+  1. `backfill formd` downloads one ZIP per quarter from the SEC Form D data sets (one request
+     each, cached in `../tell-private/cache/formd/`) and prints an `edgar_backfill` run line:
+     `status: ok`, `inserted` > 0, `notes.outside_window` = filings older than 120 days. A
+     quarter the SEC has not posted yet answers 404 or 403 at both data-set locations and
+     fails the run before anything is written: drop that `--quarter` and rerun (the others are cached). If the URL moved,
+     download the ZIP from https://www.sec.gov/dera/data/form-d by hand and pass
+     `--file PATH`. Rerunning is safe (`inserted: 0`).
+  2. `resolve` prints its run line; `notes.auto_linked` counts the events it linked.
+  3. The news cohort run prints a `news` run line (`notes.cohort_size` = companies queried,
+     1 request a second, at most 1,200 companies or 25 minutes per run). If
+     `notes.deferred` > 0, run it again to continue; a `blocked` run means Google News said
+     slow down: wait an hour and rerun.
+  4. `speed-vs-press` prints its report line; while the cohort has fewer than 100 filings it
+     also prints a `hint:` line, and the report says "sample too small". That is expected if
+     few seeded companies raised in the window; the daily collector grows the cohort from here.
+     If the newest posted quarter ends before the 90-day window (SPEC 3.6 says the sets lagged
+     to 2026 Q1 in October 2026), see docs/sources/news.md, "Cohort runs", for `--as-of`.
 - [ ] Re-record the hand-crafted EDGAR fixtures. The fixtures under `tests/fixtures/edgar/`
   were written by hand because the live request without a contact address was refused
   ([docs/sources/edgar.md, "Fixtures"](sources/edgar.md#fixtures-testsfixturesedgar)). There is

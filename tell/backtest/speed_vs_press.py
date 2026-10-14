@@ -10,8 +10,10 @@ reproducible report; each change is listed in :data:`SQL_CHANGES` and printed be
   is already a company's ``cik`` at collection time and writes no match record).
 * **Press.** ``news_funding`` events of the same company dated
   ``[filing_date - 14d, filing_date + 60d]``; ``first_press_on`` is the earliest. The
-  weekly job runs the news collector with Google News ``when:120d`` beforehand; this
-  report only reads events.
+  cohort's press is collected beforehand by ``tell ingest --source news --cohort formd
+  --when-days 120`` (Google News ``when:120d``); this report only reads events. When the
+  cohort is too small, the CLI prints :func:`small_cohort_hint` (backfill the quarterly
+  Form D data sets with ``tell backfill formd``, link them, collect their press).
 * **alert_at.** The instant tell first saw the filing: the event's ``observed_at``, which
   already includes the time to the next 6-hourly ingest run after the filing reached the
   daily index. For a filing whose index time is unknown (``payload.backfill``, loaded from
@@ -43,6 +45,7 @@ __all__ = [
     "SpeedVsPress",
     "build_report",
     "compute",
+    "small_cohort_hint",
 ]
 
 NAME = "speed-vs-press"
@@ -52,6 +55,17 @@ MIN_COHORT = 100
 
 ALERT_CADENCE_HOURS = 6
 """The ingest cadence added to an unknown index-appearance time."""
+
+
+def small_cohort_hint(n: int) -> str:
+    """The one-line pointer ``tell backtest speed-vs-press`` prints when N < :data:`MIN_COHORT`."""
+    return (
+        f"hint: cohort N={n} is under {MIN_COHORT}. Fill it: `tell backfill formd --quarter "
+        "YYYYQn` (SEC quarterly Form D data sets; needs SEC_USER_AGENT, or --file ZIP), "
+        "`tell resolve`, then `tell ingest --source news --cohort formd --when-days 120`, "
+        "and rerun this report."
+    )
+
 
 SQL = """\
 with d as (
@@ -167,7 +181,8 @@ def build_report(session: Session, now: datetime) -> Report:
             "Every Form D (isAmendment = false) filed in the 90 days before the evaluation "
             "instant by an issuer linked to a monitored company by rules R1-R4 or by CIK. "
             "Press: news_funding events of that company dated from 14 days before to 60 days "
-            "after the filing date (the weekly job collects Google News with when:120d first)."
+            "after the filing date (collected first with Google News when:120d by "
+            "`tell ingest --source news --cohort formd --when-days 120`)."
         ),
         n=result.n,
         as_of=now.date(),

@@ -12,12 +12,12 @@
 * **Weeks since collection started.** From the first ``runs`` row.
 * **Success rate.** ``ok / (ok + failed)`` over runs started in the trailing
   :data:`PERIOD` (``running`` rows never count), overall and by source. Runs of
-  :data:`tell.ops.runlog.NON_PIPELINE_SOURCES` (the nightly ``intake`` reader) are left
+  :data:`tell.ops.runlog.NON_PIPELINE_SOURCES` (``intake``, ``edgar_backfill``) are left
   out of every query here: they run in ``tell-private`` and fail on a rotated sheet URL,
   not on ingestion.
 * **Freshness p95.** Spec section 12's definition, reused from
   :func:`tell.publish.health.freshness_p95_h` (last 24 hours of collector events,
-  first-poll baselines excluded).
+  first-poll baselines and backfilled Form D data sets excluded).
 * **Companies monitored / postings tracked.** :func:`tell.ops.runlog.companies_monitored`
   and :func:`tell.ops.runlog.postings_tracked`.
 * **Gold-set precision and recall.** The measured table in
@@ -35,15 +35,15 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from tell.backtest.common import REPO_ROOT, Metric, Report, Section, Table, share
-from tell.collectors.base import FIRST_POLL_KEY, MANUAL_NOTE_KEY, iso_utc
+from tell.collectors.base import MANUAL_NOTE_KEY, iso_utc
 from tell.models import EventRow, ReviewQueueItem, Run
 from tell.ops.runlog import NON_PIPELINE_SOURCES, companies_monitored, postings_tracked
 from tell.ops.runlog import weeks_unattended as deadman_weeks_unattended
-from tell.publish.health import STALE_AFTER, freshness_p95_h
+from tell.publish.health import STALE_AFTER, counts_for_freshness, freshness_p95_h
 
 __all__ = [
     "ENTITY_RESOLUTION_DOC",
@@ -147,7 +147,6 @@ def success_by_source(
 
 def freshness_n(session: Session, now: datetime) -> int:
     """Events behind the freshness p95 (same filter as :func:`freshness_p95_h`)."""
-    flag = EventRow.payload[FIRST_POLL_KEY].astext
     stmt = (
         select(func.count())
         .select_from(EventRow)
@@ -155,7 +154,7 @@ def freshness_n(session: Session, now: datetime) -> int:
             EventRow.observed_at > now - STALE_AFTER,
             EventRow.observed_at <= now,
             EventRow.source != "tell",
-            or_(flag.is_(None), flag != "true"),
+            counts_for_freshness(),
         )
     )
     return int(session.scalar(stmt) or 0)

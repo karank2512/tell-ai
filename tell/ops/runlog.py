@@ -21,7 +21,8 @@ line, over the trailing 7 days:
     (sources with no finished run in the period are left out; ``running`` rows never
     count). Runs of :data:`NON_PIPELINE_SOURCES` (the nightly ``intake`` reader, which
     runs in ``tell-private`` and fails on a rotated sheet URL or drifted form columns,
-    not on ingestion) are excluded, so the quoted number describes the ingest pipeline.
+    not on ingestion, and the one-off ``edgar_backfill`` load) are excluded, so the
+    quoted number describes the ingest pipeline.
 ``freshness_p95_h``
     Spec section 12's p95 of ``observed_at - occurred_at`` over the last 24 hours of
     collector events (:func:`tell.publish.health.freshness_p95_h`).
@@ -73,9 +74,10 @@ RUN_LINE_KEYS: tuple[str, ...] = (
 
 OPS_PERIOD = timedelta(days=7)
 
-NON_PIPELINE_SOURCES: tuple[str, ...] = ("intake",)
+NON_PIPELINE_SOURCES: tuple[str, ...] = ("intake", "edgar_backfill")
 """``runs.source`` values that are not part of the ingest pipeline and never count toward
-success rates or the unattended period: ``intake`` (``tell intake sync``, SPEC 15.6)."""
+success rates or the unattended period: ``intake`` (``tell intake sync``, SPEC 15.6) and
+``edgar_backfill`` (``tell backfill formd``, a one-off load run by hand for the backtests)."""
 
 _WEEK_S = timedelta(days=7).total_seconds()
 

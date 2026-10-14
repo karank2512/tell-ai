@@ -15,7 +15,8 @@ For every source, from ``runs`` and ``events``:
     last 24 hours, rounded to 0.1 h; ``null`` without events. First-poll baselines
     (``payload.first_poll``: postings already open when tell started watching a board,
     dated by their original ``posted_at``) are left out: they measure how old a job is,
-    not how late tell saw it (ADR 0023).
+    not how late tell saw it (ADR 0023). Backfilled events (``payload.backfill``, the
+    quarterly Form D data sets loaded by ``tell backfill formd``) are left out likewise.
 ``stale``
     The source has run before (at least one ``runs`` row) but has no successful run in
     the last 24 hours. Any stale source turns the health page's banner red and puts a
@@ -46,12 +47,14 @@ from tell.collectors.base import FIRST_POLL_KEY, discover_collectors, iso_utc
 from tell.models import EventRow, Run
 
 __all__ = [
+    "BACKFILL_KEY",
     "FRESHNESS_PERCENTILE",
     "INTERNAL_JOBS",
     "STALE_AFTER",
     "Health",
     "SourceHealth",
     "compute_health",
+    "counts_for_freshness",
     "freshness_p95_h",
     "health_sources",
 ]
@@ -113,9 +116,19 @@ def health_sources() -> list[tuple[str, str]]:
     return [*collectors, *((job, "job") for job in INTERNAL_JOBS)]
 
 
-def _not_first_poll() -> Any:
-    flag = EventRow.payload[FIRST_POLL_KEY].astext
-    return or_(flag.is_(None), flag != "true")
+BACKFILL_KEY = "backfill"
+"""``payload.backfill``: an event loaded from an archive (the quarterly Form D data sets)."""
+
+
+def counts_for_freshness() -> Any:
+    """SQL filter: neither a first-poll baseline nor a backfilled event.
+
+    A backfilled Form D is observed today but filed months ago; its lag measures the
+    archive's age, not how late tell saw the filing, exactly like a first-poll baseline.
+    """
+    first = EventRow.payload[FIRST_POLL_KEY].astext
+    backfill = EventRow.payload[BACKFILL_KEY].astext
+    return and_(or_(first.is_(None), first != "true"), or_(backfill.is_(None), backfill != "true"))
 
 
 def freshness_p95_h(
@@ -133,7 +146,7 @@ def freshness_p95_h(
     ).where(
         EventRow.observed_at > now - STALE_AFTER,
         EventRow.observed_at <= now,
-        _not_first_poll(),
+        counts_for_freshness(),
     )
     stmt = (
         stmt.where(EventRow.source.in_(list(sources)))

@@ -10,7 +10,13 @@ Top-level commands, matching the spec section 11 workflow YAML:
   run. ATS sources poll their ``active`` and ``dead`` boards (ADR 0015) with
   ``TELL_POLL_CONCURRENCY`` threads under each vendor's per-host rate budget, skipping
   boards polled in the last :data:`MIN_POLL_GAP` unless ``--force``; ``edgar``,
-  ``news`` and ``github`` run their collector once. Prints the run line.
+  ``news`` and ``github`` run their collector once. Prints the run line. News also takes
+  ``--when-days N`` and ``--cohort formd`` (SPEC 13.1: the companies linked to a recent
+  Form D, queried with ``when:120d``).
+* ``backfill formd --quarter YYYYQn [--file PATH] [--since-days N]``: the SEC quarterly
+  Form D data sets as ``edgar`` events, one ``edgar_backfill`` run
+  (:mod:`tell.collectors.edgar_backfill`); refuses to download while ``SEC_USER_AGENT``
+  is the placeholder.
 * ``resolve`` (no sub-command): ``backfill-aliases`` then ``run``, as one ``resolve``
   run. ``resolve <cmd>`` reaches the sub-app (:mod:`tell.resolve.cli`).
 * ``score --all-profiles [--as-of DATE]``: the daily job as one ``score`` run: hiring
@@ -57,7 +63,16 @@ from sqlalchemy.orm import Session
 from tell import __version__
 from tell.api import cli as api_cli
 from tell.backtest import cli as backtest_cli
-from tell.collectors import ashby, edgar, github_org, greenhouse, lever, news, smartrecruiters
+from tell.collectors import (
+    ashby,
+    edgar,
+    edgar_backfill,
+    github_org,
+    greenhouse,
+    lever,
+    news,
+    smartrecruiters,
+)
 from tell.collectors.base import RunResult, finish_run, set_manual_run, start_run, utcnow
 from tell.config import get_settings
 from tell.db import session_scope
@@ -123,6 +138,12 @@ class Source(StrEnum):
     EDGAR = "edgar"
     NEWS = "news"
     GITHUB = "github"
+
+
+class Cohort(StrEnum):
+    """The ``--cohort`` values of ``tell ingest --source news``."""
+
+    FORMD = "formd"
 
 
 class BoardIngest(Protocol):
@@ -445,8 +466,17 @@ def _company_ids(session: Session, domain: str) -> list[int]:
     return [int(i) for i in ids]
 
 
-def _ingest_news(domain: str | None, limit: int | None) -> dict[str, Any]:
+def _ingest_news(
+    domain: str | None,
+    limit: int | None,
+    *,
+    when_days: int | None = None,
+    cohort: Cohort | None = None,
+    cohort_days: int | None = None,
+) -> dict[str, Any]:
     now = utcnow()
+    if when_days is None:
+        when_days = news.COHORT_WHEN_DAYS if cohort is not None else news.DEFAULT_WHEN_DAYS
     try:
         with session_scope() as session:
             ids = _company_ids(session, domain) if domain is not None else None
@@ -455,6 +485,9 @@ def _ingest_news(domain: str | None, limit: int | None) -> dict[str, Any]:
                 now=now,
                 company_ids=ids,
                 max_companies=limit if limit is not None else news.MAX_COMPANIES,
+                when_days=when_days,
+                cohort=cohort.value if cohort is not None else None,
+                cohort_days=cohort_days if cohort_days is not None else news.COHORT_DAYS,
             )
             return runlog_ops.run_line(run)
     except typer.BadParameter:
@@ -476,6 +509,7 @@ def _ingest_github() -> dict[str, Any]:
 
 @app.command()
 def ingest(
+    *,
     source: Annotated[Source, typer.Option("--source", help="The collector to run.")],
     board: Annotated[
         str | None,
@@ -499,9 +533,47 @@ def ingest(
             ),
         ),
     ] = False,
+    when_days: Annotated[
+        int | None,
+        typer.Option(
+            "--when-days",
+            min=1,
+            max=news.MAX_WHEN_DAYS,
+            help=(
+                f"News only: Google News when:{{N}}d window (default {news.DEFAULT_WHEN_DAYS}; "
+                f"{news.COHORT_WHEN_DAYS} with --cohort)."
+            ),
+        ),
+    ] = None,
+    cohort: Annotated[
+        Cohort | None,
+        typer.Option(
+            "--cohort",
+            help=(
+                "News only: poll this cohort instead of the rotation. 'formd': companies "
+                f"linked to a form_d_filed event in the last {news.COHORT_DAYS} days "
+                "(SPEC 13.1; see --cohort-days)."
+            ),
+        ),
+    ] = None,
+    cohort_days: Annotated[
+        int | None,
+        typer.Option(
+            "--cohort-days",
+            min=1,
+            max=news.MAX_WHEN_DAYS,
+            help=f"With --cohort: how far back a filing counts (default {news.COHORT_DAYS}).",
+        ),
+    ] = None,
 ) -> None:
     """Run one collector and print its JSON run line (exit 1 when the run failed)."""
     name = source.value
+    if source is not Source.NEWS and (when_days is not None or cohort is not None):
+        raise typer.BadParameter("--when-days and --cohort apply to news only")
+    if cohort is not None and domain is not None:
+        raise typer.BadParameter("pass either --cohort or --domain, not both")
+    if cohort_days is not None and cohort is None:
+        raise typer.BadParameter("--cohort-days applies with --cohort only")
     if name in ATS_INGEST:
         line = _ingest_ats(name, board=board, domain=domain, limit=limit, force=force)
     else:
@@ -513,10 +585,95 @@ def ingest(
         if source is Source.EDGAR:
             line = _tracked(Source.EDGAR.value, _edgar_work, with_notes=False)
         elif source is Source.NEWS:
-            line = _ingest_news(domain, limit)
+            line = _ingest_news(
+                domain, limit, when_days=when_days, cohort=cohort, cohort_days=cohort_days
+            )
         else:
             line = _ingest_github()
     _emit_run(line)
+
+
+# --- backfill ---------------------------------------------------------------------------------
+
+backfill_app = typer.Typer(
+    name="backfill",
+    help="One-off historical loads that make the SPEC 13 backtests runnable early.",
+    no_args_is_help=True,
+    add_completion=False,
+)
+
+
+def _quarters(values: list[str] | None) -> list[edgar_backfill.Quarter]:
+    try:
+        return sorted({edgar_backfill.parse_quarter(v) for v in values or []})
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--quarter") from exc
+
+
+@backfill_app.command("formd")
+def backfill_formd_command(
+    quarter: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--quarter",
+            help=(
+                "Calendar quarter YYYYQn to download from the SEC Form D data sets and load "
+                "(repeatable; needs a real SEC_USER_AGENT unless the ZIP is cached)."
+            ),
+        ),
+    ] = None,
+    file: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--file",
+            exists=True,
+            help="An already-downloaded data-set ZIP or unpacked directory (repeatable; offline).",
+        ),
+    ] = None,
+    since_days: Annotated[
+        int,
+        typer.Option(
+            "--since-days", min=1, help="Write only filings dated within this many days of today."
+        ),
+    ] = edgar_backfill.DEFAULT_SINCE_DAYS,
+    cache_dir: Annotated[
+        Path,
+        typer.Option("--cache-dir", file_okay=False, help="Where downloaded ZIPs are kept."),
+    ] = edgar_backfill.DEFAULT_CACHE_DIR,
+) -> None:
+    """Load quarterly Form D data sets as edgar events (the 13.1 cohort), idempotently.
+
+    Prints the 'edgar_backfill' run line. Link the new filings with `tell resolve` next.
+    """
+    quarters = _quarters(quarter)
+    if not quarters and not file:
+        raise typer.BadParameter("pass --quarter YYYYQn and/or --file PATH")
+    started = utcnow()
+    paths = list(file or [])
+    try:
+        paths += [edgar_backfill.download_dataset(q, cache_dir) for q in quarters]
+    except edgar_backfill.SecContactMissingError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    except Exception as exc:
+        _emit_run(_record_failure(edgar_backfill.SOURCE, started, exc))
+        return
+
+    def work(session: Session, run_id: str, now: datetime) -> _Outcome:
+        result = edgar_backfill.backfill_formd(
+            session, paths, run_id=run_id, now=now, since_days=since_days
+        )
+        return _Outcome(
+            fetched=result.fetched,
+            inserted=result.inserted,
+            skipped=result.skipped + result.outside_window,
+            notes=result.notes,
+        )
+
+    _emit_run(_tracked(edgar_backfill.SOURCE, work, with_notes=True))
+
+
+app.add_typer(backfill_app, name="backfill")
 
 
 # --- resolve / score / publish / discover / backtest sub-apps --------------------------------
