@@ -9,6 +9,7 @@ Spec: SPEC §3.6, §5 rule 4, §13.2. Source value `edgar`, kind `filings`.
 | What | URL | Used for |
 | --- | --- | --- |
 | Daily form index | `https://www.sec.gov/Archives/edgar/daily-index/{YYYY}/QTR{n}/form.{YYYYMMDD}.idx` | New filings per day; kept form types `D`, `D/A`, `8-K`, `S-1` (exact match, so `8-K/A` and `S-1/A` are dropped) |
+| Quarter listing | `https://www.sec.gov/Archives/edgar/daily-index/{YYYY}/QTR{n}/index.json` (parents `{YYYY}/index.json`, `index.json`) | Which daily indexes the SEC has published; one request per quarter per run, before any index request |
 | Form D document | `https://www.sec.gov/Archives/edgar/data/{cik}/{accession-no-dashes}/primary_doc.xml` | Form D fields (below) |
 | Filing folder | `https://www.sec.gov/Archives/edgar/data/{cik}/{accession-no-dashes}/` | `events.url` (the receipt) |
 | Submissions | `https://data.sec.gov/submissions/CIK{10 digits}.json` | `fileNumber` for Form D / D/A, `items` for 8-K (`filings.recent`, parallel arrays) |
@@ -16,9 +17,52 @@ Spec: SPEC §3.6, §5 rule 4, §13.2. Source value `edgar`, kind `filings`.
 | Quarterly Form D data sets | `https://www.sec.gov/files/datastandardsinnovation/data/form-d-data-sets/{YYYY}q{n}_d.zip` from 2026 Q2, `https://www.sec.gov/files/structureddata/data/form-d-data-sets/{YYYY}q{n}_d.zip` through 2026 Q1 (listed on sec.gov/dera/data/form-d, checked 2026-10-13; TSV in ZIP) | `tell backfill formd` (`edgar_backfill.download_dataset()` -> `load_formd_quarterly()`), the backtest backfill |
 
 The quarter in the index path comes from the date (`QTR1` = Jan-Mar ...). The CIK in archive
-paths is unpadded; the accession number loses its dashes. A missing daily index (404:
-weekends, holidays, today before publication) is skipped, not an error. By default a run
-reads yesterday's and today's index on the New York calendar.
+paths is unpadded; the accession number loses its dashes.
+
+## Which days a run reads (catch-up)
+
+All dates are on the New York calendar.
+
+- **Scheduled run** (`tell ingest --source edgar`): every day from the one after
+  `last_index_date` up to today, where `last_index_date` is the latest daily index a
+  successful (`status = 'ok'`) `edgar` run read, taken from `runs.notes.last_index_date`
+  of the recent runs. The window starts no earlier than **14 days back**
+  (`MAX_CATCHUP_DAYS_BACK`), so an outage longer than two weeks needs `--since`. When
+  today's index is already read, the run requests nothing.
+- **First run ever** (no successful `edgar` run on record): today and the **3 days before
+  it** (`FIRST_RUN_DAYS_BACK`), so a Monday-morning first run still reads Friday.
+- **Runs recorded before `last_index_date` existed** kept only `notes.dates` (yesterday and
+  today at run time); their earlier date is taken as read, so the first new run re-reads at
+  most one day (cheap: see "Known filings").
+- **Manual catch-up**: `tell ingest --source edgar --since YYYY-MM-DD` reads `since` through
+  today, at most **120 days back** (`MAX_SINCE_DAYS_BACK`); older or future dates exit 2
+  before any request or `runs` row. Older filings come from `tell backfill formd`.
+- **Published days only.** The quarter `index.json` listing (one request per quarter per run)
+  names the indexes that exist; only those are requested. sec.gov answers a request for a
+  missing file (weekends, holidays such as Columbus Day 2026-10-12, today before the evening
+  publication) with **403**, so asking first avoids those 403s entirely. A 403 on a listed
+  index is a real block and fails the run. A 403 on a quarter listing counts as "nothing
+  published yet" only when the parent listing (`{YYYY}/index.json`, then `index.json`) does
+  not name that directory (the first days of a quarter or year); otherwise, or when the root
+  itself is 403, the run fails. A 404 on a listing lists nothing.
+- `runs.notes`: `dates` (requested), `indexes` (actually read), `last_index_date` (the
+  later of the previous value and the latest index read: a run that reads nothing carries
+  it forward), `previous_index_date`, `known`, `amended`, and `since` for a manual run.
+
+## Known filings and transactions
+
+- Before fetching anything for a day's rows, one query by `event_id`
+  (`sha256("edgar|{accession}|{accession}")`) finds the accessions that already have an
+  event. A known `D` costs no `primary_doc.xml` or submissions request, a known monitored
+  `8-K` no submissions request; they count in `skipped` and `notes.known`. A `D/A` is always
+  fetched, since it amends the original's payload (replaying it is a no-op). A rerun over
+  the same days therefore costs one listing per quarter, one index per day, and the D/As.
+- Days run oldest first, each in its own short transaction: two reads (known accessions,
+  monitored CIKs), commit, the HTTP for that day, then one write and commit. No transaction
+  is open during a request. A run that fails part way keeps the days already committed;
+  the next run starts after the last successful run's `last_index_date` and skips them as
+  known. (When `collect()` is handed a session that already has an open transaction, as in
+  some tests, everything stays in that caller's transaction.)
 
 ## Rate limit, User-Agent, legal
 
@@ -32,9 +76,11 @@ reads yesterday's and today's index on the New York calendar.
   403 "Undeclared Automated Tool".
 - EDGAR data is public domain (US government work).
 - Backfill volume: one request per quarter (`tell backfill formd`), cached locally.
-- Daily volume: one index per day plus, per Form D / D/A, one `primary_doc.xml` and one
-  submissions JSON per distinct issuer CIK (cached within a run); per monitored 8-K filer one
-  submissions JSON. Roughly 2 requests per Form D, so a busy day (~200 Form D) is ~400 requests.
+- Daily volume: one listing per quarter and one index per published day, plus, per new
+  Form D and every D/A, one `primary_doc.xml` and one submissions JSON per distinct issuer CIK
+  (cached within a run); per new monitored 8-K one submissions JSON. Roughly 2 requests per
+  new Form D, so a busy day (~200 Form D) is ~400 requests (~80 s at 5 rps); a 120-day
+  `--since` over ~84 business days is in the order of 30,000 requests, about 2 hours.
 
 ## Form D fields kept (SPEC §3.6, exactly)
 

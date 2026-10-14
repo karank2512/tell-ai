@@ -1,0 +1,451 @@
+{
+ "cases": [
+  {
+   "docs": {
+    "https://api.ashbyhq.com/posting-api/job-board/stream": {
+     "json": {
+      "jobs": [
+       {
+        "jobUrl": "https://jobs.ashbyhq.com/stream/f522a6cf-e5fc-42d9-bf80-a069d0d6f571"
+       }
+      ]
+     }
+    },
+    "https://jobs.ashbyhq.com/stream": {
+     "html": "<!doctype html><html><head><title>Stream Jobs</title></head><body>\n\n<script>window.__appData = {\"organization\": {\"publicWebsite\": \"https://getstream.io/\"}};</script>\n</body></html>\n"
+    }
+   },
+   "domain": "stream.claims",
+   "expected": "reject",
+   "identifier": "stream",
+   "vendor": "ashby"
+  },
+  {
+   "docs": {
+    "https://api.ashbyhq.com/posting-api/job-board/tilt": {
+     "json": {
+      "jobs": [
+       {
+        "jobUrl": "https://jobs.ashbyhq.com/tilt/6f20db55-183c-4dc4-b269-879b74a91d75"
+       }
+      ]
+     }
+    },
+    "https://jobs.ashbyhq.com/tilt": {
+     "html": "<!doctype html><html><head><title>Tilt Jobs</title></head><body>\n\n<script>window.__appData = {\"organization\": {\"publicWebsite\": \"https://www.tilt.app/\"}};</script>\n</body></html>\n"
+    }
+   },
+   "domain": "tilt.bike",
+   "expected": "reject",
+   "identifier": "tilt",
+   "vendor": "ashby"
+  },
+  {
+   "docs": {
+    "https://boards-api.greenhouse.io/v1/boards/axle": {
+     "json": {
+      "content": "",
+      "name": "Axle"
+     }
+    },
+    "https://boards-api.greenhouse.io/v1/boards/axle/jobs": {
+     "json": {
+      "jobs": [
+       {
+        "absolute_url": "https://job-boards.greenhouse.io/axle/jobs/5228843007",
+        "id": 1
+       }
+      ],
+      "meta": {
+       "total": 42
+      }
+     }
+    },
+    "https://job-boards.greenhouse.io/axle": {
+     "html": "<!doctype html><html><head><title>Jobs at Axle</title></head><body>\n<a href=\"https://axleinfo.com/\">link</a>\n<a href=\"https://job-boards.greenhouse.io/axle/jobs/4840335007\">link</a>\n<a href=\"https://www.greenhouse.com\">link</a>\n</body></html>\n"
+    }
+   },
+   "domain": "axle.insure",
+   "expected": "reject",
+   "identifier": "axle",
+   "vendor": "greenhouse"
+  },
+  {
+   "docs": {
+    "https://boards-api.greenhouse.io/v1/boards/chicory": {
+     "json": {
+      "content": "",
+      "name": "Chicory "
+     }
+    },
+    "https://boards-api.greenhouse.io/v1/boards/chicory/jobs": {
+     "json": {
+      "jobs": [
+       {
+        "absolute_url": "https://job-boards.greenhouse.io/chicory/jobs/6134498004",
+        "id": 1
+       }
+      ],
+      "meta": {
+       "total": 5
+      }
+     }
+    },
+    "https://job-boards.greenhouse.io/chicory": {
+     "html": "<!doctype html><html><head><title>Jobs at Chicory</title></head><body>\n<a href=\"https://job-boards.greenhouse.io/chicory/jobs/6134498004\">link</a>\n<a href=\"https://www.greenhouse.com\">link</a>\n</body></html>\n"
+    }
+   },
+   "domain": "chicory.so",
+   "expected": "reject",
+   "identifier": "chicory",
+   "vendor": "greenhouse"
+  },
+  {
+   "docs": {
+    "https://api.ashbyhq.com/posting-api/job-board/earth": {
+     "json": {
+      "jobs": [
+       {
+        "jobUrl": "https://jobs.ashbyhq.com/earth/ecae3f50-c688-49de-bea7-d0ce426027c5"
+       }
+      ]
+     }
+    },
+    "https://jobs.ashbyhq.com/earth": {
+     "html": "<!doctype html><html><head><title>Earth Jobs</title></head><body>\n\n<script>window.__appData = {\"organization\": {\"publicWebsite\": \"https://earthfuneral.com/\"}};</script>\n</body></html>\n"
+    }
+   },
+   "domain": "earth-ai.com",
+   "expected": "reject",
+   "identifier": "earth",
+   "vendor": "ashby"
+  },
+  {
+   "docs": {
+    "https://api.ashbyhq.com/posting-api/job-board/stacker": {
+     "json": {
+      "jobs": [
+       {
+        "jobUrl": "https://jobs.ashbyhq.com/stacker/72cd427b-f958-4ef4-a90b-9c7527a309b7"
+       }
+      ]
+     }
+    },
+    "https://jobs.ashbyhq.com/stacker": {
+     "html": "<!doctype html><html><head><title>Stacker Jobs</title></head><body>\n\n<script>window.__appData = {\"organization\": {\"publicWebsite\": \"https://stacker.com/\"}};</script>\n</body></html>\n"
+    }
+   },
+   "domain": "stackerhq.com",
+   "expected": "reject",
+   "identifier": "stacker",
+   "vendor": "ashby"
+  },
+  {
+   "docs": {
+    "https://boards-api.greenhouse.io/v1/boards/seer": {
+     "json": {
+      "content": "",
+      "name": "Seer Inc."
+     }
+    },
+    "https://boards-api.greenhouse.io/v1/boards/seer/jobs": {
+     "json": {
+      "jobs": [
+       {
+        "absolute_url": "https://seer.bio/careers/?gh_jid=6176527004",
+        "id": 1
+       }
+      ],
+      "meta": {
+       "total": 3
+      }
+     }
+    },
+    "https://job-boards.greenhouse.io/seer": {
+     "html": "<!doctype html><html><head><title>Build your Career in Proteomics | Seer Inc.</title></head><body>\n<a href=\"https://seer.bio/\">link</a>\n<a href=\"https://job-boards.greenhouse.io/seer\">link</a>\n<a href=\"https://linkedin.com/company/seerbio\">link</a>\n<a href=\"https://www.dol.gov/agencies/whd/posters/fmla\">link</a>\n<a href=\"https://pas.seer.software\">link</a>\n<a href=\"https://essentialaccessibility.com/seer-bio\">link</a>\n</body></html>\n"
+    }
+   },
+   "domain": "helloseer.com",
+   "expected": "reject",
+   "identifier": "seer",
+   "vendor": "greenhouse"
+  },
+  {
+   "docs": {
+    "https://boards-api.greenhouse.io/v1/boards/spire": {
+     "json": {
+      "content": "",
+      "name": "Spire"
+     }
+    },
+    "https://boards-api.greenhouse.io/v1/boards/spire/jobs": {
+     "json": {
+      "jobs": [
+       {
+        "absolute_url": "https://spire.com/careers/job-openings/job/?gh_jid=8238125",
+        "id": 1
+       }
+      ],
+      "meta": {
+       "total": 38
+      }
+     }
+    },
+    "https://job-boards.greenhouse.io/spire": {
+     "html": "<!doctype html><html><head><title>Job Openings - Spire Global</title></head><body>\n<a href=\"https://spire.com\">link</a>\n<a href=\"https://job-boards.greenhouse.io/spire\">link</a>\n<a href=\"https://twitter.com/SpireGlobal\">link</a>\n<a href=\"https://www.linkedin.com/company/spireglobal/\">link</a>\n<a href=\"https://bsky.app/profile/spire.com\">link</a>\n</body></html>\n"
+    }
+   },
+   "domain": "spirelawfirm.com",
+   "expected": "reject",
+   "identifier": "spire",
+   "vendor": "greenhouse"
+  },
+  {
+   "docs": {
+    "https://boards-api.greenhouse.io/v1/boards/symphony": {
+     "json": {
+      "content": "",
+      "name": "Symphony Communication Services"
+     }
+    },
+    "https://boards-api.greenhouse.io/v1/boards/symphony/jobs": {
+     "json": {
+      "jobs": [
+       {
+        "absolute_url": "https://symphony.com/company/apply?gh_jid=8249805",
+        "id": 1
+       }
+      ],
+      "meta": {
+       "total": 20
+      }
+     }
+    },
+    "https://job-boards.greenhouse.io/symphony": {
+     "html": "<!doctype html><html><head><title>Symphony Careers, Job Opportunities &amp; Internships</title></head><body>\n<a href=\"https://job-boards.greenhouse.io/symphony\">link</a>\n<a href=\"https://symphony.com/insights/blog/mufg-bank-case-study/\">link</a>\n<a href=\"https://transcripts-viewers.amenityanalytics.com/\">link</a>\n<a href=\"https://c9portal.xhoot.com/c9portal/\">link</a>\n<a href=\"https://www.instagram.com/we_are_syms\">link</a>\n<a href=\"https://amenityanalytics.readme.io/password\">link</a>\n<a href=\"https://www.linkedin.com/company/symphonycomm\">link</a>\n<a href=\"https://www.youtube.com/c/SymphonyComm\">link</a>\n<a href=\"https://vimeo.com/symphonycom\">link</a>\n<a href=\"https://www.facebook.com/SymphonyComm/\">link</a>\n</body></html>\n"
+    }
+   },
+   "domain": "getsymphony.co",
+   "expected": "reject",
+   "identifier": "symphony",
+   "vendor": "greenhouse"
+  },
+  {
+   "docs": {
+    "https://api.smartrecruiters.com/v1/companies/symphonyai/postings": {
+     "json": {
+      "content": [
+       {
+        "company": {
+         "identifier": "SymphonyAI",
+         "name": "SymphonyAI"
+        }
+       }
+      ],
+      "totalFound": 1
+     }
+    },
+    "https://careers.smartrecruiters.com/symphonyai": {
+     "html": "<!doctype html><html><head><title>Careers at SymphonyAI</title></head><body>\n<a href=\"https://careers.smartrecruiters.com/symphonyai\">link</a>\n<a href=\"http://www.symphonyai.com/\">link</a>\n</body></html>\n"
+    }
+   },
+   "domain": "getsymphony.co",
+   "expected": "reject",
+   "identifier": "symphonyai",
+   "vendor": "smartrecruiters"
+  },
+  {
+   "docs": {
+    "https://api.ashbyhq.com/posting-api/job-board/palettelabs": {
+     "json": {
+      "jobs": []
+     }
+    },
+    "https://jobs.ashbyhq.com/palettelabs": {
+     "html": "<!doctype html><html><head><title>Palette Labs Jobs</title></head><body>\n\n<script>window.__appData = {\"organization\": {\"publicWebsite\": \"https://www.palettelabs.io/\"}};</script>\n</body></html>\n"
+    }
+   },
+   "domain": "palettehq.com",
+   "expected": "reject",
+   "identifier": "palettelabs",
+   "vendor": "ashby"
+  },
+  {
+   "docs": {
+    "https://api.ashbyhq.com/posting-api/job-board/zapier": {
+     "json": {
+      "jobs": [
+       {
+        "jobUrl": "https://jobs.ashbyhq.com/zapier/cb1aec2c-05cd-4598-8117-bd1f7ed9a49f"
+       }
+      ]
+     }
+    },
+    "https://jobs.ashbyhq.com/zapier": {
+     "html": "<!doctype html><html><head><title>Zapier Jobs</title></head><body>\n\n<script>window.__appData = {\"organization\": {\"publicWebsite\": \"https://zapier.com/\"}};</script>\n</body></html>\n"
+    }
+   },
+   "domain": "zapier.com",
+   "expected": "accept",
+   "identifier": "zapier",
+   "vendor": "ashby"
+  },
+  {
+   "docs": {
+    "https://boards-api.greenhouse.io/v1/boards/stripe": {
+     "json": {
+      "content": "",
+      "name": "Stripe"
+     }
+    },
+    "https://boards-api.greenhouse.io/v1/boards/stripe/jobs": {
+     "json": {
+      "jobs": [
+       {
+        "absolute_url": "https://stripe.com/jobs/search?gh_jid=8172508",
+        "id": 1
+       }
+      ],
+      "meta": {
+       "total": 723
+      }
+     }
+    },
+    "https://job-boards.greenhouse.io/stripe": {
+     "html": "<!doctype html><html><head><title>Stripe Careers | Open Roles</title></head><body>\n<a href=\"https://job-boards.greenhouse.io/\">link</a>\n<a href=\"https://docs.stripe.com/\">link</a>\n<a href=\"https://stripe.dev/\">link</a>\n<a href=\"https://stripecommunity.com/\">link</a>\n</body></html>\n"
+    }
+   },
+   "domain": "stripe.com",
+   "expected": "accept",
+   "identifier": "stripe",
+   "vendor": "greenhouse"
+  },
+  {
+   "docs": {
+    "https://jobs.lever.co/netomi": {
+     "html": "<!doctype html><html><head><title>Netomi</title></head><body>\n<a href=\"https://jobs.lever.co/netomi\">link</a>\n<a href=\"http://netomi.com\">link</a>\n</body></html>\n"
+    }
+   },
+   "domain": "netomi.com",
+   "expected": "accept",
+   "identifier": "netomi",
+   "vendor": "lever"
+  },
+  {
+   "docs": {
+    "https://api.smartrecruiters.com/v1/companies/bellabeat/postings": {
+     "json": {
+      "content": [
+       {
+        "company": {
+         "identifier": "Bellabeat",
+         "name": "Bellabeat"
+        }
+       }
+      ],
+      "totalFound": 1
+     }
+    },
+    "https://careers.smartrecruiters.com/bellabeat": {
+     "html": "<!doctype html><html><head><title>Careers at Bellabeat</title></head><body>\n<a href=\"https://careers.smartrecruiters.com/bellabeat\">link</a>\n<a href=\"http://bellabeat.com\">link</a>\n</body></html>\n"
+    }
+   },
+   "domain": "bellabeat.com",
+   "expected": "accept",
+   "identifier": "bellabeat",
+   "vendor": "smartrecruiters"
+  },
+  {
+   "docs": {
+    "https://boards-api.greenhouse.io/v1/boards/givecampus": {
+     "json": {
+      "content": "",
+      "name": "GiveCampus"
+     }
+    },
+    "https://boards-api.greenhouse.io/v1/boards/givecampus/jobs": {
+     "json": {
+      "jobs": [
+       {
+        "absolute_url": "https://job-boards.greenhouse.io/givecampus/jobs/4273287009",
+        "id": 1
+       }
+      ],
+      "meta": {
+       "total": 11
+      }
+     }
+    },
+    "https://job-boards.greenhouse.io/givecampus": {
+     "html": "<!doctype html><html><head><title>Jobs at GiveCampus</title></head><body>\n<a href=\"https://go.givecampus.com/about-us/careers/\">link</a>\n<a href=\"https://job-boards.greenhouse.io/givecampus/jobs/4273287009\">link</a>\n<a href=\"https://www.greenhouse.com\">link</a>\n</body></html>\n"
+    }
+   },
+   "domain": "givecampus.com",
+   "expected": "accept",
+   "identifier": "givecampus",
+   "vendor": "greenhouse"
+  },
+  {
+   "docs": {
+    "https://boards-api.greenhouse.io/v1/boards/enveritas": {
+     "json": {
+      "content": "<p><a href=\"https://www.enveritas.org/jobs/\">site</a></p>",
+      "name": "Enveritas"
+     }
+    },
+    "https://boards-api.greenhouse.io/v1/boards/enveritas/jobs": {
+     "json": {
+      "jobs": [
+       {
+        "absolute_url": "https://job-boards.greenhouse.io/enveritas/jobs/4006514008",
+        "id": 1
+       }
+      ],
+      "meta": {
+       "total": 5
+      }
+     }
+    },
+    "https://job-boards.greenhouse.io/enveritas": {
+     "html": "<!doctype html><html><head><title>Jobs at Enveritas</title></head><body>\n<a href=\"https://enveritas.org/jobs/\">link</a>\n<a href=\"https://job-boards.greenhouse.io/enveritas/jobs/4006514008\">link</a>\n<a href=\"https://www.greenhouse.com\">link</a>\n</body></html>\n"
+    }
+   },
+   "domain": "enveritas.org",
+   "expected": "accept",
+   "identifier": "enveritas",
+   "vendor": "greenhouse"
+  },
+  {
+   "docs": {
+    "https://api.ashbyhq.com/posting-api/job-board/pipekit": {
+     "json": {
+      "jobs": [
+       {
+        "jobUrl": "https://jobs.ashbyhq.com/pipekit/e52eee8a-2d57-4127-94cc-41952aa38dcb"
+       }
+      ]
+     }
+    },
+    "https://jobs.ashbyhq.com/pipekit": {
+     "html": "<!doctype html><html><head><title>Pipekit Jobs</title></head><body>\n\n<script>window.__appData = {\"organization\": {\"publicWebsite\": \"https://pipekit.io/\"}};</script>\n</body></html>\n"
+    }
+   },
+   "domain": "pipekit.io",
+   "expected": "accept",
+   "identifier": "pipekit",
+   "vendor": "ashby"
+  },
+  {
+   "docs": {
+    "https://jobs.lever.co/handoff": {
+     "html": "<!doctype html><html><head><title>Handoff</title></head><body>\n<a href=\"https://jobs.lever.co/handoff\">link</a>\n<a href=\"http://Handoff.ai\">link</a>\n</body></html>\n"
+    }
+   },
+   "domain": "handoff.ai",
+   "expected": "accept",
+   "identifier": "handoff",
+   "vendor": "lever"
+  }
+ ],
+ "recorded": "2026-10-14"
+}

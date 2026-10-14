@@ -8,6 +8,9 @@ Commands:
   ``TELL_DISCOVERY_CONCURRENCY`` and ``TELL_DISCOVERY_MAX_MINUTES``) over new domains and
   boards due for re-verification. It commits after every domain, so a killed job keeps
   everything finished so far.
+* ``reverify-guesses [--limit N] [--rps R]``: re-check active slug-guessed boards (0.60)
+  under the ownership-evidence rule (ADR 0031); failures become ``paused`` with a
+  ``board_verify`` item. Commits after every board; idempotent.
 * ``seed-yc --file PATH | --fetch``: seed ``companies`` from the YC directory.
 
 The other commands commit on success. Results print as JSON lines on stdout.
@@ -26,6 +29,7 @@ from sqlalchemy.orm import Session
 from tell.collectors.base import utcnow
 from tell.db import session_scope
 from tell.discovery.ats import discover_batch, discover_domain
+from tell.discovery.reverify import reverify_guesses
 from tell.discovery.yc import fetch_directory, seed_companies, seed_from_file
 from tell.http import make_client
 
@@ -101,6 +105,27 @@ def batch_command(
             "elapsed_s": round(batch.elapsed_s, 1),
             "seconds_per_domain": round(batch.elapsed_s / processed, 2) if processed else None,
         }
+        typer.echo(json.dumps(summary, sort_keys=True))
+
+
+@app.command("reverify-guesses")
+def reverify_guesses_command(
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", min=0, help="Max boards to check (default: all)."),
+    ] = None,
+    rps: Annotated[
+        float | None, typer.Option("--rps", min=0.01, help="Requests per second (default 4).")
+    ] = None,
+) -> None:
+    """Re-check active slug-guessed boards for ownership evidence (ADR 0031)."""
+    with session_scope() as session, make_client() as client:
+        result = reverify_guesses(
+            session, client, now=utcnow(), limit=limit, rps=rps, commit=Session.commit
+        )
+        for check in result.checks:
+            typer.echo(json.dumps(check.log_record(), sort_keys=True))
+        summary = {"checked": len(result.checks), "outcomes": result.outcomes}
         typer.echo(json.dumps(summary, sort_keys=True))
 
 

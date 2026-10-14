@@ -122,6 +122,7 @@ COMMANDS: list[list[str]] = [
     ["seed-yc"],
     ["discover"],
     ["discover", "batch"],
+    ["discover", "reverify-guesses"],
     ["backtest"],
     ["backtest", "list"],
     ["api"],
@@ -306,11 +307,14 @@ def test_ingest_edgar(bound: Engine) -> None:
     with respx.mock(assert_all_mocked=True) as mock:
         route = mock.get(host="www.sec.gov").respond(404)
         line = _json(_invoke(["ingest", "--source", "edgar"]))
-        assert route.call_count == 2  # yesterday's and today's daily index
+        calls = route.call_count
     assert (line["source"], line["status"], line["fetched"]) == ("edgar", "ok", 0)
     run = _runs(bound, "edgar")[0]
     assert run.notes is not None
-    assert len(run.notes["dates"]) == 2
+    # First run: today and the 3 days before it; the quarter listing 404s, so no index.
+    assert len(run.notes["dates"]) == edgar.FIRST_RUN_DAYS_BACK + 1
+    days = [datetime.fromisoformat(d).date() for d in run.notes["dates"]]
+    assert calls == len({edgar.quarter_listing_url(d) for d in days})
 
 
 def test_ingest_edgar_failure_is_recorded(bound: Engine) -> None:

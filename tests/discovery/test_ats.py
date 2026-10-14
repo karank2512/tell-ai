@@ -475,7 +475,7 @@ def test_guesses_run_in_order_only_after_the_page_scan_fails(
     site(router, {"/careers": page("no_board.html")})
     no_guesses(router)
     router.get(f"{LEVER_API}/acmeinc").respond(200, json=[{"id": "x1", "text": "Engineer"}])
-    router.get("https://jobs.lever.co/acmeinc").mock(return_value=page("lever_hosted.html"))
+    router.get("https://jobs.lever.co/acmeinc").mock(return_value=page("lever_hosted_site.html"))
 
     result = discover(db_session, client)
     api_calls = [u for u in requested(router) if not u.startswith(BASE)]
@@ -519,13 +519,20 @@ def test_smartrecruiters_guess_takes_the_name_from_the_payload(
             "content": [{"id": "1", "company": {"identifier": "acme", "name": "Acme"}}],
         },
     )
+    router.get("https://careers.smartrecruiters.com/acme").mock(
+        return_value=page("smartrecruiters_careers.html")
+    )
     result = discover(db_session, client)
     assert (result.outcome, result.vendor, result.board_name) == (
         "board",
         "smartrecruiters",
         "Acme",
     )
-    assert requested(router)[-1] == f"{SMARTRECRUITERS_API}/acme/postings?limit=1"
+    # The name comes from the probe; the one extra request is the careers page (evidence).
+    assert requested(router)[-2:] == [
+        f"{SMARTRECRUITERS_API}/acme/postings?limit=1",
+        "https://careers.smartrecruiters.com/acme",
+    ]
 
 
 def test_guess_with_jobs_but_unverifiable_name_goes_to_review(
@@ -535,9 +542,12 @@ def test_guess_with_jobs_but_unverifiable_name_goes_to_review(
     no_guesses(router)
     router.get(f"{GREENHOUSE_API}/acme/jobs").respond(200, json={"jobs": [{"id": 1}], "meta": {}})
     greenhouse_name(router, name="Globex")
+    router.get("https://job-boards.greenhouse.io/acme").respond(404)
     result = discover(db_session, client)
     assert result.outcome == "review"
     assert result.confidence == GUESS_CONFIDENCE
+    [item] = reviews(db_session)
+    assert item.payload["reason"] == "name_mismatch"
 
 
 def test_malformed_vendor_json_is_a_miss(
@@ -1266,7 +1276,8 @@ def test_grnh_se_transport_error_falls_through_to_a_guess(
     site(router, {"/careers": page("greenhouse_grnh.html")})
     router.get(SHORT_LINK).mock(side_effect=httpx.ConnectError("refused"))
     no_guesses(router)
-    router.get(f"{GREENHOUSE_API}/acme/jobs").respond(200, json={"jobs": [{"id": 1}], "meta": {}})
+    jobs = [{"id": 1, "absolute_url": "https://acme.com/careers?gh_jid=1"}]
+    router.get(f"{GREENHOUSE_API}/acme/jobs").respond(200, json={"jobs": jobs, "meta": {}})
     greenhouse_name(router)
 
     result = discover(db_session, client)

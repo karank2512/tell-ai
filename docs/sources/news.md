@@ -4,7 +4,8 @@ Spec: `docs/SPEC.md` sections 3.7, 8, 11 and 13.1. Collector: `tell/collectors/n
 classifier: `tell/collectors/news_classify.py`. Tests: `tests/collectors/test_news.py`, `tests/collectors/test_news_cohort.py`,
 `tests/test_news_classify.py`, plus the generic `tests/test_contracts.py` and
 `tests/test_idempotency.py`. Schema addition: `company_feeds`
-(`docs/decisions/0014-company-feeds-table.md`). Leadership headlines are stored redacted
+(`docs/decisions/0014-company-feeds-table.md`); discovery memory, site concurrency and
+per-company commits: `docs/decisions/0032-news-feed-discovery-cache.md`. Leadership headlines are stored redacted
 (`docs/decisions/0016-news-headline-redaction.md`, accepted). Entry point for the CLI:
 `news.ingest()` (starts the run, calls `collect()`, finishes the run with the notes the
 next run reads).
@@ -18,7 +19,7 @@ next run reads).
 | Homepage | `GET https://{domain}/` | `discover_feed` (step 2) |
 | Advertised feed | every `<link rel="alternate" type="application/rss+xml\|application/atom+xml" href=...>` on those two pages | `discover_feed` |
 | Fallbacks | `/feed`, `/rss`, `/blog/rss.xml`, `/blog/feed` on `https://{domain}`, in that order | `discover_feed` (step 3) |
-| Stored feed | `company_feeds.feed_url` with `If-None-Match` / `If-Modified-Since` | `_poll_feed` |
+| Stored feed | `company_feeds.feed_url` with `If-None-Match` / `If-Modified-Since` | `_poll_stored_feed` |
 
 **Status: undocumented.** Google publishes no API documentation for the News RSS search
 feed. The `q` value is the company name in double quotes plus `when:7d`, encoded with
@@ -32,9 +33,21 @@ entry wins. Advertised feeds are fetched to confirm them. A feed whose URL, or w
 final URL after redirects, is not on the company's domain (or a subdomain) is ignored,
 so every company-feed item is linked by rule R1. The winner is stored in `company_feeds`
 with `discovered_from` (the page that advertised it, or the fallback URL itself), its
-`ETag` and `Last-Modified`. A clean miss (every probe answered, none was a feed) is
-recorded in `runs.notes["no_feed"]` and the domain is not probed again for 30 days; a
-miss caused by a transport error or 5xx is counted as an error and retried next run.
+`ETag` and `Last-Modified`. Discovery runs at most once per company per 30 days
+(`DISCOVERY_RETRY`, ADR 0032):
+
+- a miss is never an error. Every probe answering without a feed (404s, HTML, a 5xx on
+  one path) is `notes.site.no_feed`; a site that does not answer at all (DNS failure,
+  refused or timed-out connection, TLS failure) or answers 429/503 ends its discovery at
+  that first request and is `notes.site.unreachable`. Both put the company id in
+  `runs.notes["no_feed"]`, which the next 30 days of runs read to skip discovery
+  (`notes.site.discovery_not_due`). The run row's notes are refreshed while the run is
+  open (every 20 companies and at the end), so a killed run still remembers its misses;
+- a company with an `active` or `paused` feed is never rediscovered; one whose only feeds
+  are `dead` is rediscovered 30 days after the feed was marked dead, and a rediscovered
+  dead feed is set `active` again;
+- a feed already stored for another company (two companies on one site) is read for
+  this company too, but the company is remembered as a miss, since it owns no feed.
 
 ## Fields used
 
@@ -151,8 +164,22 @@ cases with placeholder names.
 
 ## Rate limit and politeness
 
-- 1 request per second per host (`TELL_RATE_NEWS_RPS`, default 1) through
-  `tell.http.HostRateBudgets`, so Google News and each company site have their own bucket.
+- Two separate budgets. **Google News**: `TELL_RATE_NEWS_RPS` (default 1 request per
+  second), one company at a time on the run's writer thread. **Company sites** (discovery
+  and feed polls): `SITE_RPS = 1` request per second *per host* (`tell.http.HostRateBudgets`),
+  `SITE_TIMEOUT_S = 10` seconds per phase (connect, read, ...) of each request, on
+  `SITE_WORKERS = 6` worker threads, so a dead host or a slow blog no longer holds up Google News or the other sites. At most
+  `SITE_WORKERS * SITE_BACKLOG` (12) companies' site work is outstanding; beyond that the
+  Google News loop waits for one to finish. Workers never touch the database. Redirects
+  are followed hop by hop (`SITE_MAX_REDIRECTS = 5`), each hop charged to its own host's
+  1 rps budget, so a redirect to another host is never a free request there.
+- Short transactions: `ingest()` commits the run row at once, then after every company
+  (its Google News answer and any finished site work, each company's site writes in a
+  savepoint), and before every wait for a site worker (a full backlog, the final drain),
+  so no transaction is held across network I/O. The open run row's counters
+  follow every commit and its notes (`polled`, `no_feed`, `site`) every 20 companies, so a
+  killed run keeps both its events and its rotation and discovery memory. An unexpected
+  exception closes the run `failed` with `notes.error`, keeping what was committed.
 - **No retries anywhere** (`max_attempts=1`). A 429 or 503 from Google News is a block: the
   run stops at once, nothing else is requested, and the run finishes **`failed`** with one
   error and `runs.notes` `"blocked": true`, `blocked_by {status, url, company_id}` and
@@ -174,8 +201,11 @@ cases with placeholder names.
   - explicit `company_ids` (a manual rerun) replace the rotation and only skip companies
     polled less than 6 hours ago.
 - 6-hour feed cache: a company feed is not re-polled before
-  `company_feeds.last_polled_at + 6h`. A feed answering 304 costs nothing; 404/410 marks it
-  `dead`; 429/5xx sets `last_polled_at` (slow down) and counts an error.
+  `company_feeds.last_polled_at + 6h` (`notes.site.feeds_cached`). A feed answering 304
+  costs nothing (`notes.site.not_modified`); 404/410 marks it `dead` (`notes.site.dead`);
+  any other non-200 answer sets `last_polled_at` (slow down) and counts an error; no
+  answer at all counts an error and leaves `last_polled_at` alone. Feed-poll failures are
+  real errors: the feed was there before.
 - Per-run budget: at most `MAX_COMPANIES = 1200` companies (1,200 Google News queries at
   1 rps is 20 minutes, inside the 45-minute `filings` job, which runs EDGAR first, with
   margin) and `RUN_BUDGET = 25 minutes` of wall-clock time, checked before each company. Order:
@@ -186,6 +216,23 @@ cases with placeholder names.
   `budget_exhausted` (the wall clock ran out) and `polled_count`. Both limits are
   `collect()` / `ingest()` arguments (`max_companies`, `budget`), not settings.
 - Every request sends `User-Agent: tell/0.1 (+https://github.com/karank2512/tell-ai)`.
+
+### Throughput (2026-10-14, ADR 0032)
+
+The first production run polled 53 of 893 eligible companies in its 25 minutes. A
+simulation with `respx` on a scaled clock (1 simulated second = 20 ms; every answer takes
+0.3 s; per 10 companies 6 live sites without a feed, 2 dead hosts that hold each
+connection for the client's timeout, 2 with a feed advertised on `/blog`; 2,000 companies
+offered, no `MAX_COMPANIES` cap):
+
+| Run | Companies in 25 min | `runs.errors` | Site outcomes |
+| --- | ---: | ---: | --- |
+| before (65c9edc: inline discovery, 20 s timeout, every probe tried) | 56 | 11 | 35 misses in `no_feed`; dead hosts counted as errors |
+| after, first pass (discovery due everywhere) | 1,435 | 0 | 286 found, 863 no feed, 286 unreachable |
+| after, next day (misses remembered) | 1,462 | 0 | 286 feeds polled, 1,149 discoveries not due |
+
+After the change Google News at 1 request per second is the bound, so a scheduled run
+reaches the `MAX_COMPANIES = 1200` cap well inside `RUN_BUDGET`.
 
 ## Cohort runs (SPEC 13.1 speed vs press)
 

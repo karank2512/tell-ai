@@ -11,7 +11,7 @@ import os
 import shutil
 import zipfile
 from collections.abc import Iterator
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -19,15 +19,23 @@ import httpx
 import pydantic
 import pytest
 import respx
+from freezegun import freeze_time
 from sqlalchemy import func, select
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
+from typer.testing import CliRunner, Result
 
+import tell.db
+from tell.cli import app
 from tell.collectors import edgar, edgar_formd
 from tell.collectors.base import discover_collectors, start_run, write_events
 from tell.collectors.edgar import (
     COLLECTOR,
+    FIRST_RUN_DAYS_BACK,
     FORM_8K_FILED,
     FORM_S1_FILED,
+    MAX_CATCHUP_DAYS_BACK,
+    MAX_SINCE_DAYS_BACK,
     IndexEntry,
     SecClient,
     _index_is_listed,
@@ -36,12 +44,16 @@ from tell.collectors.edgar import (
     daily_index_url,
     default_dates,
     edgar_budget,
+    edgar_event_id,
     form_8k_payload,
+    known_accessions,
+    last_index_date,
     load_ticker_map,
     parse_daily_index,
     parse_ticker_map,
     quarter_listing_url,
     run_fixture,
+    since_dates,
     submissions_url,
 )
 from tell.collectors.edgar_formd import (
@@ -60,8 +72,9 @@ from tell.collectors.edgar_formd import (
     primary_doc_url,
 )
 from tell.config import get_settings
+from tell.db import SessionLocal
 from tell.http import RateBudget
-from tell.models import Company, EventRow
+from tell.models import Company, EventRow, Run
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "edgar"
 NOW = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
@@ -211,13 +224,42 @@ def test_url_construction() -> None:
     assert cik10("320193") == "0000320193"
 
 
-def test_default_dates_follow_new_york_calendar() -> None:
+def _span(first: date, last: date) -> list[date]:
+    return [first + timedelta(days=n) for n in range((last - first).days + 1)]
+
+
+def test_first_run_default_is_today_and_three_days_back_in_new_york() -> None:
+    assert FIRST_RUN_DAYS_BACK == 3
     # 02:00 UTC on the 5th is still the 4th in New York.
-    assert default_dates(datetime(2026, 10, 5, 2, 0, tzinfo=UTC)) == [
-        date(2026, 10, 3),
-        date(2026, 10, 4),
-    ]
-    assert default_dates(NOW) == [date(2026, 10, 4), date(2026, 10, 5)]
+    assert default_dates(datetime(2026, 10, 5, 2, 0, tzinfo=UTC)) == _span(
+        date(2026, 10, 1), date(2026, 10, 4)
+    )
+    assert default_dates(NOW) == _span(date(2026, 10, 2), date(2026, 10, 5))
+
+
+def test_default_dates_catch_up_after_the_last_index_read() -> None:
+    assert default_dates(NOW, date(2026, 9, 29)) == _span(date(2026, 9, 30), date(2026, 10, 5))
+    assert default_dates(NOW, date(2026, 10, 4)) == [date(2026, 10, 5)]
+    assert default_dates(NOW, date(2026, 10, 5)) == []  # today's index is already read
+
+
+def test_default_dates_are_capped_fourteen_days_back() -> None:
+    assert MAX_CATCHUP_DAYS_BACK == 14
+    capped = default_dates(NOW, date(2026, 7, 1))
+    assert capped == _span(date(2026, 9, 21), date(2026, 10, 5))
+    assert len(capped) == MAX_CATCHUP_DAYS_BACK + 1
+    assert default_dates(NOW, date(2026, 9, 20)) == capped
+    assert default_dates(NOW, date(2026, 9, 21))[0] == date(2026, 9, 22)
+
+
+def test_since_dates_reach_back_at_most_120_days() -> None:
+    assert since_dates(NOW, date(2026, 10, 3)) == _span(date(2026, 10, 3), date(2026, 10, 5))
+    oldest = date(2026, 6, 7)  # 2026-10-05 minus 120 days
+    assert len(since_dates(NOW, oldest)) == MAX_SINCE_DAYS_BACK + 1
+    with pytest.raises(ValueError, match="more than 120 days back"):
+        since_dates(NOW, oldest - timedelta(days=1))
+    with pytest.raises(ValueError, match="after today"):
+        since_dates(NOW, date(2026, 10, 6))
 
 
 # --- Form D XML contract ------------------------------------------------------------------------
@@ -659,6 +701,7 @@ class FakeClock:
 def _mock_sec(router: respx.MockRouter, *, index_text: str | None = None) -> dict[str, respx.Route]:
     archives = "https://www.sec.gov/Archives/edgar/data"
     return {
+        "listing": router.get(quarter_listing_url(DAY)).respond(200, json=_listing(DAY)),
         "index": router.get(daily_index_url(DAY)).respond(
             200, text=index_text if index_text is not None else _read("form.20261001.idx").decode()
         ),
@@ -710,6 +753,9 @@ def test_collect_end_to_end(db_session: Session, monkeypatch: pytest.MonkeyPatch
     assert result.amended == 1
     assert result.inserted == 4
     assert result.notes["dates"] == ["2026-10-01", "2026-10-02"]
+    assert result.notes["indexes"] == ["2026-10-01"]  # 10-02 is not in the quarter listing
+    assert result.notes["last_index_date"] == "2026-10-01"
+    assert not routes["index_404"].called
     by_type = {row.type: row for row in _events(db_session) if row.type != FORM_D_FILED}
     assert set(by_type) == {FORM_8K_FILED, FORM_S1_FILED}
     eight_k = by_type[FORM_8K_FILED]
@@ -734,7 +780,8 @@ def test_collect_end_to_end(db_session: Session, monkeypatch: pytest.MonkeyPatch
     assert not routes["subs_unmonitored"].called
     assert routes["subs_d1"].call_count == 1  # cached across the D and the D/A
 
-    # Every SEC request: declared User-Agent, gzip, one rate-budget token.
+    # Every SEC request: declared User-Agent, gzip, one rate-budget token. One listing,
+    # one index, three primary documents, three submissions documents.
     assert len(requests) == 8
     for request in requests:
         assert request.headers["User-Agent"] == "tell-test/0.1 (ops at example.invalid)"
@@ -742,15 +789,19 @@ def test_collect_end_to_end(db_session: Session, monkeypatch: pytest.MonkeyPatch
     assert len(clock.sleeps) == len(requests) - 1
     assert all(abs(s - 0.2) < 1e-9 for s in clock.sleeps)
 
-    # A second identical run writes nothing new.
+    # A second identical run writes nothing new and fetches no known Form D again: the
+    # D, 8-K and S-1 are known by event_id; only the D/A (it amends) is fetched.
     with respx.mock(assert_all_called=False) as router:
-        _mock_sec(router)
+        rerun = _mock_sec(router)
         again = collect(
             db_session, run_id="edgar-run-2", now=NOW, dates=[DAY], budget=budget, sleep=clock.sleep
         )
     assert again.inserted == 0
     assert again.amended == 0
     assert again.skipped == 4
+    assert again.notes["known"] == 4
+    assert (rerun["d1"].call_count, rerun["d2"].call_count, rerun["da"].call_count) == (0, 0, 1)
+    assert not rerun["subs_8k"].called
 
 
 @pytest.mark.db
@@ -770,12 +821,19 @@ def test_collect_counts_per_filing_errors(db_session: Session) -> None:
 
 
 @pytest.mark.db
-def test_collect_default_dates_and_missing_indexes(db_session: Session) -> None:
+def test_collect_first_run_reads_the_last_three_days(db_session: Session) -> None:
+    """No earlier run: today and the 3 days before it, through the listing filter."""
     with respx.mock(assert_all_called=True) as router:
-        router.get(daily_index_url(date(2026, 10, 4))).respond(404)
-        router.get(daily_index_url(date(2026, 10, 5))).respond(404)
+        router.get(quarter_listing_url(DAY)).respond(
+            200, json=_listing(date(2026, 10, 1), date(2026, 10, 2))
+        )
+        router.get(daily_index_url(date(2026, 10, 2))).respond(404)  # listed, then 404
         result = collect(db_session, run_id="edgar-run", now=NOW, budget=RateBudget(1000, burst=10))
     assert (result.fetched, result.inserted, result.errors) == (0, 0, 0)
+    assert result.notes["dates"] == ["2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"]
+    assert result.notes["indexes"] == []
+    assert result.notes["last_index_date"] is None
+    assert result.notes["previous_index_date"] is None
 
 
 def _listing(*days: date) -> dict[str, object]:
@@ -814,9 +872,9 @@ def test_missing_quarter_listing_lists_nothing() -> None:
 
 @pytest.mark.db
 def test_collect_skips_a_holiday_index(db_session: Session) -> None:
+    """An unlisted day is never requested (sec.gov would answer 403)."""
     holiday = date(2026, 10, 12)
     with respx.mock(assert_all_called=True) as router:
-        router.get(daily_index_url(holiday)).respond(403)
         router.get(quarter_listing_url(holiday)).respond(200, json=_listing(date(2026, 10, 13)))
         result = collect(
             db_session,
@@ -828,19 +886,309 @@ def test_collect_skips_a_holiday_index(db_session: Session) -> None:
     assert (result.fetched, result.inserted, result.errors) == (0, 0, 0)
 
 
-def test_forbidden_index_fails_the_run() -> None:
+@pytest.mark.db
+def test_forbidden_index_fails_the_run(db_session: Session) -> None:
     """A 403 on a file the SEC lists as published is a real block: the run fails loudly."""
     with respx.mock(assert_all_called=False) as router:
         router.get(daily_index_url(DAY)).respond(403)
         router.get(quarter_listing_url(DAY)).respond(200, json=_listing(DAY))
         with pytest.raises(httpx.HTTPStatusError):
             collect(
-                None,  # type: ignore[arg-type]  # never reached: the index fetch raises first
+                db_session,
                 run_id="edgar-run",
                 now=NOW,
                 dates=[DAY],
                 budget=RateBudget(1000, burst=10),
             )
+
+
+# --- catch-up: dates from runs.notes, listing filter, known accessions, transactions ------------
+
+EMPTY_INDEX = "Form Type   Company Name   CIK   Date Filed   File Name\n---------\n"
+
+
+def _run(
+    run_id: str, notes: dict[str, Any], *, status: str = "ok", source: str = "edgar", days: int = 0
+) -> Run:
+    return Run(
+        run_id=run_id,
+        source=source,
+        started_at=datetime(2026, 9, 1, tzinfo=UTC) + timedelta(days=days),
+        status=status,
+        notes=notes,
+    )
+
+
+@pytest.mark.db
+def test_last_index_date_reads_successful_edgar_runs(db_session: Session) -> None:
+    assert last_index_date(db_session) is None
+    db_session.add_all(
+        [
+            _run("legacy", {"dates": ["2026-09-27", "2026-09-28"], "amended": 0}, days=1),
+            _run("ok", {"last_index_date": "2026-09-30"}, days=2),
+            _run("failed", {"last_index_date": "2026-10-03"}, status="failed", days=3),
+            _run("running", {"last_index_date": "2026-10-03"}, status="running", days=4),
+            _run("other", {"last_index_date": "2026-10-04"}, source="news", days=5),
+            _run("nothing-yet", {"last_index_date": None}, days=6),
+        ]
+    )
+    db_session.flush()
+    assert last_index_date(db_session) == date(2026, 9, 30)
+
+
+@pytest.mark.db
+def test_last_index_date_falls_back_to_legacy_dates(db_session: Session) -> None:
+    """Runs from before ``last_index_date`` was recorded read yesterday and today."""
+    db_session.add(_run("legacy", {"dates": ["2026-10-02", "2026-10-03"], "amended": 0}))
+    db_session.add(_run("no-notes", {"error": "x"}, days=1))
+    db_session.flush()
+    assert last_index_date(db_session) == date(2026, 10, 2)
+
+
+def test_quarter_listing_403_lists_nothing_until_the_quarter_exists() -> None:
+    """Before a quarter's first index the directory is missing (403); its parent tells."""
+    day = date(2027, 1, 4)
+    root = {"directory": {"item": [{"name": "2026", "type": "dir"}]}}
+    with respx.mock(assert_all_called=True) as router:
+        router.get(quarter_listing_url(day)).respond(403)
+        router.get(f"{edgar.DAILY_INDEX}/2027/index.json").respond(403)
+        router.get(f"{edgar.DAILY_INDEX}/index.json").respond(200, json=root)
+        with SecClient(budget=RateBudget(1000, burst=10)) as sec:
+            assert _index_is_listed(sec, day, {}) is False
+
+
+def test_quarter_listing_403_on_an_existing_quarter_is_a_block() -> None:
+    day = date(2026, 10, 13)
+    year = {"directory": {"item": [{"name": "QTR3/", "type": "dir"}, {"name": "QTR4/"}]}}
+    with respx.mock(assert_all_called=True) as router:
+        router.get(quarter_listing_url(day)).respond(403)
+        router.get(f"{edgar.DAILY_INDEX}/2026/index.json").respond(200, json=year)
+        with (
+            SecClient(budget=RateBudget(1000, burst=10)) as sec,
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            _index_is_listed(sec, day, {})
+    with respx.mock() as router:  # everything forbidden, root included: blocked
+        router.get(host="www.sec.gov").respond(403)
+        with (
+            SecClient(budget=RateBudget(1000, burst=10)) as sec,
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            _index_is_listed(sec, day, {})
+
+
+@pytest.mark.db
+def test_collect_reads_only_listed_days(db_session: Session) -> None:
+    """Weekend, holiday and not-yet-published days are never requested."""
+    days = _span(date(2026, 10, 9), date(2026, 10, 14))
+    with respx.mock(assert_all_mocked=True, assert_all_called=True) as router:
+        listing = router.get(quarter_listing_url(DAY)).respond(
+            200, json=_listing(date(2026, 10, 8), date(2026, 10, 9), date(2026, 10, 13))
+        )
+        friday = router.get(daily_index_url(date(2026, 10, 9))).respond(200, text=EMPTY_INDEX)
+        tuesday = router.get(daily_index_url(date(2026, 10, 13))).respond(200, text=EMPTY_INDEX)
+        result = collect(
+            db_session, run_id="edgar-run", now=NOW, dates=days, budget=RateBudget(1000, burst=10)
+        )
+        assert len(router.calls) == 3
+    assert (listing.call_count, friday.call_count, tuesday.call_count) == (1, 1, 1)
+    assert result.notes["indexes"] == ["2026-10-09", "2026-10-13"]
+    assert result.notes["last_index_date"] == "2026-10-13"
+
+
+@pytest.mark.db
+def test_collect_counts_an_accession_once_across_rows_and_days(db_session: Session) -> None:
+    """Co-issuers repeat one accession under several CIKs; a later day may repeat it too."""
+    row = f"S-1   Example Co   9990040   20261001   edgar/data/9990040/{ACC_S1}.txt\n"
+    twin = f"S-1   Example Co Twin   9990041   20261001   edgar/data/9990041/{ACC_S1}.txt\n"
+    second = date(2026, 10, 2)
+    with respx.mock(assert_all_called=True) as router:
+        router.get(quarter_listing_url(DAY)).respond(200, json=_listing(DAY, second))
+        router.get(daily_index_url(DAY)).respond(200, text=EMPTY_INDEX + row + twin)
+        router.get(daily_index_url(second)).respond(200, text=EMPTY_INDEX + row)
+        result = collect(
+            db_session,
+            run_id="edgar-run",
+            now=NOW,
+            dates=[second, DAY],
+            budget=RateBudget(1000, burst=10),
+        )
+    assert (result.fetched, result.inserted, result.skipped) == (1, 1, 0)
+    [event] = _events(db_session, FORM_S1_FILED)
+    assert event.payload["cik"] == "0009990040"
+
+
+@pytest.mark.db
+def test_known_accessions(db_session: Session) -> None:
+    run_fixture(db_session, FIXTURES / "normal.json", run_id="edgar-a", now=NOW)
+    filing = _formd("formd_1.xml", ACC_D1, "9990001")
+    assert edgar_event_id(ACC_D1) == formd_event(filing, run_id="r", now=NOW).event_id
+    assert known_accessions(db_session, [ACC_D1, ACC_8K]) == {ACC_D1}
+    assert known_accessions(db_session, []) == set()
+
+
+@pytest.mark.db
+def test_collect_catches_up_without_holding_a_transaction_across_http(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dates come from runs.notes; each day commits; no SEC request runs inside a transaction."""
+    with SessionLocal(bind=engine) as setup:
+        setup.add(_run("earlier", {"last_index_date": "2026-09-30"}))
+        setup.add(Company(domain="monitored.test", name="Monitored Software", cik="0009990020"))
+        setup.commit()
+
+    session = SessionLocal(bind=engine)
+    open_during_http: list[bool] = []
+    real_get = SecClient.get
+
+    def spy(self: SecClient, url: str) -> httpx.Response | None:
+        open_during_http.append(session.in_transaction())
+        return real_get(self, url)
+
+    monkeypatch.setattr(SecClient, "get", spy)
+    try:
+        with respx.mock(assert_all_called=False) as router:
+            routes = _mock_sec(router)
+            result = collect(
+                session, run_id="edgar-run", now=NOW, budget=RateBudget(1000, burst=100)
+            )
+        assert not session.in_transaction()  # the day's writes are already committed
+    finally:
+        session.close()
+
+    assert result.notes["previous_index_date"] == "2026-09-30"
+    assert result.notes["dates"] == [d.isoformat() for d in _span(DAY, date(2026, 10, 5))]
+    assert result.notes["indexes"] == ["2026-10-01"]
+    assert result.notes["last_index_date"] == "2026-10-01"
+    assert routes["listing"].call_count == 1
+    assert len(open_during_http) == 8
+    assert not any(open_during_http)
+    with SessionLocal(bind=engine) as check:
+        assert _count(check) == 4
+
+
+@pytest.mark.db
+def test_collect_with_since_records_it(db_session: Session) -> None:
+    with respx.mock(assert_all_called=True) as router:
+        router.get(quarter_listing_url(DAY)).respond(200, json=_listing())
+        result = collect(
+            db_session,
+            run_id="edgar-run",
+            now=NOW,
+            since=date(2026, 10, 3),
+            budget=RateBudget(1000, burst=10),
+        )
+    assert result.notes["dates"] == ["2026-10-03", "2026-10-04", "2026-10-05"]
+    assert result.notes["since"] == "2026-10-03"
+    with pytest.raises(ValueError, match="120 days"):
+        collect(db_session, run_id="edgar-run", now=NOW, since=date(2026, 1, 1))
+
+
+@pytest.mark.db
+def test_collect_with_nothing_to_catch_up_makes_no_request(db_session: Session) -> None:
+    db_session.add(_run("earlier", {"last_index_date": "2026-10-05"}))
+    db_session.flush()
+    with respx.mock(assert_all_mocked=True) as router:
+        result = collect(db_session, run_id="edgar-run", now=NOW)
+    assert len(router.calls) == 0
+    assert result.notes["dates"] == []
+    assert result.notes["last_index_date"] == "2026-10-05"
+
+
+# --- tell ingest --source edgar [--since] -------------------------------------------------------
+
+CLI_NOW = "2026-10-14 16:00:00"  # noon in New York; 2026-10-12 was Columbus Day
+
+
+@pytest.fixture
+def bound(engine: Engine, monkeypatch: pytest.MonkeyPatch) -> Engine:
+    """Every ``session_scope()`` the CLI opens lands on the test database."""
+    monkeypatch.setattr(tell.db, "get_engine", lambda: engine)
+    monkeypatch.setenv("TELL_RATE_EDGAR_RPS", "1000")
+    get_settings.cache_clear()
+    return engine
+
+
+def _ingest(*args: str, code: int = 0) -> Result:
+    result = CliRunner().invoke(app, ["ingest", "--source", *args])
+    assert result.exit_code == code, (result.output, result.exception)
+    return result
+
+
+def _edgar_runs(engine: Engine) -> list[Run]:
+    with SessionLocal(bind=engine) as session:
+        stmt = select(Run).where(Run.source == "edgar").order_by(Run.started_at, Run.run_id)
+        return list(session.scalars(stmt))
+
+
+def _mock_october(router: respx.MockRouter) -> dict[str, respx.Route]:
+    return {
+        "listing": router.get(quarter_listing_url(DAY)).respond(
+            200, json=_listing(date(2026, 10, 9), date(2026, 10, 13))
+        ),
+        "fri": router.get(daily_index_url(date(2026, 10, 9))).respond(200, text=EMPTY_INDEX),
+        "tue": router.get(daily_index_url(date(2026, 10, 13))).respond(200, text=EMPTY_INDEX),
+    }
+
+
+@pytest.mark.db
+def test_cli_ingest_edgar_catches_up_from_the_last_run(bound: Engine) -> None:
+    with SessionLocal(bind=bound) as setup:
+        setup.add(_run("earlier", {"last_index_date": "2026-10-09"}))
+        setup.commit()
+    with freeze_time(CLI_NOW, tick=True), respx.mock(assert_all_called=False) as router:
+        routes = _mock_october(router)
+        _ingest("edgar")
+        _ingest("edgar")  # caught up: only today, not published yet
+    assert not routes["fri"].called
+    assert routes["tue"].call_count == 1
+    first, second = (r for r in _edgar_runs(bound) if r.run_id != "earlier")
+    assert first.notes is not None
+    assert second.notes is not None
+    assert first.notes["dates"] == [
+        "2026-10-10",
+        "2026-10-11",
+        "2026-10-12",
+        "2026-10-13",
+        "2026-10-14",
+    ]
+    assert (first.notes["indexes"], first.notes["last_index_date"]) == (
+        ["2026-10-13"],
+        "2026-10-13",
+    )
+    assert second.notes["dates"] == ["2026-10-14"]
+    assert (second.notes["indexes"], second.notes["last_index_date"]) == ([], "2026-10-13")
+    assert (first.status, second.status) == ("ok", "ok")
+
+
+@pytest.mark.db
+def test_cli_ingest_edgar_since(bound: Engine) -> None:
+    with freeze_time(CLI_NOW, tick=True), respx.mock(assert_all_mocked=True) as router:
+        routes = _mock_october(router)
+        _ingest("edgar", "--since", "2026-10-08")
+    assert (routes["fri"].call_count, routes["tue"].call_count) == (1, 1)
+    (run,) = _edgar_runs(bound)
+    assert run.notes is not None
+    assert run.notes["since"] == "2026-10-08"
+    assert run.notes["dates"][0] == "2026-10-08"
+    assert run.notes["last_index_date"] == "2026-10-13"
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["edgar", "--since", "2026-06-15"],  # 121 days back
+        ["edgar", "--since", "2026-10-15"],  # tomorrow
+        ["edgar", "--since", "14/10/2026"],
+        ["news", "--since", "2026-10-13"],
+    ],
+)
+def test_cli_ingest_since_is_checked_before_any_run(bound: Engine, args: list[str]) -> None:
+    with freeze_time(CLI_NOW, tick=True), respx.mock(assert_all_mocked=True) as router:
+        _ingest(*args, code=2)
+        assert len(router.calls) == 0
+    assert _edgar_runs(bound) == []
 
 
 def test_edgar_budget_uses_the_configured_rps(monkeypatch: pytest.MonkeyPatch) -> None:

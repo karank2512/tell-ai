@@ -36,10 +36,20 @@ Given ``acme.com``, find the company's job board or record that none was found.
    name. Otherwise a ``review_queue`` item (``kind='board_verify'``) is written and the
    board is not activated (a new row is stored with ``status='paused'``, which no
    collector polls, until a human resolves the item).
+
+   **Slug guesses also need ownership evidence** (ADR 0031): a guessed board (0.60) is
+   activated only when the board itself points at the company's registrable domain
+   (:func:`ownership_evidence`: Greenhouse board ``content`` / job ``absolute_url`` /
+   hosted-board links, the Lever hosted page's links, the Ashby hosted page's
+   ``publicWebsite`` / job URLs, the SmartRecruiters careers page's links). A name-only
+   match goes to review with ``reason='guess_without_domain_evidence'`` and the board
+   is stored (or set) ``paused``. Page-linked boards keep the name rule alone.
 5. Write ``ats_boards``: ``status='active'`` for a verified supported vendor,
    ``'unsupported'`` for :data:`UNSUPPORTED_VENDORS` (Workday / Oracle / Workable per
    ``docs/decisions/0003``, further ATS vendors and YC Work at a Startup; never fetched
-   further, never polled) and, when nothing is found, one row
+   further, never polled; when the destination's ``(vendor, identifier)`` is already
+   another company's row, this company's row is keyed ``<identifier>#<domain>``, so
+   neither company's outcome overwrites the other's) and, when nothing is found, one row
    ``vendor='none', identifier=<domain>, status='no_board'`` whose ``discovered_from``
    is ``checked:`` plus the comma-joined pages checked, then ``;via:`` plus the hiring
    channels seen, if any, so coverage is reportable.
@@ -59,6 +69,7 @@ Every result is logged as one JSON line on the ``tell.discovery`` logger:
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import re
@@ -71,7 +82,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal, Protocol
-from urllib.parse import quote, unquote, urljoin, urlsplit
+from urllib.parse import SplitResult, quote, unquote, urljoin, urlsplit
 from urllib.robotparser import RobotFileParser
 
 import httpx
@@ -92,6 +103,7 @@ __all__ = [
     "CHANNELS",
     "GREENHOUSE_SHORT_LINK",
     "GUESS_CONFIDENCE",
+    "GUESS_EVIDENCE_REASON",
     "LISTING_VENDORS",
     "MATCH_THRESHOLD",
     "MAX_DEEP_REQUESTS",
@@ -104,15 +116,19 @@ __all__ = [
     "PATTERNS",
     "REVERIFY_AFTER",
     "SCRIPT_DEADLINE_S",
+    "SCRIPT_READ_TIMEOUT_S",
+    "SHARED_SEPARATOR",
     "SITE_TIMEOUT_S",
     "SUPPORTED_VENDORS",
     "UNSUPPORTED_VENDORS",
     "BatchResult",
     "BoardHit",
     "BoardPattern",
+    "BoardProfile",
     "Commit",
     "DiscoveryResult",
     "Outcome",
+    "OwnershipEvidence",
     "RobotsCache",
     "board_name",
     "channel_of",
@@ -121,9 +137,11 @@ __all__ = [
     "discover_domain",
     "find_boards",
     "find_boards_in_script",
+    "guess_rejection",
     "guess_slugs",
     "hosted_board_url",
     "name_ratio",
+    "ownership_evidence",
     "resolve_short_link",
     "reverify_due",
     "select_due_boards",
@@ -202,15 +220,29 @@ MAX_SCRIPTS = 5
 MAX_SCRIPT_BYTES = 2_000_000
 """Total bytes read from those bundles per domain (a bundle is cut off at the remainder)."""
 
-SCRIPT_DEADLINE_S = 2 * SITE_TIMEOUT_S
-"""Wall-clock limit on reading one bundle. :data:`SITE_TIMEOUT_S` applies per read, so a
-host that drips bytes could otherwise hold a worker for minutes; reading stops at the
-first chunk after the deadline and the bytes read so far are scanned. Worst case per
-bundle: this plus one read timeout."""
+SCRIPT_DEADLINE_S = 15.0
+"""Total wall-clock limit on one bundle fetch, from the request to the last byte.
+
+Each phase of the request (connection-pool wait, connect, send, every read) times out
+after :data:`SCRIPT_READ_TIMEOUT_S`; reading stops at the first chunk received after
+``SCRIPT_DEADLINE_S - SCRIPT_READ_TIMEOUT_S`` and the bytes read so far are scanned, so
+the last read ends by the deadline. A host that drips one byte at a time cannot hold a
+worker longer (DNS resolution, which httpx does not time, excepted)."""
+
+SCRIPT_READ_TIMEOUT_S = 3.0
+"""Timeout of each phase of a bundle request (see :data:`SCRIPT_DEADLINE_S`)."""
 
 MAX_DEEP_REQUESTS = 12
-"""Hard cap on the requests of the deeper scan (homepage, links with their redirect hops,
-bundles) per domain; ``robots.txt`` of a new origin is not counted (once per run)."""
+"""Hard cap on the requests of the deeper scan per domain: the homepage, links with their
+redirect hops, bundles and the ``robots.txt`` of every origin first reached in this step
+(ADR 0031). A request that would exceed it is not sent."""
+
+SHARED_SEPARATOR = "#"
+"""``<identifier>#<domain>``: the key of an unsupported destination already owned by
+another company's row (see :func:`_unshared_identifier`)."""
+
+GUESS_EVIDENCE_REASON = "guess_without_domain_evidence"
+"""``review_queue`` reason of a guessed board whose own pages never name the domain."""
 
 NO_BOARD_VENDOR = "none"
 """``ats_boards.vendor`` of the coverage marker row written when nothing is found."""
@@ -661,12 +693,12 @@ class RobotsCache:
         self._lock = threading.Lock()
         self._origin_locks: dict[str, threading.Lock] = {}
 
-    def _load(self, origin: str) -> RobotFileParser:
+    def _load(self, origin: str, budget: _Budget | None) -> RobotFileParser:
         parser = RobotFileParser()
         page = _get_page(
             self._client,
             f"{origin}/robots.txt",
-            budget=self._budget,
+            budget=budget if budget is not None else self._budget,
             max_redirects=ROBOTS_MAX_REDIRECTS,
         )
         status = page.status if page.note is None else None
@@ -680,11 +712,16 @@ class RobotsCache:
             parser.parse(_DISALLOW_ALL)
         return parser
 
-    def allowed(self, url: str) -> bool:
-        """``True`` when ``url`` may be fetched by this user agent."""
-        return self._parser(_origin(url)).can_fetch(self._user_agent, url)
+    def allowed(self, url: str, *, budget: _Budget | None = None) -> bool:
+        """``True`` when ``url`` may be fetched by this user agent.
 
-    def _parser(self, origin: str) -> RobotFileParser:
+        A ``robots.txt`` request (only for an origin not loaded yet) takes its slot from
+        ``budget`` when given (the deeper scan's per-domain meter, which still draws on
+        the shared rate budget), else from the cache's own budget.
+        """
+        return self._parser(_origin(url), budget).can_fetch(self._user_agent, url)
+
+    def _parser(self, origin: str, budget: _Budget | None) -> RobotFileParser:
         with self._lock:
             parser = self._parsers.get(origin)
             if parser is not None:
@@ -695,7 +732,7 @@ class RobotsCache:
             with self._lock:
                 parser = self._parsers.get(origin)
             if parser is None:
-                parser = self._load(origin)
+                parser = self._load(origin, budget)
                 with self._lock:
                     self._parsers[origin] = parser
         return parser
@@ -761,10 +798,16 @@ class _Found:
         return _Scan(list(self.hits), dict(self.pages), tuple(self.checked), tuple(self.channels))
 
 
+class _MeterSpentError(Exception):
+    """A deeper-scan request was refused: the domain's :data:`MAX_DEEP_REQUESTS` are used."""
+
+
 class _Meter:
     """Counts one domain's deeper-scan requests against :data:`MAX_DEEP_REQUESTS`.
 
-    Every slot still comes from the run's shared budget; the meter only counts them.
+    Every slot still comes from the run's shared budget; the meter only counts them and
+    refuses (:class:`_MeterSpentError`, raised before the request is sent) once ``limit`` are
+    used, whatever asked: a page, a redirect hop, a bundle or a ``robots.txt``.
     """
 
     def __init__(self, budget: _Budget | None, limit: int) -> None:
@@ -777,6 +820,8 @@ class _Meter:
         return self.limit - self.used
 
     def acquire(self) -> float:
+        if self.used >= self.limit:
+            raise _MeterSpentError
         self.used += 1
         return self._budget.acquire() if self._budget is not None else 0.0
 
@@ -822,11 +867,18 @@ def _anchors(page: _Page) -> list[tuple[str, str]]:
         href = (element.get("href") or "").strip()
         if not href:
             continue
-        url = urljoin(page.url, href)
-        parts = urlsplit(url)
-        if parts.scheme in ("http", "https"):
+        parts = _absolute(page.url, href)
+        if parts is not None and parts.scheme in ("http", "https"):
             anchors.append((parts._replace(fragment="").geturl(), element.text_content()))
     return anchors
+
+
+def _absolute(base: str, href: str) -> SplitResult | None:
+    """``href`` resolved against ``base``; ``None`` for a malformed URL (``http://[::1``)."""
+    try:
+        return urlsplit(urljoin(base, href))
+    except ValueError:
+        return None
 
 
 def _same_site(url: str, domain: str) -> bool:
@@ -874,7 +926,10 @@ def _script_urls(domain: str, pages: Iterable[_Page]) -> list[str]:
             src = (element.get("src") or "").strip()
             if not src:
                 continue
-            url = urlsplit(urljoin(page.url, src))._replace(fragment="").geturl()
+            parts = _absolute(page.url, src)
+            if parts is None:
+                continue
+            url = parts._replace(fragment="").geturl()
             if _script_ok(url, domain):
                 urls.setdefault(url, None)
     return sorted(urls, key=_script_rank)
@@ -890,19 +945,25 @@ def _get_script(
 ) -> bytes | None:
     """One GET (no redirects, no retries) reading at most ``limit`` bytes; ``None`` unless 200.
 
-    Reading stops after :data:`SCRIPT_DEADLINE_S` seconds (measured with ``clock`` from
-    the request), keeping what was read.
+    The whole fetch ends within :data:`SCRIPT_DEADLINE_S` seconds of the request: each
+    request phase times out after :data:`SCRIPT_READ_TIMEOUT_S`, and no read starts
+    after ``SCRIPT_DEADLINE_S - SCRIPT_READ_TIMEOUT_S`` (measured with ``clock``). What
+    was read by then is kept.
     """
     budget.acquire()
-    deadline = clock() + SCRIPT_DEADLINE_S
+    last_read = clock() + SCRIPT_DEADLINE_S - SCRIPT_READ_TIMEOUT_S
     try:
-        with client.stream("GET", url, follow_redirects=False, timeout=SITE_TIMEOUT_S) as response:
+        with client.stream(
+            "GET", url, follow_redirects=False, timeout=httpx.Timeout(SCRIPT_READ_TIMEOUT_S)
+        ) as response:
             if response.status_code != httpx.codes.OK:
                 return None
             body = bytearray()
+            if clock() >= last_read:
+                return b""
             for chunk in response.iter_bytes():
                 body += chunk
-                if len(body) >= limit or clock() >= deadline:
+                if len(body) >= limit or clock() >= last_read:
                     break
             return bytes(body[:limit])
     except httpx.HTTPError:
@@ -917,14 +978,22 @@ def _visit(
     budget: _Budget | None,
     robots: RobotsCache,
     max_redirects: int = MAX_REDIRECTS,
+    robots_budget: _Budget | None = None,
 ) -> _Page:
-    """Fetch one page and record what it shows: board hits, channels in its redirects."""
+    """Fetch one page and record what it shows: board hits, channels in its redirects.
+
+    ``robots_budget`` pays for the ``robots.txt`` of a redirect hop's new origin.
+    """
+
+    def allowed(target: str) -> bool:
+        return robots.allowed(target, budget=robots_budget)
+
     page = _get_page(
         client,
         url,
         budget=budget,
         max_redirects=max_redirects,
-        allowed=robots.allowed,
+        allowed=allowed,
         stop_at=_known_destination,
     )
     found.fetched.update(_url_key(u) for u in (url, *page.redirects, page.url))
@@ -969,21 +1038,31 @@ def _deep_fetch(
     meter: _Meter,
     robots: RobotsCache,
 ) -> _Page | None:
-    """One page of the deeper scan, inside the meter; the page when it answered 200."""
+    """One page of the deeper scan, inside the meter; the page when it answered 200.
+
+    A ``robots.txt`` fetched on the way counts against the meter too; when the meter
+    runs out before the page itself is requested, the page is not checked.
+    """
     if meter.left < 1:
         return None
-    if not robots.allowed(url):
-        found.checked.append(f"robots_blocked:{label}")
+    try:
+        if not robots.allowed(url, budget=meter):
+            found.checked.append(f"robots_blocked:{label}")
+            return None
+        if meter.left < 1:
+            return None
+        found.checked.append(label)
+        page = _visit(
+            client,
+            url,
+            found,
+            budget=meter,
+            robots=robots,
+            max_redirects=min(MAX_REDIRECTS, meter.left - 1),
+            robots_budget=meter,
+        )
+    except _MeterSpentError:
         return None
-    found.checked.append(label)
-    page = _visit(
-        client,
-        url,
-        found,
-        budget=meter,
-        robots=robots,
-        max_redirects=min(MAX_REDIRECTS, meter.left - 1),
-    )
     return page if _answered(page) else None
 
 
@@ -1068,11 +1147,16 @@ def _scan_scripts(
         if meter.left < 1 or remaining <= 0:
             return
         label = "script:" + _short(url, found.domain)
-        if not robots.allowed(url):
-            found.checked.append(f"robots_blocked:{label}")
-            continue
-        found.checked.append(label)
-        body = _get_script(client, url, budget=meter, limit=remaining)
+        try:
+            if not robots.allowed(url, budget=meter):
+                found.checked.append(f"robots_blocked:{label}")
+                continue
+            if meter.left < 1:
+                return
+            found.checked.append(label)
+            body = _get_script(client, url, budget=meter, limit=remaining)
+        except _MeterSpentError:
+            return
         if body is None:
             continue
         remaining -= len(body)
@@ -1135,22 +1219,30 @@ def _get_json(
         return None
 
 
-def _page_title(
+def _get_html(
     client: httpx.Client, url: str, *, budget: RateBudget | None, sleep: Sleeper
-) -> str | None:
+) -> bytes | None:
+    """A vendor-hosted page (retried per ``tell.http``); ``None`` unless 200."""
     try:
         response = fetch(url, client=client, budget=budget, sleep=sleep)
     except httpx.HTTPError:
         return None
-    if response.status_code != httpx.codes.OK or not response.content.strip():
-        return None
-    try:
-        document = lxml_html.document_fromstring(response.content)
-    except (etree.ParserError, ValueError):
+    return response.content if response.status_code == httpx.codes.OK else None
+
+
+def _title_of(content: bytes | None) -> str | None:
+    document = _document(content) if content else None
+    if document is None:
         return None
     title = document.findtext(".//title")
     text = " ".join(title.split()) if title else ""
     return text or None
+
+
+def _page_title(
+    client: httpx.Client, url: str, *, budget: RateBudget | None, sleep: Sleeper
+) -> str | None:
+    return _title_of(_get_html(client, url, budget=budget, sleep=sleep))
 
 
 def _quoted(identifier: str) -> str:
@@ -1237,6 +1329,8 @@ class _Probe:
     identifier: str
     url: str
     board_name: str | None
+    data: Any = None
+    """The probe's decoded JSON (job list), reused as ownership evidence."""
 
 
 def _probe_request(vendor: str, slug: str) -> tuple[str, dict[str, str] | None]:
@@ -1274,7 +1368,7 @@ def _guess(
             if data is None or _job_count(vendor, data) < 1:
                 continue
             name = _smartrecruiters_name(data) if vendor == "smartrecruiters" else None
-            return _Probe(vendor, slug, url, name)
+            return _Probe(vendor, slug, url, name, data)
     return None
 
 
@@ -1299,6 +1393,283 @@ def name_ratio(board: str | None, candidates: Iterable[str | None]) -> float:
         if candidate and _normalise(candidate)
     ]
     return max(scores, default=0.0)
+
+
+# --- ownership evidence for slug guesses (ADR 0031) ------------------------------------------
+
+
+_PLUMBING_SITES: frozenset[str] = frozenset(
+    {
+        "greenhouse.io",
+        "greenhouse.com",
+        "lever.co",
+        "ashbyhq.com",
+        "ashbyprd.com",
+        "smartrecruiters.com",
+        "w3.org",
+        "schema.org",
+        "recaptcha.net",
+        "google.com",
+        "googleapis.com",
+        "gstatic.com",
+        "googletagmanager.com",
+        "cloudflare.com",
+    }
+)
+"""Registrable domains of the vendors and of page plumbing, left out of ``board_sites``."""
+
+MAX_BOARD_SITES = 5
+"""At most this many other sites a board points at are kept for the reviewer."""
+
+_URL_IN_TEXT = re.compile(r"https?://[^\s\"'<>\\)]+", re.IGNORECASE)
+_ASHBY_WEBSITE = re.compile(r"\"publicWebsite\"\s*:\s*\"([^\"]+)\"")
+
+
+def _mentions(text: str, domain: str) -> bool:
+    """``domain`` (or a subdomain of it) written out in ``text`` as a host name."""
+    pattern = (
+        r"(?<![A-Za-z0-9.-])(?:[A-Za-z0-9-]+\.)*"
+        + re.escape(domain)
+        + r"(?![A-Za-z0-9-]|\.[A-Za-z0-9])"
+    )
+    return re.search(pattern, text, re.IGNORECASE) is not None
+
+
+def _site_of(url: str) -> str | None:
+    try:
+        host = urlsplit(url.strip()).hostname
+    except ValueError:
+        return None
+    return registrable_domain(host) if host else None
+
+
+@dataclass(frozen=True)
+class OwnershipEvidence:
+    """What a board's own public data says about whose board it is (ADR 0031)."""
+
+    domain: str
+    """The company's registrable domain the evidence must point at."""
+    matched: str | None = None
+    """The first source that points at :attr:`domain` (``greenhouse:absolute_url``, ...)."""
+    checked: tuple[str, ...] = ()
+    """Every source read (its request answered), in order."""
+    failed: tuple[str, ...] = ()
+    """Sources whose request failed (transport error or not 200)."""
+    sites: tuple[str, ...] = ()
+    """Other registrable domains the board points at (vendors' own left out), for review."""
+
+    @property
+    def found(self) -> bool:
+        return self.matched is not None
+
+    @property
+    def conclusive(self) -> bool:
+        """Found, or every source answered (a failed request may have held the evidence)."""
+        return self.found or (bool(self.checked) and not self.failed)
+
+    def payload(self) -> dict[str, Any]:
+        """The ``review_queue`` payload fields: sources and sites only, never page text."""
+        return {
+            "evidence": self.matched,
+            "evidence_checked": list(self.checked),
+            "evidence_failed": list(self.failed),
+            "board_sites": list(self.sites),
+        }
+
+
+@dataclass(frozen=True)
+class BoardProfile:
+    """A supported board's own name and its ownership evidence."""
+
+    name: str | None
+    evidence: OwnershipEvidence
+
+
+class _EvidenceLog:
+    """Collects :class:`OwnershipEvidence` source by source."""
+
+    def __init__(self, domain: str) -> None:
+        self.domain = domain
+        self.matched: str | None = None
+        self.checked: list[str] = []
+        self.failed: list[str] = []
+        self.sites: list[str] = []
+
+    @property
+    def found(self) -> bool:
+        return self.matched is not None
+
+    def read(self, source: str, answered: bool, urls: Iterable[str], text: str = "") -> None:
+        if not answered:
+            self.failed.append(source)
+            return
+        self.checked.append(source)
+        hit = False
+        for url in urls:
+            site = _site_of(url)
+            if site is None:
+                continue
+            if site == self.domain:
+                hit = True
+            elif (
+                site not in _PLUMBING_SITES
+                and site not in self.sites
+                and len(self.sites) < MAX_BOARD_SITES
+            ):
+                self.sites.append(site)
+        if not hit and text:
+            hit = _mentions(text, self.domain)
+        if hit and self.matched is None:
+            self.matched = source
+
+    def result(self) -> OwnershipEvidence:
+        return OwnershipEvidence(
+            self.domain, self.matched, tuple(self.checked), tuple(self.failed), tuple(self.sites)
+        )
+
+
+def _links(content: bytes | None, base: str) -> list[str]:
+    """Absolute ``http(s)`` URLs of every ``<a href>`` on a page."""
+    document = _document(content) if content else None
+    if document is None:
+        return []
+    urls: list[str] = []
+    for element in document.iter("a"):
+        href = (element.get("href") or "").strip()
+        parts = _absolute(base, href) if href else None
+        if parts is not None and parts.scheme in ("http", "https"):
+            urls.append(parts.geturl())
+    return urls
+
+
+def _markup_urls(markup: str) -> list[str]:
+    """``<a href>`` URLs and URLs written out in an HTML fragment (a board's intro)."""
+    if not markup.strip():
+        return []
+    return [
+        *_links(markup.encode("utf-8"), "https://invalid.invalid/"),
+        *_URL_IN_TEXT.findall(markup),
+    ]
+
+
+def _job_urls(data: Any, keys: tuple[str, ...]) -> list[str]:
+    """``keys`` of every job of a ``{"jobs": [...]}`` payload (Greenhouse, Ashby)."""
+    jobs = data.get("jobs") if isinstance(data, dict) else None
+    if not isinstance(jobs, list):
+        return []
+    return [
+        job[key]
+        for job in jobs
+        if isinstance(job, dict)
+        for key in keys
+        if isinstance(job.get(key), str)
+    ]
+
+
+def _greenhouse_name(data: Any) -> str | None:
+    name = data.get("name") if isinstance(data, dict) else None
+    return name if isinstance(name, str) and name.strip() else None
+
+
+def ownership_evidence(
+    client: httpx.Client,
+    vendor: str,
+    identifier: str,
+    domain: str,
+    *,
+    probe: Any = None,
+    budget: RateBudget | None = None,
+    sleep: Sleeper = time.sleep,
+) -> BoardProfile:
+    """The board's own name and whether its public data points at ``domain`` (ADR 0031).
+
+    Sources per vendor, read in this order and only until one points at ``domain`` (a URL
+    whose registrable domain is ``domain``; for the Greenhouse intro also the domain
+    written out as text):
+
+    * Greenhouse: ``/v1/boards/{token}`` ``content`` (the request that gives the name),
+      every job's ``absolute_url`` (``probe``, else ``/v1/boards/{token}/jobs``), then
+      the hosted board ``job-boards.greenhouse.io/{token}`` (its logo links the company
+      site): 0 extra requests after a guess when the API carries the evidence, else 1.
+    * Lever: the hosted page ``jobs.lever.co/{site}`` (the name request): its header
+      logo and "Home Page" footer links. 0 extra requests.
+    * Ashby: the hosted page ``jobs.ashbyhq.com/{name}`` (the name request): the
+      ``publicWebsite`` of its embedded app data and its links; then every job's
+      ``jobUrl`` / ``applyUrl`` (``probe``, else the posting API). 0 extra after a guess.
+    * SmartRecruiters: the name from ``probe`` (else the postings API, ``limit=1``), then
+      the careers page ``careers.smartrecruiters.com/{id}`` ("Home Page" link): 1 extra.
+
+    ``probe`` is the guess's decoded job-list response, so a guess pays nothing twice.
+    """
+    log = _EvidenceLog(domain)
+    quoted = _quoted(identifier)
+    name: str | None
+    if vendor == "greenhouse":
+        board = _get_json(client, f"{GREENHOUSE_API}/{quoted}", budget=budget, sleep=sleep)
+        name = _greenhouse_name(board)
+        content = board.get("content") if isinstance(board, dict) else None
+        markup = html.unescape(content) if isinstance(content, str) else ""
+        log.read("greenhouse:board_content", isinstance(board, dict), _markup_urls(markup), markup)
+        if not log.found:
+            jobs = probe
+            if jobs is None:
+                jobs = _get_json(
+                    client, f"{GREENHOUSE_API}/{quoted}/jobs", budget=budget, sleep=sleep
+                )
+            log.read(
+                "greenhouse:absolute_url",
+                isinstance(jobs, dict),
+                _job_urls(jobs, ("absolute_url",)),
+            )
+        if not log.found:
+            url = hosted_board_url(vendor, identifier)
+            page = _get_html(client, url, budget=budget, sleep=sleep)
+            log.read("greenhouse:hosted_page", page is not None, _links(page, url))
+    elif vendor in ("lever", "ashby"):
+        url = hosted_board_url(vendor, identifier)
+        page = _get_html(client, url, budget=budget, sleep=sleep)
+        name = _title_of(page)
+        urls = _links(page, url)
+        if vendor == "ashby" and page:
+            text = _unescape(page.decode("utf-8", errors="replace"))
+            urls += [html.unescape(site) for site in _ASHBY_WEBSITE.findall(text)]
+        log.read(f"{vendor}:hosted_page", page is not None, urls)
+        if vendor == "ashby" and not log.found:
+            jobs = probe
+            if jobs is None:
+                jobs = _get_json(client, f"{ASHBY_API}/{quoted}", budget=budget, sleep=sleep)
+            log.read(
+                "ashby:job_urls", isinstance(jobs, dict), _job_urls(jobs, ("jobUrl", "applyUrl"))
+            )
+    elif vendor == "smartrecruiters":
+        postings = probe
+        if postings is None:
+            postings = _get_json(
+                client,
+                _smartrecruiters_postings(identifier),
+                params={"limit": "1"},
+                budget=budget,
+                sleep=sleep,
+            )
+            # The name request: never evidence, but its failure makes a check inconclusive.
+            log.read("smartrecruiters:postings", isinstance(postings, dict), ())
+        name = _smartrecruiters_name(postings)
+        url = hosted_board_url(vendor, identifier)
+        page = _get_html(client, url, budget=budget, sleep=sleep)
+        log.read("smartrecruiters:careers_page", page is not None, _links(page, url))
+    else:
+        msg = f"ownership evidence is only defined for supported vendors, not {vendor!r}"
+        raise ValueError(msg)
+    return BoardProfile(name, log.result())
+
+
+def guess_rejection(ratio: float, evidence: OwnershipEvidence) -> str | None:
+    """Why a guessed board may not be activated, or ``None`` when it may (ADR 0031)."""
+    if ratio < MATCH_THRESHOLD:
+        return "name_mismatch"
+    if not evidence.found:
+        return GUESS_EVIDENCE_REASON
+    return None
 
 
 # --- results ---------------------------------------------------------------------------------
@@ -1375,12 +1746,58 @@ def _write_board(
         session.add(board)
     elif board.company_id is None:
         board.company_id = company.id
+    elif board.company_id != company.id:
+        # Never overwrite another company's outcome (its discovered_from, confidence,
+        # status or last_verified_at); callers key a shared destination apart first.
+        msg = f"ats_boards {vendor}:{identifier} belongs to company {board.company_id}"
+        raise ValueError(msg)
     board.discovered_from = discovered_from
     board.confidence = confidence
     board.status = status
     board.last_verified_at = now
     session.flush()
     return board
+
+
+def _unshared_identifier(
+    session: Session, company: Company, vendor: str, identifier: str, domain: str
+) -> str:
+    """``identifier``, or ``<identifier>#<domain>`` when another company already owns it.
+
+    Two companies can point at one unsupported destination (a shared Gem board, a parent
+    company's Workday site). ``ats_boards`` is unique on ``(vendor, identifier)``, so the
+    second company's outcome is recorded on its own key instead of overwriting the first
+    company's row. Unsupported rows are never fetched, so the key is only a record.
+    """
+    existing = _find_board(session, vendor, identifier)
+    if existing is None or existing.company_id in (None, company.id):
+        return identifier
+    return f"{identifier}{SHARED_SEPARATOR}{domain}"
+
+
+def _human_confirmed(session: Session, board: AtsBoard | None, company: Company) -> bool:
+    """A person activated this guessed board after its ``board_verify`` item.
+
+    True when the company's own board is ``active`` and a resolved
+    ``guess_without_domain_evidence`` item about it exists that discovery did not resolve
+    itself: re-verification then keeps the board instead of pausing it again every 30 days.
+    """
+    if board is None or board.company_id != company.id or board.status != "active":
+        return False
+    key = {
+        "domain": company.domain,
+        "vendor": board.vendor,
+        "identifier": board.identifier,
+        "reason": GUESS_EVIDENCE_REASON,
+    }
+    stmt = select(ReviewQueueItem).where(
+        ReviewQueueItem.kind == REVIEW_KIND,
+        ReviewQueueItem.status == "resolved",
+        ReviewQueueItem.payload.contains(key),
+    )
+    return any(
+        item.payload.get("resolved_by") != DISCOVERY_SOURCE for item in session.scalars(stmt)
+    )
 
 
 def _drop_no_board_marker(session: Session, domain: str) -> None:
@@ -1425,6 +1842,7 @@ def _resolve_reviews(
     for item in session.scalars(stmt):
         item.status = "resolved"
         item.resolved_at = now
+        item.payload = {**item.payload, "resolved_by": DISCOVERY_SOURCE}
     session.flush()
 
 
@@ -1517,6 +1935,8 @@ class _Finding:
     """The board's own company name (supported vendors only; ``None`` when unavailable)."""
     channels: tuple[str, ...] = ()
     """Hiring channels seen on the way (``notion``, ``linkedin``, ...); see :func:`channel_of`."""
+    evidence: OwnershipEvidence | None = None
+    """Ownership evidence of a slug guess (:func:`ownership_evidence`); ``None`` otherwise."""
 
 
 def _investigate(
@@ -1537,7 +1957,6 @@ def _investigate(
     page_url = scan.page_for(hit) if hit is not None else None
     if hit is not None and hit.pattern == GRNH_SE_PATTERN:
         hit = resolve_short_link(client, hit, budget=budget)
-    probe_name: str | None = None
     if hit is not None and page_url is not None:
         confidence, discovered_from = PAGE_CONFIDENCE, page_url
     else:
@@ -1560,12 +1979,28 @@ def _investigate(
                 channels=scan.channels,
             )
         hit = BoardHit(probe.vendor, probe.identifier, probe.url, "guess")
-        confidence, discovered_from, probe_name = GUESS_CONFIDENCE, probe.url, probe.board_name
+        profile = ownership_evidence(
+            client,
+            probe.vendor,
+            probe.identifier,
+            normalized,
+            probe=probe.data,
+            budget=budget,
+            sleep=sleep,
+        )
+        return _Finding(
+            normalized,
+            scan.pages_checked,
+            hit,
+            GUESS_CONFIDENCE,
+            probe.url,
+            probe.board_name or profile.name,
+            scan.channels,
+            profile.evidence,
+        )
     name: str | None = None
     if hit.vendor not in UNSUPPORTED_VENDORS:
-        name = probe_name or board_name(
-            client, hit.vendor, hit.identifier, budget=budget, sleep=sleep
-        )
+        name = board_name(client, hit.vendor, hit.identifier, budget=budget, sleep=sleep)
     return _Finding(
         normalized,
         scan.pages_checked,
@@ -1594,6 +2029,7 @@ def _record(
         outcome: Outcome,
         board_id: int | None,
         *,
+        identifier: str | None = None,
         name: str | None = None,
         ratio: float | None = None,
         review_id: int | None = None,
@@ -1602,7 +2038,7 @@ def _record(
             domain=normalized,
             outcome=outcome,
             vendor=found.vendor,
-            identifier=found.identifier,
+            identifier=identifier or found.identifier,
             confidence=confidence,
             discovered_from=discovered_from,
             pages_checked=finding.pages_checked,
@@ -1615,24 +2051,37 @@ def _record(
         )
 
     if found.vendor in UNSUPPORTED_VENDORS:
+        identifier = _unshared_identifier(
+            session, company, found.vendor, found.identifier, normalized
+        )
         board = _write_board(
             session,
             company,
             vendor=found.vendor,
-            identifier=found.identifier,
+            identifier=identifier,
             discovered_from=discovered_from,
             confidence=confidence,
             status="unsupported",
             now=now,
         )
         _drop_no_board_marker(session, normalized)
-        return result("unsupported", board.id)
+        return result("unsupported", board.id, identifier=identifier)
 
     name = finding.board_name
     ratio = name_ratio(name, [domain_label(normalized), company_name, company.name])
     existing = _find_board(session, found.vendor, found.identifier)
     owned_elsewhere = existing is not None and existing.company_id not in (None, company.id)
-    if owned_elsewhere or ratio < MATCH_THRESHOLD:
+    evidence = finding.evidence
+    reason: str | None
+    if owned_elsewhere:
+        reason = "owned_by_other_company"
+    elif evidence is not None:
+        reason = guess_rejection(ratio, evidence)
+        if reason == GUESS_EVIDENCE_REASON and _human_confirmed(session, existing, company):
+            reason = None
+    else:
+        reason = "name_mismatch" if ratio < MATCH_THRESHOLD else None
+    if reason is not None:
         payload: dict[str, Any] = {
             "domain": normalized,
             "vendor": found.vendor,
@@ -1640,8 +2089,10 @@ def _record(
             "board_name": name,
             "ratio": ratio,
             "discovered_from": discovered_from,
-            "reason": "owned_by_other_company" if owned_elsewhere else "name_mismatch",
+            "reason": reason,
         }
+        if evidence is not None:
+            payload.update(evidence.payload())
         item = _queue_review(session, payload, now)
         if existing is None:
             # Not activated: stored paused (never polled) until the review item is resolved.
@@ -1654,7 +2105,13 @@ def _record(
                 status="paused",
             )
             session.add(existing)
-            session.flush()
+        if evidence is not None and not owned_elsewhere:
+            # A rejected guess is never polled, even when an earlier rule activated it.
+            # An unowned row (orphan or hand-added) is paused too but stays unowned:
+            # the guess failed, so it is not claimed for this company.
+            existing.status = "paused"
+            existing.last_verified_at = now
+        session.flush()
         if not owned_elsewhere:
             _drop_no_board_marker(session, normalized)
         return result("review", existing.id, name=name, ratio=ratio, review_id=item.id)

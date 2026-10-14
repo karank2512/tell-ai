@@ -12,7 +12,8 @@ Top-level commands, matching the spec section 11 workflow YAML:
   boards polled in the last :data:`MIN_POLL_GAP` unless ``--force``; ``edgar``,
   ``news`` and ``github`` run their collector once. Prints the run line. News also takes
   ``--when-days N`` and ``--cohort formd`` (SPEC 13.1: the companies linked to a recent
-  Form D, queried with ``when:120d``).
+  Form D, queried with ``when:120d``); edgar takes ``--since YYYY-MM-DD`` (a manual
+  catch-up, at most 120 days back).
 * ``backfill formd --quarter YYYYQn [--file PATH] [--since-days N]``: the SEC quarterly
   Form D data sets as ``edgar`` events, one ``edgar_backfill`` run
   (:mod:`tell.collectors.edgar_backfill`); refuses to download while ``SEC_USER_AGENT``
@@ -445,8 +446,10 @@ def _ingest_ats(
         return runlog_ops.run_line(run)
 
 
-def _edgar_work(session: Session, run_id: str, now: datetime) -> _Outcome:
-    result = edgar.collect(session, run_id=run_id, now=now)
+def _edgar_work(
+    session: Session, run_id: str, now: datetime, *, since: date | None = None
+) -> _Outcome:
+    result = edgar.collect(session, run_id=run_id, now=now, since=since)
     return _Outcome(
         fetched=result.fetched,
         inserted=result.inserted,
@@ -454,6 +457,19 @@ def _edgar_work(session: Session, run_id: str, now: datetime) -> _Outcome:
         errors=result.errors,
         notes=result.notes,
     )
+
+
+def _edgar_since(source: Source, since: datetime | None) -> date | None:
+    """``--since`` as a date, checked before any run is recorded (edgar only, <= 120 days)."""
+    if since is None:
+        return None
+    if source is not Source.EDGAR:
+        raise typer.BadParameter("--since applies to edgar only", param_hint="--since")
+    try:
+        edgar.since_dates(utcnow(), since.date())
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--since") from exc
+    return since.date()
 
 
 def _company_ids(session: Session, domain: str) -> list[int]:
@@ -565,6 +581,18 @@ def ingest(
             help=f"With --cohort: how far back a filing counts (default {news.COHORT_DAYS}).",
         ),
     ] = None,
+    since: Annotated[
+        datetime | None,
+        typer.Option(
+            "--since",
+            formats=["%Y-%m-%d"],
+            help=(
+                "EDGAR only: read every daily index from this date (YYYY-MM-DD) to today, "
+                f"at most {edgar.MAX_SINCE_DAYS_BACK} days back (default: catch up after "
+                "the last successful run)."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Run one collector and print its JSON run line (exit 1 when the run failed)."""
     name = source.value
@@ -574,6 +602,7 @@ def ingest(
         raise typer.BadParameter("pass either --cohort or --domain, not both")
     if cohort_days is not None and cohort is None:
         raise typer.BadParameter("--cohort-days applies with --cohort only")
+    since_day = _edgar_since(source, since)
     if name in ATS_INGEST:
         line = _ingest_ats(name, board=board, domain=domain, limit=limit, force=force)
     else:
@@ -583,7 +612,11 @@ def ingest(
             msg = "--domain and --limit apply to ATS sources and news only"
             raise typer.BadParameter(msg)
         if source is Source.EDGAR:
-            line = _tracked(Source.EDGAR.value, _edgar_work, with_notes=False)
+            line = _tracked(
+                Source.EDGAR.value,
+                lambda session, run_id, now: _edgar_work(session, run_id, now, since=since_day),
+                with_notes=False,
+            )
         elif source is Source.NEWS:
             line = _ingest_news(
                 domain, limit, when_days=when_days, cohort=cohort, cohort_days=cohort_days

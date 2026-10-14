@@ -2,10 +2,13 @@
 
 Spec: `docs/SPEC.md` section 4 (procedure), section 5 (`ats_boards`, `review_queue`) and
 section 11 (budget). Code: `tell/discovery/ats.py`. CLI: `tell discover domain --domain
-acme.com [--name "Acme"]` and `tell discover batch [--limit N] [--rps R] [--concurrency C]
-[--max-minutes M]`. Tests: `tests/discovery/test_ats.py`, `tests/discovery/test_deep_scan.py`
-and `tests/discovery/test_batch.py` (all HTTP mocked with `respx`, hand-crafted pages and
-bundles under `tests/fixtures/discovery/`).
+acme.com [--name "Acme"]`, `tell discover batch [--limit N] [--rps R] [--concurrency C]
+[--max-minutes M]` and `tell discover reverify-guesses [--limit N] [--rps R]`
+(`tell/discovery/reverify.py`). Tests: `tests/discovery/test_ats.py`,
+`tests/discovery/test_deep_scan.py`, `tests/discovery/test_ownership.py` and
+`tests/discovery/test_batch.py` (all HTTP mocked with `respx`, hand-crafted pages and
+bundles under `tests/fixtures/discovery/`, plus the recorded public evidence of audited
+guessed boards in `ownership_audit.json`).
 
 Nothing in the ATS APIs maps a domain to a board token, so discovery is its own job: given a
 domain, find the board or record that none was found.
@@ -13,7 +16,10 @@ domain, find the board or record that none was found.
 Where this procedure departs from the SPEC section 4 wording (the deeper scan after the
 first 200, no slug guesses after a hiring channel, and the further vendors and YC Work at a
 Startup recorded as `unsupported`) is recorded in
-[ADR 0030](../decisions/0030-discovery-deeper-scan-and-unsupported-destinations.md).
+[ADR 0030](../decisions/0030-discovery-deeper-scan-and-unsupported-destinations.md); the
+ownership evidence required of slug guesses, the per-company key of a shared unsupported
+destination and the request bounds below in
+[ADR 0031](../decisions/0031-slug-guess-ownership-evidence.md).
 
 ## Procedure
 
@@ -52,8 +58,10 @@ Startup recorded as `unsupported`) is recorded in
    (nothing, only a YC listing, only a hiring channel, or only a `grnh.se` link). Added
    after the 2026-10-14 recall audit (below); it stops as soon as an ATS (supported or
    unsupported) is found, and every request in it counts against a hard cap of
-   **12 requests per domain** (`MAX_DEEP_REQUESTS`; a redirect hop counts, the hop limit
-   shrinks when the cap is near):
+   **12 requests per domain** (`MAX_DEEP_REQUESTS`; a redirect hop counts, and so does
+   the `robots.txt` of every origin first reached in this step, such as `www.` or a page
+   CDN; the hop limit shrinks when the cap is near, and a request past the cap is never
+   sent):
    1. **Homepage**, unless it was the first answer (or a candidate already redirected to
       it). Recorded in `pages_checked` as `/`. The audit found a company whose
       `/careers` redirected to its YC jobs page while its Ashby board was linked only from
@@ -74,7 +82,11 @@ Startup recorded as `unsupported`) is recorded in
       careers/jobs-named bundles, then page and app bundles (`/pages/`, `/app/`,
       `index-`, `main-`, `_app`), then the rest, framework/polyfill/webpack/vendor
       bundles last. **2 MB in total** (`MAX_SCRIPT_BYTES`) is read per domain; a bundle
-      is cut off at the remainder. One GET each, no redirects, no retries, 10 s timeout
+      is cut off at the remainder. One GET each, no redirects, no retries, and a **total
+      wall-clock deadline of 15 s** per bundle (`SCRIPT_DEADLINE_S`): every request phase
+      times out after 3 s (`SCRIPT_READ_TIMEOUT_S`) and no read starts after 12 s, so a
+      host that drips bytes cannot hold a worker longer (DNS lookup excepted); what was
+      read by then is scanned
       (`script:/path`). The audit found an Ashby API URL only in a careers page bundle.
 
    robots.txt is honoured for every page, link and bundle (`robots_blocked:link:/x`,
@@ -109,8 +121,33 @@ Startup recorded as `unsupported`) is recorded in
    `reason` = `name_mismatch` or `owned_by_other_company`) and **the board is not
    activated**: a new board is stored with `status='paused'`, which no collector polls,
    until a human resolves the item. Reruns reuse the open item. A later run that verifies
-   the board activates it and resolves the item.
-   Unchanged by the audit work: the rule is a business rule (SPEC section 4 step 4).
+   the board activates it and resolves the item (marking it `resolved_by: discovery`).
+
+   **Slug guesses also need ownership evidence** (ADR 0031). For a guessed board (0.60)
+   the name is not enough: generic labels ("Stream", "Axle", "Tilt", "Chicory") match
+   another company's board at 100. The board's own public data must point at the
+   company's registrable domain: a URL on it whose registrable domain (eTLD+1) equals the
+   company's, or, in a Greenhouse board intro, the domain written out as a host name
+   (`acme.com`, `careers.acme.com`; not `acme.com.au` or `notacme.com`). Sources, read in
+   this order and only until one points at the domain:
+
+   | Vendor | Evidence that counts | Requests after a guess |
+   | --- | --- | --- |
+   | Greenhouse | (1) `content` of `GET /v1/boards/{token}` (the name request: links, URLs and the domain written out); (2) any job's `absolute_url` in the guess response `GET /v1/boards/{token}/jobs` (custom careers pages put `?gh_jid=` links on the company's domain); (3) any `<a href>` of the hosted board `job-boards.greenhouse.io/{token}` (its logo links the company site) | 0 extra when (1) or (2) shows the domain, else 1 (the hosted board) |
+   | Lever | any `<a href>` of `jobs.lever.co/{site}` (the name request): the header logo link and the "Home Page" footer link | 0 extra |
+   | Ashby | (1) `organization.publicWebsite` in the app data embedded in `jobs.ashbyhq.com/{name}` and that page's `<a href>` (the name request); (2) any job's `jobUrl` / `applyUrl` in the guess response | 0 extra |
+   | SmartRecruiters | any `<a href>` of `careers.smartrecruiters.com/{id}` (the "Home Page" navigation link); the name comes from the guess response | 1 extra |
+
+   A name-only match goes to review with `reason='guess_without_domain_evidence'` and
+   the board is stored (or set, when an earlier run had activated it) `status='paused'`
+   with `last_verified_at = now`. The payload adds `evidence` (the source that matched,
+   `null` here), `evidence_checked`, `evidence_failed` (sources whose request failed) and
+   `board_sites`: up to 5 other registrable domains the board points at (the vendors' own
+   and page plumbing left out), which is usually the other company's site and lets a
+   reviewer decide at a glance. Only domains are stored, never page text. A board a person
+   re-activated after resolving such an item stays active on later runs (the item is
+   resolved, not by discovery, and the board is `active` again). Page-linked boards
+   (0.95) keep the name rule alone.
 7. **Write `ats_boards`** with `vendor`, `identifier`, `discovered_from` (the URL of the page
    or bundle that carried the link, or the API URL that answered a guess), `confidence`,
    `status`, `last_verified_at = now`.
@@ -175,8 +212,8 @@ logger: `{"domain", "outcome", "vendor", "identifier", "confidence", "pages_chec
 | Outcome | `ats_boards` row |
 | --- | --- |
 | `board` | supported vendor, `status='active'` |
-| `unsupported` | an unsupported ATS (Workday, Oracle, Workable, Dover, Gem, Comeet, ...) or `yc_waas`, `status='unsupported'` |
-| `review` | `status='paused'` (new board) or unchanged (existing board), plus an open `board_verify` item |
+| `unsupported` | an unsupported ATS (Workday, Oracle, Workable, Dover, Gem, Comeet, ...) or `yc_waas`, `status='unsupported'`; when that `(vendor, identifier)` is already another company's row (two companies linking one Gem board), this company's row is `identifier='<identifier>#<domain>'`, so neither outcome overwrites the other |
+| `review` | `status='paused'` (new board, or a rejected guess, also when an earlier run had activated it) or unchanged (an existing page-linked board), plus an open `board_verify` item |
 | `no_board` | `vendor='none'`, `identifier=<domain>`, `status='no_board'`, `discovered_from='checked:'` + the comma-joined `pages_checked` (e.g. `checked:robots_blocked:/careers,/jobs,/join,/company/careers,/` or `checked:/careers,/,link:/about/careers`), then `;via:` + the hiring channels seen, if any (e.g. `checked:/careers,/;via:linkedin`) |
 
 When a later run finds a board, the domain's `none` marker row is deleted, so every company
@@ -226,20 +263,21 @@ about 3 requests on a page hit (robots, one or two pages, one name lookup) and u
 
 | Stage | Requests at most |
 | --- | --- |
-| `robots.txt` of the domain | 1 (once per origin per run, up to 6 with its own redirects; also once for any other origin a redirect, link or bundle enters, such as `www.`) |
+| `robots.txt` of the domain | 1 (once per origin per run, up to 6 with its own redirects; also once for any other origin a candidate's redirect enters, such as `www.`; in the deeper scan it is counted in the 12) |
 | Candidate pages | 15 (5 candidates, each up to 3 with 2 redirect hops; stops at the first answer) |
-| Deeper scan (homepage, 2 careers links, 5 bundles, 2 MB) | 12 (`MAX_DEEP_REQUESTS`, hard cap including redirect hops) |
+| Deeper scan (homepage, 2 careers links, 5 bundles, 2 MB) | 12 (`MAX_DEEP_REQUESTS`, hard cap including redirect hops and the `robots.txt` of new origins) |
 | `grnh.se` short link | 1 |
 | Slug guesses | 12 (3 slugs x 4 vendors; skipped after a page hit, an unsupported ATS, a listing or a hiring channel) |
-| Board name lookup | 1 (plus `tell.http` retries on 429/5xx from vendor APIs) |
-| **Total** | **42**, plus `robots.txt` of other origins and vendor-API retries |
+| Board name lookup and ownership evidence | 2 (the name request, plus for a guess the Greenhouse hosted board or the SmartRecruiters careers page; plus `tell.http` retries on 429/5xx from vendor APIs) |
+| **Total** | **43**, plus `robots.txt` of origins a candidate's redirect enters and vendor-API retries |
 
-`robots.txt` loads are not charged to `MAX_DEEP_REQUESTS`. Each origin's load follows up to
-5 redirects (RFC 9309), so it is at most 6 requests, and in the strict worst case each of the
-27 candidate and deep-scan requests enters a new origin, which bounds a domain at
-42 + 6 x 28 = 210 requests (the domain's own robots counted once more). In practice the
-extra origins are `www.` and at most one careers subdomain (2 to 12 requests). Every one of
-them draws from the shared 4 rps bucket, so the rate limit holds whatever the count.
+Since ADR 0031 the deeper scan charges the `robots.txt` of every origin it enters to its
+12. Outside it, each robots load follows up to 5 redirects (RFC 9309), so it is at most 6
+requests, and in the strict worst case each of the 15 candidate requests enters a new
+origin, which bounds a domain at 43 + 6 x 16 = 139 requests (the domain's own robots
+counted once more; it was 210 before). In practice the extra origin is `www.` (1 to 6
+requests). Every one of them draws from the shared 4 rps bucket, so the rate limit holds
+whatever the count.
 
 Typical costs: a board on `/careers` is about 3 requests (unchanged); a domain whose
 candidates all fail is still about 18 (no page answered, so no deeper scan); a domain whose
@@ -312,9 +350,9 @@ A private audit (`tell-private/reports/discovery-audit-2026-10-14.md`) checked 4
 - **Wider slug guessing has negative value:** 27 slug variants per company found 0 real
   boards and 6 boards of other companies, so the slug list was **not** widened.
 - **Guessed boards are the precision problem** (3 of 9 guessed boards in the sample
-  belonged to another company; 0 of 11 page-linked ones). Stricter ownership checks for
-  guesses change SPEC section 4 step 4 and wait for a decision; this change leaves
-  verification as it was, but turns some guesses into page hits (below).
+  belonged to another company; 0 of 11 page-linked ones). The deeper scan turned some
+  guesses into page hits (below); ADR 0031 then added the ownership-evidence rule
+  ("Precision: ownership evidence for guesses").
 
 **Offline replay.** The audit's saved evidence (redirect chains, page bodies, and the
 bundle findings) was replayed through the old and the new page scan without any network
@@ -343,6 +381,46 @@ other two wrong guessed boards in the sample have no careers page at all, so onl
 stricter ownership rule would catch them. Class (a) misses: none existed, so none could be
 recovered.
 
+## Precision: ownership evidence for guesses (2026-10-14)
+
+The rule of step 6 was checked live on 2026-10-14 (1 request per second overall, the
+discovery User-Agent, the same `ownership_evidence` code `reverify-guesses` runs, no
+database writes) against every guessed board of the 2026-10-14 snapshot
+(`tell_snapshot_20261014`: 52 active, 2 already paused) and the 8 further wrong guesses
+the audit's wider slug search had found. Rejected boards were then judged by hand from the
+company's homepage and the board's job titles and descriptions.
+
+| 52 active guessed boards | Count |
+| --- | ---: |
+| Kept: the board points at the company's domain | 24 |
+| - by source: Ashby app data 9, SmartRecruiters careers page 7, Greenhouse hosted board 3, Lever hosted page 3, Greenhouse intro 1, Greenhouse job URL 1 | |
+| Sent to review (`guess_without_domain_evidence`; all 28 passed the name rule at 100) | 28 |
+| - another company's board, by hand review | 21 |
+| - the company's own board (no link to its domain, or another domain such as `sage.care` for `sagecare.ai`) | 5 |
+| - unclear | 2 |
+
+- **Wrong guesses rejected: 21 of 21** in the snapshot, plus **11 of 11** known wrong
+  guesses from the audit and the recount (`stream`, `tilt`, `axle`, `chicory`, `earth`,
+  `stacker`, `seer`, `spire`, `symphony` on Greenhouse and SmartRecruiters,
+  `palettelabs`), the 3 snapshot ones among them. **Wrong guesses kept: 0.**
+- **Correct guesses kept: 24 of 29 to 31** (77% to 83%, counting the 2 unclear either
+  way). The 5 to 7 others wait in review.
+- The samples underestimated the problem: about 21 to 23 of the 52 active guessed boards
+  (40% to 44%) belong to another company, against 3 of 9 in the 2026-10-13 audit and 2 of
+  15 in the recount. On the snapshot, supported-board coverage would move from 15.8%
+  (158) to 13.0% (130) once `reverify-guesses` runs, plus up to 7 boards a reviewer may
+  confirm.
+- **Cost.** 104 requests for the 52 boards in `reverify-guesses` mode (no guess response
+  to reuse: Greenhouse 48 for 17 boards, Ashby 31 for 20, SmartRecruiters 20 for 10,
+  Lever 5 for 5). In discovery, after a guess, the evidence costs 0 extra requests on
+  Lever and Ashby, 1 on SmartRecruiters and 0 or 1 on Greenhouse (15 of the 17 Greenhouse
+  boards here needed the hosted board).
+- `tests/fixtures/discovery/ownership_audit.json` keeps the minimal public evidence of
+  the 11 wrong guesses and 8 correct ones (page title or board name, one link per site the
+  board links, one job URL per host; no page text, no people), and
+  `tests/discovery/test_ownership.py` shows the rule rejects every wrong one and keeps
+  every correct one.
+
 ## Re-verification
 
 `reverify_due(board, now)` is true when:
@@ -357,7 +435,25 @@ recovered.
 
 `paused` boards are never due (they wait for their review item). Re-verification reruns the
 whole procedure for the company's domain: a dead board found and verified again becomes
-`active`; a renamed board is written as a new row.
+`active`; a renamed board is written as a new row; a board found again only by a slug guess
+must show ownership evidence (step 6) or it is set `paused`.
+
+**`tell discover reverify-guesses [--limit N] [--rps R]`** applies the evidence rule to the
+existing `active` guessed boards (0.60, supported vendor) without a full rediscovery,
+least recently verified first, at `TELL_DISCOVERY_RPS` unless `--rps` is given: about 2
+requests per board (Greenhouse: board API, job list, hosted board, stopping at the first
+evidence; Lever: hosted page; Ashby: hosted page, then the posting API; SmartRecruiters:
+postings for the name, then the careers page).
+
+| Result | What changes |
+| --- | --- |
+| `kept` | evidence found and the name still matches (or a person re-activated the board after its review item): `last_verified_at = now`; open discovery items about the board are resolved |
+| `paused` | `guess_without_domain_evidence` or `name_mismatch`: `status='paused'`, `last_verified_at = now`, one open `board_verify` item (reused on reruns) |
+| `error` | a request failed and nothing pointed at the domain, or the name could not be fetched: nothing changes; the next run tries again |
+
+It commits after every board and prints one JSON line per board plus a summary
+(`{"checked", "outcomes": {"kept", "paused", "error"}}`). Rerunning it is idempotent:
+paused boards are no longer selected and kept boards only get a newer stamp.
 
 **Every outcome stamps the company's dead boards.** After any outcome for a company
 (`board`, `unsupported`, `review`, `no_board`), discovery sets `last_verified_at = now` on
@@ -367,6 +463,5 @@ therefore checked again only after 30 days, or sooner if a collector polls it ag
 that stamp; before this rule a dead board was due on every batch forever, because no
 outcome ever touched its row.
 
-Note: the collectors also set `last_verified_at` on every successful poll, so for polled
-boards the 30-day rule rarely fires; it matters for `unsupported` and `no_board` rows, which
-are re-checked monthly.
+Note: the collectors never write `last_verified_at` (discovery owns it), so every board,
+polled or not, is re-checked by discovery 30 days after its last verification.

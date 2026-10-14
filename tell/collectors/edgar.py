@@ -1,8 +1,8 @@
 """SEC EDGAR collector (SPEC section 3.6): daily form index, Form D, 8-K and S-1 events.
 
-One run reads the daily ``form.{YYYYMMDD}.idx`` for each requested date (yesterday and
-today in New York by default), keeps form types ``D``, ``D/A``, ``8-K`` and ``S-1``,
-and turns them into events keyed ``edgar:{accession_number}``:
+One run reads the daily ``form.{YYYYMMDD}.idx`` for each requested date, keeps form
+types ``D``, ``D/A``, ``8-K`` and ``S-1``, and turns them into events keyed
+``edgar:{accession_number}``:
 
 * ``D``   -> ``form_d_filed`` from ``primary_doc.xml`` (see :mod:`tell.collectors.edgar_formd`);
 * ``D/A`` -> merged into the original ``form_d_filed`` payload, never a second event
@@ -10,6 +10,13 @@ and turns them into events keyed ``edgar:{accession_number}``:
 * ``8-K`` -> ``form_8k_filed`` for monitored companies only (``companies.cik``), with
   items from ``data.sec.gov/submissions`` and items 5.02 / 1.01 / 2.01 flagged;
 * ``S-1`` -> ``form_s1_filed``.
+
+Dates (New York calendar): by default every day after the latest index an earlier
+successful run read (``runs.notes.last_index_date``) up to today, at most 14 days back
+(today and the 3 days before it on a first run); ``tell ingest --source edgar --since``
+reaches up to 120 days back. The quarter ``index.json`` listing picks the days the SEC
+actually published. Filings whose event already exists cost no request (except ``D/A``),
+and each day is its own short transaction, so no transaction is idle across HTTP.
 
 Every SEC request carries ``SEC_USER_AGENT`` and ``Accept-Encoding: gzip`` and draws from
 one :class:`~tell.http.RateBudget` at ``TELL_RATE_EDGAR_RPS`` (5, half the SEC's 10 rps
@@ -22,7 +29,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dtime
@@ -33,9 +40,10 @@ from zoneinfo import ZoneInfo
 import httpx
 import pydantic
 from pydantic import ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from tell.collectors.base import CollectorSpec, Event, RunResult, write_events
+from tell.collectors.base import CollectorSpec, Event, RunResult, sha256_hex, write_events
 from tell.collectors.edgar_formd import (
     SOURCE,
     FormDFiling,
@@ -50,12 +58,16 @@ from tell.collectors.edgar_formd import (
 )
 from tell.config import get_settings
 from tell.http import RateBudget, Sleeper, fetch, make_client
+from tell.models import EventRow, Run
 
 __all__ = [
     "COLLECTOR",
+    "FIRST_RUN_DAYS_BACK",
     "FORM_8K_FILED",
     "FORM_S1_FILED",
     "KEPT_FORMS",
+    "MAX_CATCHUP_DAYS_BACK",
+    "MAX_SINCE_DAYS_BACK",
     "EdgarRunResult",
     "IndexEntry",
     "SecClient",
@@ -64,11 +76,16 @@ __all__ = [
     "collect",
     "daily_index_url",
     "default_dates",
+    "edgar_event_id",
+    "known_accessions",
+    "last_index_date",
     "load_formd_quarterly",
     "load_ticker_map",
     "parse_daily_index",
     "parse_ticker_map",
+    "quarter_listing_url",
     "run_fixture",
+    "since_dates",
     "submissions_url",
 ]
 
@@ -82,6 +99,14 @@ SUBMISSIONS = "https://data.sec.gov/submissions"
 TICKERS_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
 SEC_TZ = ZoneInfo("America/New_York")
 ACCEPT_ENCODING = "gzip, deflate"
+
+FIRST_RUN_DAYS_BACK = 3
+"""With no successful run on record, read today's index and the 3 days before it."""
+MAX_CATCHUP_DAYS_BACK = 14
+"""A scheduled run catches up at most 14 days back; older gaps need ``--since``."""
+MAX_SINCE_DAYS_BACK = 120
+"""``--since`` reaches at most 120 days back; older filings come from ``tell backfill formd``."""
+_RECENT_RUNS = 50
 
 FIXTURE_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / SOURCE
 
@@ -132,22 +157,54 @@ def quarter_listing_url(day: date) -> str:
     return f"{DAILY_INDEX}/{day:%Y}/QTR{quarter}/index.json"
 
 
+def _listing_parent(url: str) -> tuple[str, str] | None:
+    """``.../2026/QTR4/index.json`` -> (``.../2026/index.json``, ``QTR4``); ``None`` at the root."""
+    folder = url.removesuffix("/index.json")
+    if folder == DAILY_INDEX:
+        return None
+    parent, _, child = folder.rpartition("/")
+    return f"{parent}/index.json", child
+
+
+def _listing_names(sec: SecClient, url: str, cache: dict[str, set[str]]) -> set[str]:
+    """The entry names of one ``index.json`` directory listing, fetched once per run.
+
+    A 404 lists nothing. A 403 lists nothing only when the parent listing does not name
+    this directory (a quarter or year whose first index is not out yet: sec.gov answers
+    a missing path with 403); a 403 on a directory its parent names is a real block and
+    propagates, as does a 403 on the ``daily-index`` root itself.
+    """
+    if url in cache:
+        return cache[url]
+    names: set[str] = set()
+    try:
+        response = sec.get(url)
+    except httpx.HTTPStatusError as exc:
+        parent = _listing_parent(url)
+        if exc.response.status_code != httpx.codes.FORBIDDEN or parent is None:
+            raise
+        parent_url, child = parent
+        if child in _listing_names(sec, parent_url, cache):
+            raise
+    else:
+        if response is not None:
+            items = response.json().get("directory", {}).get("item", [])
+            names = {
+                str(item.get("name", "")).rstrip("/") for item in items if isinstance(item, dict)
+            }
+    cache[url] = names
+    return names
+
+
 def _index_is_listed(sec: SecClient, day: date, cache: dict[str, set[str]]) -> bool:
     """Whether the quarter listing names ``form.{YYYYMMDD}.idx`` (one fetch per quarter).
 
     sec.gov answers a request for a file that does not exist (weekends, federal holidays
     such as Columbus Day, today's index before it is published) with **403**, not 404, so
-    a 403 alone cannot tell "no filings that day" from "blocked". The listing can.
+    a 403 alone cannot tell "no filings that day" from "blocked". The listing can, so a
+    run asks it first and requests only the indexes it names.
     """
-    url = quarter_listing_url(day)
-    if url not in cache:
-        response = sec.get(url)
-        names: set[str] = set()
-        if response is not None:
-            items = response.json().get("directory", {}).get("item", [])
-            names = {str(item.get("name", "")) for item in items if isinstance(item, dict)}
-        cache[url] = names
-    return f"form.{day:%Y%m%d}.idx" in cache[url]
+    return f"form.{day:%Y%m%d}.idx" in _listing_names(sec, quarter_listing_url(day), cache)
 
 
 def accession_from_file_name(file_name: str) -> str:
@@ -211,10 +268,74 @@ def parse_daily_index(text: str, *, forms: Iterable[str] | None = KEPT_FORMS) ->
     return entries
 
 
-def default_dates(now: datetime) -> list[date]:
-    """Yesterday and today on the SEC's (New York) calendar."""
-    today = now.astimezone(SEC_TZ).date()
-    return [today - timedelta(days=1), today]
+def sec_today(now: datetime) -> date:
+    """Today on the SEC's (New York) calendar."""
+    return now.astimezone(SEC_TZ).date()
+
+
+def _day_range(first: date, last: date) -> list[date]:
+    return [first + timedelta(days=n) for n in range((last - first).days + 1)]
+
+
+def default_dates(now: datetime, last_index_date: date | None = None) -> list[date]:
+    """The days a scheduled run reads: the catch-up window after ``last_index_date``.
+
+    Every day from the one after ``last_index_date`` (the latest index a successful run
+    already read) up to today on the New York calendar, starting no earlier than
+    :data:`MAX_CATCHUP_DAYS_BACK` days ago; ``[]`` when today's index is already read.
+    With no earlier run, today and the :data:`FIRST_RUN_DAYS_BACK` days before it.
+    """
+    today = sec_today(now)
+    if last_index_date is None:
+        first = today - timedelta(days=FIRST_RUN_DAYS_BACK)
+    else:
+        floor = today - timedelta(days=MAX_CATCHUP_DAYS_BACK)
+        first = max(last_index_date + timedelta(days=1), floor)
+    return _day_range(first, today)
+
+
+def since_dates(now: datetime, since: date) -> list[date]:
+    """``since`` through today (``tell ingest --source edgar --since``), at most 120 days back."""
+    today = sec_today(now)
+    if since > today:
+        msg = f"--since {since.isoformat()} is after today ({today.isoformat()}, New York)"
+        raise ValueError(msg)
+    floor = today - timedelta(days=MAX_SINCE_DAYS_BACK)
+    if since < floor:
+        msg = (
+            f"--since {since.isoformat()} is more than {MAX_SINCE_DAYS_BACK} days back "
+            f"(earliest {floor.isoformat()}); use `tell backfill formd` for older filings"
+        )
+        raise ValueError(msg)
+    return _day_range(since, today)
+
+
+def _notes_index_date(notes: Mapping[str, Any]) -> date | None:
+    """The latest index a run's notes say was read.
+
+    ``last_index_date`` when recorded. Runs from before it was recorded kept only
+    ``dates`` (yesterday and today at run time); their earlier date is taken as read,
+    since today's index may not have been out yet.
+    """
+    if "last_index_date" in notes:
+        value = notes["last_index_date"]
+        return date.fromisoformat(value) if isinstance(value, str) else None
+    legacy = notes.get("dates")
+    if isinstance(legacy, list) and legacy and all(isinstance(d, str) for d in legacy):
+        return min(date.fromisoformat(d) for d in legacy)
+    return None
+
+
+def last_index_date(session: Session) -> date | None:
+    """The latest daily index a successful ``edgar`` run read (``runs.notes``), or ``None``."""
+    rows = session.scalars(
+        select(Run.notes)
+        .where(Run.source == SOURCE, Run.status == "ok", Run.notes.is_not(None))
+        .order_by(Run.started_at.desc())
+        .limit(_RECENT_RUNS)
+    )
+    found = [d for notes in rows if notes and (d := _notes_index_date(notes)) is not None]
+    return max(found, default=None)
 
 
 # --- HTTP ---------------------------------------------------------------------------------------
@@ -459,33 +580,130 @@ def _fetch_formd(sec: SecClient, entry: IndexEntry) -> FormDFiling | None:
     )
 
 
-def _fetch_index_entries(sec: SecClient, days: list[date]) -> dict[str, IndexEntry]:
-    """Index rows of the kept form types for ``days``, deduplicated by accession number.
+def edgar_event_id(accession: str) -> str:
+    """``events.event_id`` of the EDGAR event keyed by ``accession`` (``edgar:{accession}``)."""
+    return sha256_hex(f"{SOURCE}|{accession}|{accession}")
 
-    A day with no published index is skipped: a 404, or a 403 on a file the quarter
-    listing does not name (see :func:`_index_is_listed`). A 403 on a listed file is a
-    real block and propagates, failing the run.
+
+def known_accessions(session: Session, accessions: Iterable[str]) -> set[str]:
+    """The accession numbers among ``accessions`` that already have an ``edgar`` event."""
+    by_id = {edgar_event_id(a): a for a in accessions}
+    if not by_id:
+        return set()
+    rows = session.scalars(select(EventRow.event_id).where(EventRow.event_id.in_(list(by_id))))
+    return {by_id[event_id] for event_id in rows}
+
+
+def _fetch_day(sec: SecClient, day: date) -> list[IndexEntry] | None:
+    """Kept rows of one published daily index; ``None`` when it answers 404.
+
+    Only days the quarter listing names get here, so a 403 is a real block and
+    propagates, failing the run.
     """
-    entries: dict[str, IndexEntry] = {}
-    listings: dict[str, set[str]] = {}
-    for day in days:
-        try:
-            response = sec.get(daily_index_url(day))
-        except httpx.HTTPStatusError as exc:
-            forbidden = exc.response.status_code == httpx.codes.FORBIDDEN
-            if forbidden and not _index_is_listed(sec, day, listings):
-                _log.info(
-                    "edgar: no daily index for %s (403, not in the quarter listing)",
-                    day.isoformat(),
-                )
-                continue
-            raise
-        if response is None:
-            _log.info("edgar: no daily index for %s", day.isoformat())
+    response = sec.get(daily_index_url(day))
+    if response is None:
+        _log.info("edgar: listed daily index for %s answered 404", day.isoformat())
+        return None
+    return parse_daily_index(response.text)
+
+
+def _release(session: Session, own: bool) -> None:
+    """End the transaction before network I/O when ``collect`` opened it (``own``).
+
+    Nothing a day writes is left pending: its events are flushed, so committing here is
+    the per-day commit. A caller that handed in a session with its own open transaction
+    keeps it; everything then lands in that transaction.
+    """
+    if own:
+        session.commit()
+
+
+@dataclass
+class _Tally:
+    fetched: int = 0
+    inserted: int = 0
+    skipped: int = 0
+    errors: int = 0
+    amended: int = 0
+    known: int = 0
+    events: list[Event] = field(default_factory=list)
+
+
+def _collect_day(
+    session: Session,
+    sec: SecClient,
+    entries: list[IndexEntry],
+    tally: _Tally,
+    *,
+    run_id: str,
+    now: datetime,
+    own: bool,
+) -> None:
+    """One daily index: two short reads, the HTTP, then one write (per-day transaction).
+
+    An entry whose event already exists is skipped without a request (Form D's
+    ``primary_doc.xml``, a monitored 8-K's submissions JSON), so a rerun costs one
+    index fetch per day. A ``D/A`` is always fetched: it amends an existing event.
+    """
+    known = known_accessions(session, [e.accession_number for e in entries if e.form_type != "D/A"])
+    monitored = company_ids_by_cik(session, [e.cik for e in entries])
+    _release(session, own)
+
+    filings: list[FormDFiling] = []
+    other_events: list[Event] = []
+    for entry in entries:
+        if entry.accession_number in known:
+            tally.known += 1
             continue
-        for entry in parse_daily_index(response.text):
-            entries.setdefault(entry.accession_number, entry)
-    return entries
+        try:
+            if entry.form_type in {"D", "D/A"}:
+                filing = _fetch_formd(sec, entry)
+                if filing is None:
+                    tally.errors += 1
+                    _log.warning("edgar: no primary_doc.xml for %s", entry.accession_number)
+                else:
+                    filings.append(filing)
+            elif entry.form_type == "8-K":
+                company_id = monitored.get(cik10(entry.cik))
+                if company_id is None:
+                    continue
+                submissions = sec.submissions(entry.cik)
+                file_number, items = (
+                    submissions.lookup(entry.accession_number) if submissions else (None, [])
+                )
+                other_events.append(
+                    _filing_event(
+                        entry,
+                        type_=FORM_8K_FILED,
+                        payload=form_8k_payload(entry, items, file_number),
+                        run_id=run_id,
+                        now=now,
+                        company_id=company_id,
+                    )
+                )
+            elif entry.form_type == "S-1":
+                other_events.append(
+                    _filing_event(
+                        entry,
+                        type_=FORM_S1_FILED,
+                        payload=_base_payload(entry),
+                        run_id=run_id,
+                        now=now,
+                        company_id=monitored.get(cik10(entry.cik)),
+                    )
+                )
+        except (httpx.HTTPError, pydantic.ValidationError, ValueError) as exc:
+            tally.errors += 1
+            _log.warning("edgar: %s %s failed: %s", entry.form_type, entry.accession_number, exc)
+
+    formd = ingest_formd_filings(session, filings, run_id=run_id, now=now)
+    others = write_events(session, other_events)
+    session.flush()
+    _release(session, own)
+    tally.inserted += formd.stats.inserted + others.inserted
+    tally.skipped += formd.stats.skipped + others.skipped
+    tally.amended += formd.amended
+    tally.events += formd.events + other_events
 
 
 def collect(
@@ -495,79 +713,79 @@ def collect(
     now: datetime,
     client: httpx.Client | None = None,
     dates: list[date] | None = None,
+    since: date | None = None,
     budget: RateBudget | None = None,
     sleep: Sleeper = time.sleep,
 ) -> EdgarRunResult:
-    """Fetch the daily indexes for ``dates`` and write this run's EDGAR events.
+    """Read the published daily indexes for ``dates`` and write this run's EDGAR events.
 
-    ``fetched`` counts index rows of the kept form types (deduplicated by accession).
-    A filing that fails (404 primary document, validation error, HTTP error) is
-    logged, counted in ``errors`` and skipped; the rest of the run continues. The
-    caller owns the transaction and the ``runs`` row (``start_run`` / ``finish_run``).
+    ``dates`` defaults to :func:`since_dates` when ``since`` is given, else to the
+    catch-up window of :func:`default_dates` after :func:`last_index_date`. The quarter
+    ``index.json`` listings (one request per quarter) pick the days actually published;
+    only those indexes are requested. Days run oldest first, each as its own
+    transaction, and no transaction stays open across HTTP when the session arrives
+    without one (the CLI's case); otherwise the caller's transaction holds everything.
+
+    ``fetched`` counts index rows of the kept form types (deduplicated by accession);
+    ``skipped`` includes rows whose event already exists (``notes.known``). A filing
+    that fails (404 primary document, validation error, HTTP error) is logged, counted
+    in ``errors`` and skipped; the rest of the run continues. The caller owns the
+    ``runs`` row (``start_run`` / ``finish_run``). ``notes.last_index_date`` is the
+    latest index read so far by this or an earlier run: the next run starts after it.
     """
-    errors = 0
-    filings: list[FormDFiling] = []
-    other_events: list[Event] = []
+    own = not session.in_transaction()
+    previous = last_index_date(session)
+    if dates is not None:
+        days = sorted(set(dates))
+    elif since is not None:
+        days = since_dates(now, since)
+    else:
+        days = default_dates(now, previous)
+    _release(session, own)
+
+    tally = _Tally()
+    read: list[date] = []
+    seen: set[str] = set()
     with SecClient(client, budget=budget, sleep=sleep) as sec:
-        days = dates if dates is not None else default_dates(now)
-        entries = _fetch_index_entries(sec, days)
+        listings: dict[str, set[str]] = {}
+        published: list[date] = []
+        for day in days:
+            if _index_is_listed(sec, day, listings):
+                published.append(day)
+            else:
+                _log.info("edgar: no daily index for %s (not in the quarter listing)", day)
+        for day in published:
+            rows = _fetch_day(sec, day)
+            if rows is None:
+                continue
+            read.append(day)
+            entries: list[IndexEntry] = []
+            for entry in rows:  # first row wins: co-issuers repeat one accession
+                if entry.accession_number not in seen:
+                    seen.add(entry.accession_number)
+                    entries.append(entry)
+            tally.fetched += len(entries)
+            _collect_day(session, sec, entries, tally, run_id=run_id, now=now, own=own)
 
-        monitored = company_ids_by_cik(session, [e.cik for e in entries.values()])
-        for entry in entries.values():
-            try:
-                if entry.form_type in {"D", "D/A"}:
-                    filing = _fetch_formd(sec, entry)
-                    if filing is None:
-                        errors += 1
-                        _log.warning("edgar: no primary_doc.xml for %s", entry.accession_number)
-                    else:
-                        filings.append(filing)
-                elif entry.form_type == "8-K":
-                    company_id = monitored.get(cik10(entry.cik))
-                    if company_id is None:
-                        continue
-                    submissions = sec.submissions(entry.cik)
-                    file_number, items = (
-                        submissions.lookup(entry.accession_number) if submissions else (None, [])
-                    )
-                    other_events.append(
-                        _filing_event(
-                            entry,
-                            type_=FORM_8K_FILED,
-                            payload=form_8k_payload(entry, items, file_number),
-                            run_id=run_id,
-                            now=now,
-                            company_id=company_id,
-                        )
-                    )
-                elif entry.form_type == "S-1":
-                    other_events.append(
-                        _filing_event(
-                            entry,
-                            type_=FORM_S1_FILED,
-                            payload=_base_payload(entry),
-                            run_id=run_id,
-                            now=now,
-                            company_id=monitored.get(cik10(entry.cik)),
-                        )
-                    )
-            except (httpx.HTTPError, pydantic.ValidationError, ValueError) as exc:
-                errors += 1
-                _log.warning(
-                    "edgar: %s %s failed: %s", entry.form_type, entry.accession_number, exc
-                )
-
-    formd = ingest_formd_filings(session, filings, run_id=run_id, now=now)
-    others = write_events(session, other_events)
-    session.flush()
+    latest = max([*read, *([previous] if previous else [])], default=None)
+    notes: dict[str, Any] = {
+        "dates": [d.isoformat() for d in days],
+        "indexes": [d.isoformat() for d in read],
+        "last_index_date": latest.isoformat() if latest else None,
+        "previous_index_date": previous.isoformat() if previous else None,
+        "known": tally.known,
+        "amended": tally.amended,
+    }
+    if since is not None and dates is None:
+        notes["since"] = since.isoformat()
     return EdgarRunResult(
-        fetched=len(entries),
-        inserted=formd.stats.inserted + others.inserted,
-        skipped=formd.stats.skipped + others.skipped,
-        events=formd.events + other_events,
-        errors=errors,
-        amended=formd.amended,
-        notes={"dates": [d.isoformat() for d in days], "amended": formd.amended},
+        fetched=tally.fetched,
+        inserted=tally.inserted,
+        skipped=tally.skipped + tally.known,
+        events=tally.events,
+        errors=tally.errors,
+        amended=tally.amended,
+        notes=notes,
     )
 
 

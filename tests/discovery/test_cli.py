@@ -67,7 +67,7 @@ def _site(router: respx.MockRouter, base: str, careers: bytes) -> None:
 def test_help_lists_commands() -> None:
     result = runner.invoke(cli.app, ["--help"])
     assert result.exit_code == 0
-    for command in ("domain", "batch", "seed-yc"):
+    for command in ("domain", "batch", "reverify-guesses", "seed-yc"):
         assert command in result.output
 
 

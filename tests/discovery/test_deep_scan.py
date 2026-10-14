@@ -611,9 +611,132 @@ def test_script_read_stops_at_the_wall_clock_deadline(
 ) -> None:
     chunks = [b"var a = 1;", b"var b = 2;", b'"https://jobs.ashbyhq.com/acme"']
     router.get(f"{BASE}/drip.js").mock(return_value=httpx.Response(200, content=iter(chunks)))
-    ticks = iter([0.0, 1.0, ats.SCRIPT_DEADLINE_S, 999.0])
+    last_read = ats.SCRIPT_DEADLINE_S - ats.SCRIPT_READ_TIMEOUT_S
+    # Request at 0, headers at 1, first chunk at 2, second chunk past the last read start.
+    ticks = iter([0.0, 1.0, 2.0, last_read, 999.0])
     body = ats._get_script(
         client, f"{BASE}/drip.js", budget=_Slots(), limit=10_000, clock=lambda: next(ticks)
     )
-    # Two chunks arrive before the deadline passes; the third is never read.
+    # Two chunks arrive before the last read may start; the third is never read.
     assert body == b"var a = 1;var b = 2;"
+
+
+def test_script_fetch_has_a_total_deadline() -> None:
+    # The last read starts before the deadline minus one read timeout and lasts at most one
+    # read timeout; the phases before the body (pool, connect, send, headers) fit before it.
+    assert ats.SCRIPT_DEADLINE_S <= 15.0
+    assert 4 * ats.SCRIPT_READ_TIMEOUT_S <= ats.SCRIPT_DEADLINE_S - ats.SCRIPT_READ_TIMEOUT_S
+
+
+def test_slow_headers_leave_no_time_for_the_body(
+    router: respx.MockRouter, client: httpx.Client
+) -> None:
+    chunks = [b'"https://jobs.ashbyhq.com/acme"']
+    router.get(f"{BASE}/slow.js").mock(return_value=httpx.Response(200, content=iter(chunks)))
+    ticks = iter([0.0, ats.SCRIPT_DEADLINE_S - ats.SCRIPT_READ_TIMEOUT_S, 999.0])
+    body = ats._get_script(
+        client, f"{BASE}/slow.js", budget=_Slots(), limit=10_000, clock=lambda: next(ticks)
+    )
+    assert body == b""
+
+
+# --- robots.txt inside the per-domain bound (ADR 0031) -----------------------------------------
+
+
+def _spa_site(router: respx.MockRouter) -> None:
+    site(
+        router,
+        {"/careers": page("careers_spa.html"), "/": httpx.Response(200, content=b"<p>hi</p>")},
+    )
+    no_guesses(router)
+
+
+def test_robots_of_a_new_origin_counts_against_the_deep_bound(
+    db_session: Session,
+    router: respx.MockRouter,
+    client: httpx.Client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ats, "MAX_DEEP_REQUESTS", 3)
+    _spa_site(router)
+    www_robots = router.get(f"{WWW}/robots.txt").respond(404)
+    bundle = router.get(f"{WWW}/_next/static/chunks/pages/careers-9d0e1f.js").mock(
+        return_value=page("bundle_plain.js")
+    )
+    main = router.get(f"{BASE}/_next/static/chunks/main-6a7b8c.js").respond(200, text="")
+
+    result = discover(db_session, client)
+
+    # Deep requests: the homepage, www's robots.txt, the careers bundle. The next bundle
+    # would be a fourth request, so it is never sent.
+    assert www_robots.called
+    assert bundle.called
+    assert not main.called
+    assert result.pages_checked[-1] == "script:/_next/static/chunks/pages/careers-9d0e1f.js"
+
+
+def test_a_robots_fetch_can_use_up_the_last_deep_request(
+    db_session: Session,
+    router: respx.MockRouter,
+    client: httpx.Client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ats, "MAX_DEEP_REQUESTS", 2)
+    _spa_site(router)
+    www_robots = router.get(f"{WWW}/robots.txt").respond(404)
+    bundle = router.get(f"{WWW}/_next/static/chunks/pages/careers-9d0e1f.js").mock(
+        return_value=page("bundle_plain.js")
+    )
+
+    result = discover(db_session, client)
+
+    assert www_robots.called
+    assert not bundle.called
+    assert not [entry for entry in result.pages_checked if entry.startswith("script:")]
+    assert result.outcome == "no_board"
+
+
+def test_robots_of_a_linked_origin_is_charged_before_the_link(
+    db_session: Session,
+    router: respx.MockRouter,
+    client: httpx.Client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ats, "MAX_DEEP_REQUESTS", 2)
+    careers = b'<a href="https://www.acme.com/open-roles">Open roles</a>'
+    site(
+        router,
+        {
+            "/careers": httpx.Response(200, content=careers),
+            "/": httpx.Response(200, content=b"<p>hi</p>"),
+        },
+    )
+    no_guesses(router)
+    www_robots = router.get(f"{WWW}/robots.txt").respond(404)
+    link = router.get(f"{WWW}/open-roles").respond(200, text="")
+
+    result = discover(db_session, client)
+
+    assert www_robots.called
+    assert not link.called
+    assert result.pages_checked == ("/careers", "/")
+
+
+def test_the_meter_refuses_past_its_limit() -> None:
+    meter = ats._Meter(None, 1)
+    assert meter.acquire() == 0.0
+    with pytest.raises(ats._MeterSpentError):
+        meter.acquire()
+    assert (meter.used, meter.left) == (1, 0)
+
+
+def test_malformed_links_and_scripts_are_skipped(
+    db_session: Session, router: respx.MockRouter, client: httpx.Client
+) -> None:
+    # urljoin raises on a malformed IPv6 host; one bad href must not fail the domain.
+    home = b'<a href="http://[::1/careers">Careers</a><script src="http://[::1/app.js"></script>'
+    site(router, {"/": httpx.Response(200, content=home)})
+    no_guesses(router)
+    result = discover(db_session, client)
+    assert result.outcome == "no_board"
+    assert result.pages_checked == CANDIDATE_PATHS
