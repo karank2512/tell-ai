@@ -265,7 +265,7 @@ companies seeded so every name competes with the full alias index):
 | --- | --- | --- | --- | --- | --- | --- |
 | Legal name verified against SEC EDGAR (`edgar_fts`) | 36 | 28 | 0.78 | 28 | 0 | 1.00 |
 | All verified (`edgar_fts`, `yc`, `discovery`) | 41 | 33 | 0.80 | 33 | 0 | 1.00 |
-| Unverified (script-drafted legal names) | 259 | 259 | 1.00 | 259 | 0 | 1.00 |
+| Unverified (script-drafted legal forms) | 259 | 259 | 1.00 | 259 | 0 | 1.00 |
 
 Even the verified recall is flattering: most verified legal names are also the brand plus a
 suffix. On the 9 SEC-verified issuers whose legal name differs from the brand (former

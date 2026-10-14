@@ -238,3 +238,21 @@ def test_claim_rows_does_not_block_concurrent_worker(engine: Engine) -> None:
         holder.rollback()
         holder.close()
     assert result == [2, 3]
+
+
+def test_transactions_lift_the_idle_in_transaction_timeout(test_database_url: str) -> None:
+    """Neon kills connections idle in a transaction for 5 minutes; every tell transaction
+    lifts that for itself with SET LOCAL, and the server default returns after commit."""
+    engine = make_engine(
+        test_database_url,
+        connect_args={"options": "-c idle_in_transaction_session_timeout=300000"},
+    )
+    try:
+        with session_scope(engine) as session:
+            inside = session.execute(text("SHOW idle_in_transaction_session_timeout")).scalar()
+        with engine.connect() as conn:
+            after = conn.execute(text("SHOW idle_in_transaction_session_timeout")).scalar()
+    finally:
+        engine.dispose()
+    assert inside == "0"
+    assert after == "5min"

@@ -126,6 +126,30 @@ def daily_index_url(day: date) -> str:
     return f"{DAILY_INDEX}/{day:%Y}/QTR{quarter}/form.{day:%Y%m%d}.idx"
 
 
+def quarter_listing_url(day: date) -> str:
+    """``.../daily-index/{YYYY}/QTR{n}/index.json``: the files the SEC has published."""
+    quarter = (day.month - 1) // 3 + 1
+    return f"{DAILY_INDEX}/{day:%Y}/QTR{quarter}/index.json"
+
+
+def _index_is_listed(sec: SecClient, day: date, cache: dict[str, set[str]]) -> bool:
+    """Whether the quarter listing names ``form.{YYYYMMDD}.idx`` (one fetch per quarter).
+
+    sec.gov answers a request for a file that does not exist (weekends, federal holidays
+    such as Columbus Day, today's index before it is published) with **403**, not 404, so
+    a 403 alone cannot tell "no filings that day" from "blocked". The listing can.
+    """
+    url = quarter_listing_url(day)
+    if url not in cache:
+        response = sec.get(url)
+        names: set[str] = set()
+        if response is not None:
+            items = response.json().get("directory", {}).get("item", [])
+            names = {str(item.get("name", "")) for item in items if isinstance(item, dict)}
+        cache[url] = names
+    return f"form.{day:%Y%m%d}.idx" in cache[url]
+
+
 def accession_from_file_name(file_name: str) -> str:
     """``edgar/data/1234567/0001234567-26-000123.txt`` -> ``0001234567-26-000123``."""
     match = _ACCESSION_IN_PATH.search(file_name)
@@ -435,6 +459,35 @@ def _fetch_formd(sec: SecClient, entry: IndexEntry) -> FormDFiling | None:
     )
 
 
+def _fetch_index_entries(sec: SecClient, days: list[date]) -> dict[str, IndexEntry]:
+    """Index rows of the kept form types for ``days``, deduplicated by accession number.
+
+    A day with no published index is skipped: a 404, or a 403 on a file the quarter
+    listing does not name (see :func:`_index_is_listed`). A 403 on a listed file is a
+    real block and propagates, failing the run.
+    """
+    entries: dict[str, IndexEntry] = {}
+    listings: dict[str, set[str]] = {}
+    for day in days:
+        try:
+            response = sec.get(daily_index_url(day))
+        except httpx.HTTPStatusError as exc:
+            forbidden = exc.response.status_code == httpx.codes.FORBIDDEN
+            if forbidden and not _index_is_listed(sec, day, listings):
+                _log.info(
+                    "edgar: no daily index for %s (403, not in the quarter listing)",
+                    day.isoformat(),
+                )
+                continue
+            raise
+        if response is None:
+            _log.info("edgar: no daily index for %s", day.isoformat())
+            continue
+        for entry in parse_daily_index(response.text):
+            entries.setdefault(entry.accession_number, entry)
+    return entries
+
+
 def collect(
     session: Session,
     *,
@@ -452,19 +505,12 @@ def collect(
     logged, counted in ``errors`` and skipped; the rest of the run continues. The
     caller owns the transaction and the ``runs`` row (``start_run`` / ``finish_run``).
     """
-    entries: dict[str, IndexEntry] = {}
     errors = 0
     filings: list[FormDFiling] = []
     other_events: list[Event] = []
     with SecClient(client, budget=budget, sleep=sleep) as sec:
         days = dates if dates is not None else default_dates(now)
-        for day in days:
-            response = sec.get(daily_index_url(day))
-            if response is None:
-                _log.info("edgar: no daily index for %s", day.isoformat())
-                continue
-            for entry in parse_daily_index(response.text):
-                entries.setdefault(entry.accession_number, entry)
+        entries = _fetch_index_entries(sec, days)
 
         monitored = company_ids_by_cik(session, [e.cik for e in entries.values()])
         for entry in entries.values():

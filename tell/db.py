@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from functools import lru_cache
 from typing import Any
 
-from sqlalchemy import Row, Table, create_engine, select
+from sqlalchemy import Row, Table, create_engine, event, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -40,6 +40,25 @@ SessionLocal: sessionmaker[Session] = sessionmaker(
     class_=Session, expire_on_commit=False, autoflush=False
 )
 """Unbound session factory; :func:`session_scope` binds it to an engine."""
+
+IDLE_IN_TRANSACTION_OFF = "SET LOCAL idle_in_transaction_session_timeout = 0"
+"""Run at the start of every transaction (PostgreSQL only).
+
+Collectors make their HTTP calls inside the transaction the CLI opens for them, and a slow
+source (news at 1 request per second, discovery waiting on dead hosts) can leave it idle
+for minutes. Neon terminates a connection idle in a transaction for 5 minutes, which
+killed the first production news run. ``SET LOCAL`` lifts the limit for this transaction
+only and reverts at commit or rollback, so it also works through Neon's transaction-mode
+pooler. The durable fix (no transaction held across network I/O) is tracked separately.
+"""
+
+
+@event.listens_for(SessionLocal, "after_begin")
+def _lift_idle_in_transaction_timeout(
+    _session: Session, _transaction: Any, connection: Any
+) -> None:
+    if connection.dialect.name == "postgresql":
+        connection.exec_driver_sql(IDLE_IN_TRANSACTION_OFF)
 
 
 @contextmanager

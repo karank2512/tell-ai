@@ -29,6 +29,8 @@ from tell.collectors.edgar import (
     FORM_8K_FILED,
     FORM_S1_FILED,
     IndexEntry,
+    SecClient,
+    _index_is_listed,
     accession_from_file_name,
     collect,
     daily_index_url,
@@ -38,6 +40,7 @@ from tell.collectors.edgar import (
     load_ticker_map,
     parse_daily_index,
     parse_ticker_map,
+    quarter_listing_url,
     run_fixture,
     submissions_url,
 )
@@ -775,9 +778,61 @@ def test_collect_default_dates_and_missing_indexes(db_session: Session) -> None:
     assert (result.fetched, result.inserted, result.errors) == (0, 0, 0)
 
 
+def _listing(*days: date) -> dict[str, object]:
+    return {"directory": {"item": [{"name": f"form.{d:%Y%m%d}.idx"} for d in days]}}
+
+
+def test_quarter_listing_url() -> None:
+    assert quarter_listing_url(date(2026, 10, 12)) == (
+        "https://www.sec.gov/Archives/edgar/daily-index/2026/QTR4/index.json"
+    )
+    assert quarter_listing_url(date(2026, 3, 31)).endswith("/2026/QTR1/index.json")
+
+
+def test_quarter_listing_is_fetched_once_and_answers_per_day() -> None:
+    """sec.gov returns 403 for a file that does not exist (2026-10-12 was a federal holiday);
+    the quarter listing tells that apart from a block, and is fetched once per quarter."""
+    holiday = date(2026, 10, 12)
+    with respx.mock(assert_all_called=True) as router:
+        listing = router.get(quarter_listing_url(holiday)).respond(
+            200, json=_listing(date(2026, 10, 9), date(2026, 10, 13))
+        )
+        cache: dict[str, set[str]] = {}
+        with SecClient(budget=RateBudget(1000, burst=10)) as sec:
+            assert _index_is_listed(sec, holiday, cache) is False
+            assert _index_is_listed(sec, date(2026, 10, 13), cache) is True
+    assert listing.call_count == 1
+
+
+def test_missing_quarter_listing_lists_nothing() -> None:
+    day = date(2027, 1, 4)
+    with respx.mock(assert_all_called=True) as router:
+        router.get(quarter_listing_url(day)).respond(404)
+        with SecClient(budget=RateBudget(1000, burst=10)) as sec:
+            assert _index_is_listed(sec, day, {}) is False
+
+
+@pytest.mark.db
+def test_collect_skips_a_holiday_index(db_session: Session) -> None:
+    holiday = date(2026, 10, 12)
+    with respx.mock(assert_all_called=True) as router:
+        router.get(daily_index_url(holiday)).respond(403)
+        router.get(quarter_listing_url(holiday)).respond(200, json=_listing(date(2026, 10, 13)))
+        result = collect(
+            db_session,
+            run_id="edgar-run",
+            now=NOW,
+            dates=[holiday],
+            budget=RateBudget(1000, burst=10),
+        )
+    assert (result.fetched, result.inserted, result.errors) == (0, 0, 0)
+
+
 def test_forbidden_index_fails_the_run() -> None:
+    """A 403 on a file the SEC lists as published is a real block: the run fails loudly."""
     with respx.mock(assert_all_called=False) as router:
         router.get(daily_index_url(DAY)).respond(403)
+        router.get(quarter_listing_url(DAY)).respond(200, json=_listing(DAY))
         with pytest.raises(httpx.HTTPStatusError):
             collect(
                 None,  # type: ignore[arg-type]  # never reached: the index fetch raises first

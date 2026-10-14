@@ -276,7 +276,7 @@ def test_ingest_discovery_job_feeds_ats() -> None:
     batch = next(
         str(s["run"]) for s in discover["steps"] if "tell discover batch" in str(s.get("run"))
     )
-    assert "--limit 300" in batch
+    assert "--limit 120" in batch  # fits the 30-minute timeout at about 6 s a domain
     assert "--rps 4" in batch
     assert jobs["ats"]["needs"] == ["preflight", "discover"]
     # A failed discovery pass never blocks polling.

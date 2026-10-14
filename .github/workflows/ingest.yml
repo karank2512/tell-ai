@@ -120,7 +120,9 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen
       - name: Discover boards for new domains (budgeted)
-        run: uv run tell discover batch --limit 300 --rps 4
+        # 120 new domains per run, not the SPEC's 300: live discovery averages about 6 s a
+        # domain at 4 rps, so 300 overran the 30-minute timeout on the first production run.
+        run: uv run tell discover batch --limit 120 --rps 4
 
   ats:
     needs: [preflight, discover]
