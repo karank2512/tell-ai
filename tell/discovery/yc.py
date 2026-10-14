@@ -11,6 +11,11 @@ Normalisation:
 * ``domain`` is the registrable domain of ``website`` (``tldextract``, private
   suffixes included), lowercase, no ``www``; rows without a usable website are
   skipped and counted.
+* A website on a platform (an App Store or Play listing, LinkedIn, GitHub, Notion,
+  ``*.vercel.app`` and the rest of :data:`tell.discovery.PLATFORM_DOMAINS`) is not the
+  company's own domain, and tell's identity key is the company's own domain: the company
+  is skipped and counted as ``skipped_platform_domain`` (ADR 0033). The platform's own
+  company (``substack.com`` for "Substack") is kept.
 * ``name`` is the YC name, whitespace-collapsed.
 * ``hq_city`` / ``hq_state`` / ``hq_country`` come from the first location when it
   looks like ``City, ST, USA`` (two-letter state); ``hq_country`` is then ``US``.
@@ -20,6 +25,9 @@ Writes are ``INSERT ... ON CONFLICT (domain) DO UPDATE`` on ``companies``: ``nam
 takes the YC value, the ``hq_*`` columns keep an existing value when YC has none, and
 the row is touched only when something changes, so a re-seed is a no-op. Within one
 seed the first record for a domain wins and later ones count as duplicates.
+
+:func:`prune_platform_companies` finds rows seeded before that guard existed
+(``tell discover prune-platform-companies``) and deletes those nothing references.
 """
 
 from __future__ import annotations
@@ -33,22 +41,35 @@ from typing import Any, TypedDict
 
 import httpx
 from pydantic import BaseModel, ConfigDict, TypeAdapter
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from tell.discovery import registrable_domain
+from tell.discovery import is_platform_domain, platform_domain, registrable_domain
 from tell.http import RateBudget, get
-from tell.models import Company
+from tell.models import (
+    AtsBoard,
+    Company,
+    CompanyAlias,
+    CompanyFeed,
+    EventRow,
+    Feedback,
+    Score,
+    Signal,
+    WatchlistItem,
+)
 
 __all__ = [
     "YC_DIRECTORY_URL",
+    "PlatformCompany",
     "SeedStats",
     "YcCompany",
     "YcRecord",
     "fetch_directory",
     "parse_directory",
     "parse_location",
+    "platform_companies",
+    "prune_platform_companies",
     "seed_companies",
     "seed_from_file",
 ]
@@ -86,7 +107,8 @@ class YcCompany(TypedDict):
 @dataclass(frozen=True)
 class SeedStats:
     """Counts from one seed: ``read`` = records in, ``inserted`` + ``updated`` + ``unchanged``
-    = distinct domains written, plus records skipped for a missing website or a duplicate."""
+    = distinct domains written, plus records skipped for a missing website, a platform
+    website (``skipped_platform_domain``, ADR 0033) or a duplicate."""
 
     read: int
     inserted: int
@@ -94,6 +116,7 @@ class SeedStats:
     unchanged: int
     skipped_no_website: int
     duplicates: int
+    skipped_platform_domain: int = 0
 
 
 _RECORDS = TypeAdapter(list[YcRecord])
@@ -200,9 +223,14 @@ def _upsert_chunk(session: Session, chunk: Sequence[dict[str, Any]]) -> tuple[in
 def seed_companies(
     session: Session, companies: Iterable[YcCompany], *, read: int | None = None
 ) -> SeedStats:
-    """Upsert normalised directory entries into ``companies`` (flushes, does not commit)."""
+    """Upsert normalised directory entries into ``companies`` (flushes, does not commit).
+
+    Entries whose domain is a platform's (:func:`tell.discovery.is_platform_domain`) are
+    skipped and counted in ``skipped_platform_domain``.
+    """
     listed = list(companies)
-    rows, duplicates = _rows(listed)
+    own = [c for c in listed if not is_platform_domain(c["domain"], name=c["name"])]
+    rows, duplicates = _rows(own)
     inserted = updated = 0
     for start in range(0, len(rows), UPSERT_BATCH):
         chunk_inserted, chunk_updated = _upsert_chunk(session, rows[start : start + UPSERT_BATCH])
@@ -217,6 +245,7 @@ def seed_companies(
         unchanged=len(rows) - inserted - updated,
         skipped_no_website=total - len(listed),
         duplicates=duplicates,
+        skipped_platform_domain=len(listed) - len(own),
     )
 
 
@@ -225,3 +254,102 @@ def seed_from_file(session: Session, path: Path | str) -> SeedStats:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     companies, _ = parse_directory(raw)
     return seed_companies(session, companies, read=len(raw))
+
+
+# --- platform companies seeded before the guard -----------------------------------------------
+
+
+@dataclass(frozen=True)
+class PlatformCompany:
+    """A ``companies`` row keyed by a platform domain, and what still references it.
+
+    ``blockers`` counts the rows that make deleting it unsafe: ``events``, ``boards``
+    (``ats_boards``), ``watchlist_items``, ``signals``, ``feedback`` (on its signals) and
+    non-zero ``scores``. Aliases, feeds and zero scores are deleted with the company.
+    """
+
+    company_id: int
+    domain: str
+    name: str
+    platform: str
+    blockers: dict[str, int]
+
+    @property
+    def deletable(self) -> bool:
+        return not any(self.blockers.values())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "company_id": self.company_id,
+            "domain": self.domain,
+            "name": self.name,
+            "platform": self.platform,
+            "blockers": {k: v for k, v in self.blockers.items() if v},
+            "deletable": self.deletable,
+        }
+
+
+def _count(session: Session, stmt: Any) -> int:
+    return int(session.scalar(stmt) or 0)
+
+
+def _blockers(session: Session, company_id: int) -> dict[str, int]:
+    signals = select(Signal.id).where(Signal.company_id == company_id)
+    return {
+        "events": _count(session, select(func.count()).where(EventRow.company_id == company_id)),
+        "boards": _count(session, select(func.count()).where(AtsBoard.company_id == company_id)),
+        "watchlist_items": _count(
+            session, select(func.count()).where(WatchlistItem.company_id == company_id)
+        ),
+        "signals": _count(session, select(func.count()).where(Signal.company_id == company_id)),
+        "feedback": _count(session, select(func.count()).where(Feedback.signal_id.in_(signals))),
+        "scores": _count(
+            session,
+            select(func.count()).where(Score.company_id == company_id, Score.score != 0),
+        ),
+    }
+
+
+def platform_companies(session: Session) -> list[PlatformCompany]:
+    """Every company whose domain is a platform's (the seeder now skips these), by id."""
+    found: list[PlatformCompany] = []
+    rows = session.execute(select(Company.id, Company.domain, Company.name).order_by(Company.id))
+    for company_id, domain, name in rows:
+        platform = platform_domain(domain)
+        if platform is None or not is_platform_domain(domain, name=name):
+            continue
+        found.append(
+            PlatformCompany(
+                company_id=company_id,
+                domain=domain,
+                name=name,
+                platform=platform,
+                blockers=_blockers(session, company_id),
+            )
+        )
+    return found
+
+
+def prune_platform_companies(session: Session, *, apply: bool = False) -> dict[str, Any]:
+    """List platform-domain companies; with ``apply``, delete the ones nothing references.
+
+    A company with events, boards, watchlist items, signals, feedback or a non-zero
+    score is listed and kept (a human decides). Deleting removes its aliases, feeds and
+    zero scores first. Flushes; the caller owns the transaction.
+    """
+    found = platform_companies(session)
+    deletable = [c.company_id for c in found if c.deletable]
+    if apply and deletable:
+        session.execute(delete(CompanyAlias).where(CompanyAlias.company_id.in_(deletable)))
+        session.execute(delete(CompanyFeed).where(CompanyFeed.company_id.in_(deletable)))
+        session.execute(delete(Score).where(Score.company_id.in_(deletable)))
+        session.execute(delete(Company).where(Company.id.in_(deletable)))
+        session.flush()
+    return {
+        "dry_run": not apply,
+        "platform_companies": len(found),
+        "deletable": len(deletable),
+        "deleted": len(deletable) if apply else 0,
+        "kept_referenced": len(found) - len(deletable),
+        "companies": [c.to_dict() for c in found],
+    }

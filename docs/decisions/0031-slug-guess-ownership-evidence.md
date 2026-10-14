@@ -1,6 +1,6 @@
 # 0031. Slug-guessed boards need ownership evidence; shared destinations keyed per company
 
-- Status: proposed (implemented; SPEC section 4 step 4 is a business rule, so Karan's sign-off is pending)
+- Status: accepted (proposed 2026-10-14; confirmed by Karan 2026-10-14)
 - Date: 2026-10-14
 
 ## Context

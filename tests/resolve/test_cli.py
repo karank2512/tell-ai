@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
 from tell.db import SessionLocal
-from tell.models import Company, EventRow
+from tell.models import Company, CompanyAlias, EventRow, ReviewQueueItem
 from tell.resolve import cli
 
 runner = CliRunner()
@@ -72,7 +72,15 @@ def _json(output: str) -> dict[str, object]:
 def test_help_lists_commands() -> None:
     result = runner.invoke(cli.app, ["--help"])
     assert result.exit_code == 0
-    for command in ("run", "backfill-aliases", "review-export", "review-import", "stats"):
+    for command in (
+        "run",
+        "backfill-aliases",
+        "review-export",
+        "review-import",
+        "stats",
+        "prune-aliases",
+        "close-junk-reviews",
+    ):
         assert command in result.output
 
 
@@ -133,3 +141,42 @@ def test_stats_on_empty_database(bound: Engine) -> None:
 def test_review_import_requires_existing_file(bound: Engine, tmp_path: Path) -> None:
     result = runner.invoke(cli.app, ["review-import", str(tmp_path / "missing.csv")])
     assert result.exit_code != 0
+
+
+def test_hygiene_commands_are_dry_runs_unless_applied(bound: Engine) -> None:
+    """``prune-aliases`` / ``close-junk-reviews``: report by default, write with --apply."""
+    with SessionLocal(bind=bound) as session:
+        ofone = Company(domain="of.one", name="OfOne")
+        session.add(ofone)
+        session.flush()
+        session.add(CompanyAlias(company_id=ofone.id, alias="of", source="manual"))
+        session.add(
+            ReviewQueueItem(
+                kind="entity_match",
+                payload={
+                    "event_id": "ev-of",
+                    "name": "Arboretum Fund I, a series of CGF2026 LLC",
+                    "state": "DE",
+                    "city": None,
+                    "candidates": [
+                        {"company_id": ofone.id, "alias": "of", "ratio": 100.0, "sort_ratio": 9.0}
+                    ],
+                },
+            )
+        )
+        session.commit()
+
+    for command in ("prune-aliases", "close-junk-reviews"):
+        for args in ([command], [command, "--dry-run"]):
+            result = runner.invoke(cli.app, args)
+            assert result.exit_code == 0, result.output
+            assert _json(result.output)["dry_run"] is True
+    pruned = runner.invoke(cli.app, ["prune-aliases", "--apply"])
+    assert pruned.exit_code == 0, pruned.output
+    assert _json(pruned.output)["deleted"] == 1
+    closed = runner.invoke(cli.app, ["close-junk-reviews", "--apply"])
+    assert closed.exit_code == 0, closed.output
+    assert (_json(closed.output)["closed"], _json(closed.output)["junk_aliases"]) == (1, {"of": 1})
+
+    result = runner.invoke(cli.app, ["stats"])
+    assert _json(result.output)["review"] == {"rejected": 1}

@@ -1,8 +1,10 @@
 # YC company directory (seed list)
 
 Spec: `docs/SPEC.md` section 4 ("Seed lists for the first 5,000 domains"). Decision:
-`docs/decisions/0009-yc-directory-only-seed.md`. Code: `tell/discovery/yc.py`. CLI:
-`tell discover seed-yc --fetch` or `tell discover seed-yc --file PATH`. Tests:
+`docs/decisions/0009-yc-directory-only-seed.md`, `docs/decisions/0033-alias-hygiene.md`
+(platform domains). Code: `tell/discovery/yc.py`. CLI: `tell discover seed-yc --fetch` or
+`tell discover seed-yc --file PATH`; `tell discover prune-platform-companies
+[--dry-run|--apply]`. Tests:
 `tests/discovery/test_yc.py`, `tests/discovery/test_cli.py`.
 
 ## Source chosen
@@ -35,12 +37,45 @@ time, so nothing else is held in memory past validation, let alone stored.
 | Field | Becomes |
 | --- | --- |
 | `name` | `companies.name` (whitespace collapsed) |
-| `website` | `companies.domain`: registrable domain via `tldextract` (bundled suffix list, private suffixes such as `vercel.app` kept), lowercase, no `www`, path dropped. Records with an empty or unusable website are skipped and counted. |
+| `website` | `companies.domain`: registrable domain via `tldextract` (bundled suffix list, private suffixes such as `vercel.app` kept), lowercase, no `www`, path dropped. Records with an empty or unusable website are skipped and counted. A website on a platform is skipped too (see below). |
 | `all_locations` | `hq_city`, `hq_state`, `hq_country` from the **first** `;`-separated location, only when it has the US shape `City, ST, USA` (two-letter state); `hq_country` is stored as `US`. Any other shape leaves all three `NULL`. |
 | `batch` | returned by `fetch_directory` (e.g. `Winter 2012`) but not stored: `companies` has no column for it. |
 
 Never read or stored: founder names or anything else about people, descriptions
 (`one_liner`, `long_description`), application answers, logos.
+
+## Platform websites (ADR 0033)
+
+Some directory entries do not point at the company's own site. FameGame's website is an App
+Store listing (`apps.apple.com/...`), so the seeder used to store `apple.com` as its domain
+and `backfill-aliases` made `apple` one of its aliases. tell's identity key is the
+company's own domain, so a website whose ICANN registrable domain is in
+`tell.discovery.PLATFORM_DOMAINS` seeds nothing; it is counted as `skipped_platform_domain`
+in the seed stats. The list covers:
+
+- app stores and big platforms: `apple.com`, `google.com` (Play, Sites, Docs),
+  `microsoft.com`, `amazon.com`;
+- social and profile pages: `linkedin.com`, `facebook.com`, `instagram.com`, `x.com`,
+  `twitter.com`, `youtube.com`, `tiktok.com`, `discord.com`, `t.me`, ...;
+- code hosting and per-project hosting: `github.com`, `github.io`, `gitlab.io`,
+  `vercel.app`, `netlify.app`, `herokuapp.com`, `pages.dev`, `web.app`, `replit.app`,
+  `fly.dev`, ...;
+- site builders: `webflow.io`, `framer.website`, `framer.ai`, `wixsite.com`, `carrd.co`,
+  `notion.site`, `notion.so`, `squarespace.com`, `super.site`, `softr.app`, ...;
+- publishing, link hubs and forms: `medium.com`, `substack.com`, `linktr.ee`, `bit.ly`,
+  `calendly.com`, `typeform.com`;
+- startup directories: `ycombinator.com`, `wellfound.com`, `angel.co`, `crunchbase.com`,
+  `producthunt.com`.
+
+The platform's own company is exempt when its website is the bare platform domain: a company
+named "Substack" at `substack.com` is seeded, while `acme.substack.com` is never Substack's
+own site. GitLab (`gitlab.com`) is not on the list; only its Pages host `gitlab.io` is.
+
+Rows seeded before this rule existed are found by `tell discover prune-platform-companies`.
+By default it only lists them, each with its blockers. `--apply` deletes the ones with no
+events, boards, watchlist items, signals, feedback or non-zero scores, together with their
+aliases, feeds and zero scores. A row that is still referenced stays listed for a human,
+because the events linked to it were probably linked through the platform label.
 
 ## Write rules
 

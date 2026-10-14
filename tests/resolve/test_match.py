@@ -143,6 +143,59 @@ def test_backfill_adds_names_domain_labels_and_board_slugs(
     assert backfill_aliases(db_session) == 0
 
 
+def test_backfill_applies_the_alias_rule(db_session: Session) -> None:
+    """ADR 0033: no short / generic / word / platform labels, no failing names or slugs."""
+    ofone = _company(db_session, "of.one", "OfOne")
+    famegame = _company(db_session, "apple.com", "FameGame")
+    ramp = _company(db_session, "ramp.com", "Ramp Business")
+    brex = _company(db_session, "brex.com", "Brex Card")
+    h1 = _company(db_session, "h1.co", "H1")
+    fund = _company(db_session, "the-fund.com", "The Fund")
+    db_session.add(
+        AtsBoard(company_id=brex.id, vendor="ashby", identifier="ai", confidence=Decimal("0.90"))
+    )
+    db_session.flush()
+    backfill_aliases(db_session)
+    assert _aliases(db_session, ofone.id) == {"ofone": "manual"}
+    assert _aliases(db_session, famegame.id) == {"famegame": "manual"}
+    assert _aliases(db_session, ramp.id) == {"ramp business": "manual"}
+    assert _aliases(db_session, brex.id) == {"brex card": "manual", "brex": "manual"}
+    assert _aliases(db_session, h1.id) == {}
+    assert _aliases(db_session, fund.id) == {}
+    # every writer goes through the rule, whatever the source
+    assert (
+        add_aliases(db_session, ofone.id, ["Of", "AI", "2026", "Capital Partners"], source="edgar")
+        == 0
+    )
+
+
+def test_index_ignores_failing_label_aliases_unless_a_review_wrote_them(
+    db_session: Session,
+) -> None:
+    """Legacy ``apple`` / ``ramp`` label rows do not match before ``prune-aliases`` runs."""
+    famegame = _company(db_session, "apple.com", "FameGame")
+    ramp = _company(db_session, "ramp.com", "Ramp Business")
+    for company, alias in ((famegame, "apple"), (ramp, "ramp")):
+        db_session.add(CompanyAlias(company_id=company.id, alias=alias, source="manual"))
+    db_session.add(CompanyAlias(company_id=ramp.id, alias="rampco", source="ats_board"))
+    db_session.flush()
+    assert match_name(db_session, "The Apple Company").rule == "R6"
+    unlinked = match_name(db_session, "Ramp, Inc.")  # review against "ramp business" only
+    assert (unlinked.rule, unlinked.company_id) == ("R5", None)
+    assert [c.alias for c in unlinked.candidates if c.ratio >= 85] == ["ramp business"]
+    assert match_name(db_session, "Rampco Inc").company_id == ramp.id  # other sources count
+    db_session.add(
+        ReviewQueueItem(
+            kind="entity_match",
+            status="resolved",
+            payload={"name": "Ramp", "verdict": "link", "company_id": ramp.id},
+        )
+    )
+    db_session.flush()
+    decision = match_name(db_session, "Ramp, Inc.")
+    assert (decision.rule, decision.company_id) == ("R2", ramp.id)
+
+
 def test_add_aliases_rejects_unknown_source(
     db_session: Session, companies: dict[str, Company]
 ) -> None:
@@ -251,9 +304,7 @@ def test_token_superset_guard_sends_supersets_to_review(
     """``token_set_ratio`` scores any superset 100; R3 / R4 also need ``token_sort_ratio >= 85``."""
     for name, state in (
         ("Beacon Health Systems LLC", None),  # would be R4 on token_set_ratio alone
-        ("Blue Acme Bakery", None),
         ("Beacon Health Press LLC", "MA"),  # would be R3 on token_set_ratio alone
-        ("Anti Acme Coalition Inc", "CA"),
     ):
         decision = match_name(db_session, name, state=state)
         assert (decision.rule, decision.action) == ("R5", "review"), name
@@ -266,15 +317,52 @@ def test_token_superset_guard_sends_supersets_to_review(
     assert match_name(db_session, "Beacon Health, Inc.").rule == "R2"
 
 
+def test_single_token_alias_never_scores_against_a_longer_name(
+    db_session: Session, companies: dict[str, Company]
+) -> None:
+    """ADR 0033: a one-word alias is no candidate for a token superset (not even review)."""
+    acme = companies["acme"].id
+    for name, state in (("Blue Acme Bakery", None), ("Anti Acme Coalition Inc", "CA")):
+        decision = match_name(db_session, name, state=state)
+        assert (decision.rule, decision.action) == ("R6", "unlinked"), name
+        assert acme not in {c.company_id for c in decision.candidates}
+    # a single-token name is still scored against single-token aliases (typos reach review)
+    typo = match_name(db_session, "Acmee Inc")
+    assert (typo.rule, typo.candidates[0].company_id) == ("R5", acme)
+    # and the exact one-word name is R2
+    assert match_name(db_session, "ACME, Inc.").company_id == acme
+
+
+def test_aliases_failing_the_rule_are_ignored_even_when_present(db_session: Session) -> None:
+    """Rows written before the rule existed never become candidates (ADR 0033)."""
+    ofone = _company(db_session, "of.one", "OfOne")
+    db_session.add_all(
+        [
+            CompanyAlias(company_id=ofone.id, alias=alias, source="manual")
+            for alias in ("of", "ai", "the fund", "2026")
+        ]
+    )
+    db_session.flush()
+    index = AliasIndex.from_session(db_session)
+    assert len(index) == 1  # only "ofone"
+    for name in ("Arboretum Fund I, a series of CGF2026 LLC", "Of Inc", "AI Inc", "The Fund LP"):
+        decision = match_name(db_session, name, index=index)
+        assert decision.rule == "R6", name
+        assert all(c.alias == "ofone" and c.ratio < 85 for c in decision.candidates), name
+    assert match_name(db_session, "OfOne, Inc.", index=index).rule == "R2"
+
+
 def test_r4_negative_two_candidates_go_to_review(
     db_session: Session, companies: dict[str, Company]
 ) -> None:
-    decision = match_name(db_session, "Acme Robotics Group")
+    robotix = _company(db_session, "acmerobotix.com", "Acme Robotix", hq_state="TX")
+    add_aliases(db_session, robotix.id, ["Acme Robotix"], source="manual")
+    decision = match_name(db_session, "Acme Robotic")  # 96 and 91.7: two candidates
     assert (decision.rule, decision.confidence, decision.action) == ("R5", 0.60, "review")
     assert decision.company_id is None
     assert {c.company_id for c in decision.candidates[:2]} == {
-        companies["acme"].id,
         companies["robotics"].id,
+        robotix.id,
     }
 
 
@@ -501,10 +589,9 @@ def test_resolve_r5_opens_one_review_item_and_is_idempotent(
     assert payload["name"] == "Acme Robotics Group"
     assert payload["state"] == "WA"
     assert payload["city"] == "San Francisco"
-    assert {c["company_id"] for c in payload["candidates"][:2]} == {
-        companies["acme"].id,
-        companies["robotics"].id,
-    }
+    # "acme" is a single-token alias, so only "acme robotics" is a candidate (ADR 0033)
+    assert payload["candidates"][0]["company_id"] == companies["robotics"].id
+    assert companies["acme"].id not in {c["company_id"] for c in payload["candidates"]}
     assert set(payload) == {"event_id", "name", "state", "city", "candidates"}
 
     before = {row.event_id: row.payload for row in db_session.scalars(select(EventRow))}

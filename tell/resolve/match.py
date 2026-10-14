@@ -33,6 +33,14 @@ Interpretation notes (recorded in ``docs/methods/entity-resolution.md`` and ADR 
   removes auto-links, so it is consistent with the spec table.
 * The spec words R5 as "85 to 91 with one candidate"; a single candidate at 92-94 whose
   geography does not match is also sent to review rather than dropped.
+* Alias hygiene (ADR 0033, :mod:`tell.resolve.aliases`): an alias failing the alias rule
+  (under 3 letters and digits, all digits, or only filler tokens such as ``of`` / ``ai``)
+  is never written and is ignored by the index even when present. A **single-token**
+  alias is scored only against a name that is itself a single token (whole word against
+  whole word, so a one-letter typo such as "QuikNode" still finds ``quicknode``) or is
+  found by exact equality; it never scores against a longer name, so ``token_set_ratio``
+  cannot score "Arboretum Apple a Series of CGF2026 LLC" 100 against ``apple``.
+  Multi-token aliases are scored as before.
 
 Every decision is written into ``events.payload["match"]`` as
 ``{rule, ratio, candidates[:5], confidence, resolved_at}`` so a wrong link can be audited.
@@ -56,6 +64,7 @@ from sqlalchemy.orm import Session
 from tell.collectors.base import iso_utc
 from tell.db import upsert
 from tell.models import ALIAS_SOURCES, AtsBoard, Company, CompanyAlias, EventRow, ReviewQueueItem
+from tell.resolve.aliases import alias_problem, is_single_token, label_alias_problem
 from tell.resolve.normalize import domain_label, normalize_name, normalize_name_alt, slug_words
 
 __all__ = [
@@ -78,6 +87,8 @@ __all__ = [
     "link_event",
     "match_name",
     "resolve_events",
+    "review_alias_pairs",
+    "stored_alias_problem",
 ]
 
 _log = logging.getLogger(__name__)
@@ -278,6 +289,11 @@ class AliasIndex:
     one) and scanned with ``rapidfuzz.process.extract``, which handles ~10k aliases in
     milliseconds. :meth:`add` keeps the index current as a run links events and writes
     new aliases.
+
+    Alias hygiene (ADR 0033): :meth:`add` ignores an alias that fails
+    :func:`tell.resolve.aliases.alias_problem`, and keeps single-token aliases in a pool of
+    their own that is scored only for single-token names (plus exact equality), so a token
+    superset of a one-word alias never becomes a candidate.
     """
 
     def __init__(
@@ -287,7 +303,15 @@ class AliasIndex:
     ) -> None:
         self._companies: dict[str, set[int]] = {}
         self._aliases: list[str] = []
+        """The fuzzy pool for every name: multi-token aliases (``process.extract`` choices)."""
         self._alts: list[str] = []
+        """Alt forms of :attr:`_aliases`, position for position."""
+        self._singles: list[str] = []
+        """The fuzzy pool for single-token names only: single-token aliases."""
+        self._single_alts: list[str] = []
+        """Alt forms of :attr:`_singles`, position for position."""
+        self._alt_of: dict[str, str] = {}
+        """alias -> its alt form, for every registered alias."""
         self._by_alt: dict[str, set[str]] = {}
         """alt form -> aliases that fold to it (so :meth:`exact` is a dict lookup)."""
         self._geo: dict[int, tuple[str | None, str | None]] = {}
@@ -299,60 +323,99 @@ class AliasIndex:
 
     @classmethod
     def from_session(cls, session: Session) -> AliasIndex:
-        """Load ``company_aliases`` and ``companies`` (name normalized, ``hq_state``/``hq_city``)."""
+        """Load ``company_aliases`` and ``companies`` (name normalized, ``hq_state``/``hq_city``).
+
+        A stored ``manual`` alias that is the company's bare domain label and fails the
+        label rule (``apple`` for a company keyed by ``apple.com``, ``ramp`` from
+        ``ramp.com``) is skipped like any failing alias, unless a review verdict wrote it
+        (:func:`review_alias_pairs`), so the matcher behaves the same before and after
+        ``tell resolve prune-aliases`` (ADR 0033).
+        """
         companies = session.execute(
-            select(Company.id, Company.name, Company.hq_state, Company.hq_city)
+            select(Company.id, Company.name, Company.domain, Company.hq_state, Company.hq_city)
         ).all()
-        index = cls(geography={cid: (state, city) for cid, _, state, city in companies})
-        for cid, name, _, _ in companies:
+        index = cls(geography={cid: (state, city) for cid, _, _, state, city in companies})
+        owners: dict[int, tuple[str, str]] = {}
+        for cid, name, domain, _, _ in companies:
+            owners[cid] = (name, domain)
             index.add(normalize_name(name), cid)
-        for alias, cid in session.execute(select(CompanyAlias.alias, CompanyAlias.company_id)):
+        human = review_alias_pairs(session)
+        rows = session.execute(
+            select(CompanyAlias.alias, CompanyAlias.company_id, CompanyAlias.source)
+        )
+        for alias, cid, source in rows:
+            owner = owners.get(cid)
+            if (
+                source == "manual"
+                and owner is not None
+                and (cid, alias) not in human
+                and stored_alias_problem(alias, name=owner[0], domain=owner[1]) is not None
+            ):
+                continue
             index.add(alias, cid)
         return index
 
     def __len__(self) -> int:
-        return len(self._aliases)
+        return len(self._companies)
 
     def add(self, alias: str, company_id: int) -> None:
-        """Register ``alias`` (already normalized) for ``company_id``; empty aliases are ignored."""
-        if not alias:
+        """Register ``alias`` (already normalized) for ``company_id``.
+
+        Empty aliases and aliases failing the alias rule are ignored.
+        """
+        if not alias or alias_problem(alias) is not None:
             return
         holders = self._companies.get(alias)
         if holders is None:
             self._companies[alias] = {company_id}
-            self._aliases.append(alias)
             alt = normalize_name_alt(alias)
-            self._alts.append(alt)
+            self._alt_of[alias] = alt
             self._by_alt.setdefault(alt, set()).add(alias)
+            if is_single_token(alias):
+                self._singles.append(alias)
+                self._single_alts.append(alt)
+            else:
+                self._aliases.append(alias)
+                self._alts.append(alt)
         else:
             holders.add(company_id)
 
     def set_geography(self, company_id: int, state: str | None, city: str | None) -> None:
         self._geo[company_id] = (_geo_key(state), _city_key(city))
 
+    def _exact_aliases(self, norm: str, alt: str) -> set[str]:
+        """Aliases equal to ``norm`` or ``alt``, or whose alt form equals ``alt``."""
+        found = {form for form in (norm, alt) if form and form in self._companies}
+        if alt:
+            found |= self._by_alt.get(alt, set())
+        return found
+
     def exact(self, norm: str, alt: str) -> set[int]:
         """Companies holding an alias equal to ``norm`` or ``alt`` (or whose alias's alt form is)."""
         found: set[int] = set()
-        for form in {norm, alt}:
-            if form:
-                found |= self._companies.get(form, set())
-        if alt:
-            for alias in self._by_alt.get(alt, ()):
-                found |= self._companies[alias]
+        for alias in self._exact_aliases(norm, alt):
+            found |= self._companies[alias]
         return found
 
-    def _scored_positions(self, norm: str, alt: str, pool: int) -> dict[int, float]:
-        """``alias position -> best token_set_ratio`` over the plain and alt forms.
+    def _scored_aliases(self, norm: str, alt: str, pool: int) -> dict[str, float]:
+        """``alias -> best token_set_ratio`` over the plain and alt forms.
 
-        Two passes per form: the top ``pool`` aliases (so R6 decisions still log their
-        nearest candidates) and *every* alias at or above :data:`REVIEW_RATIO`, so a
+        Two passes per form and pool: the top ``pool`` aliases (so R6 decisions still log
+        their nearest candidates) and *every* alias at or above :data:`REVIEW_RATIO`, so a
         company holding many aliases can never push another company's candidate alias out
-        of view (R4's "exactly one candidate company in the whole table" is evaluated
-        over the full index).
+        of view (R4's "exactly one candidate company in the whole table" is evaluated over
+        the full index). The single-token pool is scored only when the query form is a
+        single token itself; otherwise a single-token alias enters only on exact equality,
+        at 100.
         """
-        scored: dict[int, float] = {}
-        for query, choices in ((norm, self._aliases), (alt, self._alts)):
-            if not query:
+        scored: dict[str, float] = {}
+        passes = [(norm, self._aliases, self._aliases), (alt, self._alts, self._aliases)]
+        if norm and is_single_token(norm):
+            passes.append((norm, self._singles, self._singles))
+        if alt and is_single_token(alt):
+            passes.append((alt, self._single_alts, self._singles))
+        for query, choices, names in passes:
+            if not query or not choices:
                 continue
             top = process.extract(query, choices, scorer=fuzz.token_set_ratio, limit=pool)
             strong = process.extract(
@@ -363,8 +426,11 @@ class AliasIndex:
                 score_cutoff=REVIEW_RATIO - 0.01,
             )
             for _, score, index in (*top, *strong):
-                position = int(index)
-                scored[position] = max(scored.get(position, 0.0), float(score))
+                alias = names[int(index)]
+                scored[alias] = max(scored.get(alias, 0.0), float(score))
+        for alias in self._exact_aliases(norm, alt):
+            if is_single_token(alias):
+                scored[alias] = 100.0
         return scored
 
     def candidates(self, norm: str, alt: str, *, limit: int = CANDIDATE_LIMIT) -> list[Candidate]:
@@ -376,17 +442,16 @@ class AliasIndex:
         alphabetical) and ``sort_ratio``, the best ``token_sort_ratio`` over its scored
         aliases, for the superset guard.
         """
-        if not norm or not self._aliases:
+        if not norm or not self._companies:
             return []
-        scored = self._scored_positions(norm, alt, max(limit * 4, 20))
+        scored = self._scored_aliases(norm, alt, max(limit * 4, 20))
         best_alias: dict[int, tuple[float, float, str]] = {}
         """company -> (ratio, that alias's sort ratio, alias): the alias shown in the audit."""
         best_sort: dict[int, float] = {}
-        for position, ratio in scored.items():
-            alias = self._aliases[position]
+        for alias, ratio in scored.items():
             sort_ratio = guard_ratio(norm, alias)
             if alt:
-                sort_ratio = max(sort_ratio, guard_ratio(alt, self._alts[position]))
+                sort_ratio = max(sort_ratio, guard_ratio(alt, self._alt_of[alias]))
             for company_id in self._companies[alias]:
                 best_sort[company_id] = max(best_sort.get(company_id, 0.0), sort_ratio)
                 current = best_alias.get(company_id)
@@ -413,6 +478,39 @@ class AliasIndex:
             return issuer_state == company_state
         issuer_city = _city_key(city)
         return issuer_city is not None and issuer_city == company_city
+
+
+def stored_alias_problem(alias: str, *, name: str, domain: str) -> str | None:
+    """Why a stored alias of the company (``name``, ``domain``) fails the alias rule, or ``None``.
+
+    Every alias gets :func:`tell.resolve.aliases.alias_problem`; an alias that is the
+    company's domain label (and not also its normalized name) gets
+    :func:`tell.resolve.aliases.label_alias_problem` too, the test ``backfill_aliases``
+    applies before writing a label.
+    """
+    problem = alias_problem(alias)
+    if problem is not None:
+        return problem
+    if alias == domain_label(domain) and alias != normalize_name(name):
+        return label_alias_problem(alias, domain)
+    return None
+
+
+def review_alias_pairs(session: Session) -> set[tuple[int, str]]:
+    """``(company_id, alias)`` pairs a review verdict wrote (``link`` / ``create`` items).
+
+    A human decided those; alias hygiene never second-guesses them.
+    """
+    stmt = select(ReviewQueueItem.payload).where(
+        ReviewQueueItem.kind == REVIEW_KIND, ReviewQueueItem.status == "resolved"
+    )
+    pairs: set[tuple[int, str]] = set()
+    for payload in session.scalars(stmt):
+        company_id = payload.get("company_id")
+        name = payload.get("name")
+        if isinstance(company_id, int) and isinstance(name, str):
+            pairs.add((company_id, normalize_name(name)))
+    return pairs
 
 
 # --- the rules -------------------------------------------------------------------------------
@@ -587,14 +685,19 @@ def _alias_source(event_source: str) -> str:
 
 
 def add_aliases(session: Session, company_id: int, names: Iterable[str], *, source: str) -> int:
-    """Insert normalized aliases for ``company_id`` (``ON CONFLICT DO NOTHING``); return how many were new."""
+    """Insert normalized aliases for ``company_id`` (``ON CONFLICT DO NOTHING``); return how many were new.
+
+    A name whose normalized form fails the alias rule
+    (:func:`tell.resolve.aliases.alias_problem`: too short, all digits, only filler
+    tokens) is skipped, whatever the source.
+    """
     if source not in ALIAS_SOURCES:
         msg = f"alias source must be one of {sorted(ALIAS_SOURCES)}, not {source!r}"
         raise ValueError(msg)
     rows = {
         normalized: {"company_id": company_id, "alias": normalized, "source": source}
         for normalized in (normalize_name(n) for n in names)
-        if normalized
+        if normalized and alias_problem(normalized) is None
     }
     if not rows:
         return 0
@@ -771,10 +874,18 @@ def backfill_aliases(session: Session) -> int:
     every linked, supported ATS board contributes its identifier as words (``acme-labs``
     -> ``acme``) with source ``ats_board``. Boards store no display name (discovery keeps
     it only in logs), so the identifier is the only board-side name available.
+
+    Every alias passes the alias rule; the domain label also has to pass
+    :func:`tell.resolve.aliases.label_alias_problem` (not a common English word of 4
+    letters or fewer, not a platform's domain), so ``of.one`` adds no ``of`` and a
+    company keyed by ``apple.com`` adds no ``apple`` (ADR 0033).
     """
     added = 0
     for company in session.scalars(select(Company).order_by(Company.id)):
-        names = [company.name, domain_label(company.domain)]
+        names = [company.name]
+        label = domain_label(company.domain)
+        if label_alias_problem(label, company.domain) is None:
+            names.append(label)
         added += add_aliases(session, company.id, names, source="manual")
     boards = select(AtsBoard).where(
         AtsBoard.company_id.is_not(None),

@@ -100,8 +100,9 @@ def test_export_writes_open_items_with_candidates(
     assert row["kind"] == "entity_match"
     assert row["name"] == "Acme Robotics Group"
     assert (row["state"], row["city"]) == ("WA", "Seattle")
-    ids = {row["candidate_1_id"], row["candidate_2_id"]}
-    assert ids == {str(queue["acme"].id), str(queue["robotics"].id)}
+    # "acme" is a single-token alias and never scores against a longer name (ADR 0033)
+    assert row["candidate_1_id"] == str(queue["robotics"].id)
+    assert str(queue["acme"].id) not in {row["candidate_2_id"], row["candidate_3_id"]}
     assert row["candidate_1_ratio"] == "100.0"
     assert row["candidate_3_id"] == ""
     assert (row["verdict"], row["company_id_or_domain"], row["new_company_name"]) == ("", "", "")

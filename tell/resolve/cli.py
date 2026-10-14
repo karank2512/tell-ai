@@ -9,6 +9,12 @@ Commands:
 * ``review-export PATH``: write open ``entity_match`` items to a CSV for a human.
 * ``review-import PATH``: apply the verdicts filled into that CSV.
 * ``stats``: counts of linked / unlinked events by rule and open review items.
+* ``prune-aliases [--dry-run | --apply]``: delete ``manual`` aliases failing the alias rule
+  (ADR 0033); never ``edgar`` / ``news`` / ``ats_board`` rows or aliases a review wrote.
+* ``close-junk-reviews [--dry-run | --apply]``: close open ``entity_match`` items left with
+  no candidate under the alias rule as ``rejected`` (``resolved_by = alias_hygiene``).
+
+The two maintenance commands are dry runs unless ``--apply`` is given.
 
 Each command commits on success and prints one JSON object on stdout.
 """
@@ -25,6 +31,7 @@ from sqlalchemy import func, select
 from tell.collectors.base import utcnow
 from tell.db import session_scope
 from tell.models import EventRow, ReviewQueueItem
+from tell.resolve.hygiene import close_junk_reviews, prune_aliases
 from tell.resolve.match import REVIEW_KIND, backfill_aliases, resolve_events
 from tell.resolve.review import export_review_csv, import_review_csv
 
@@ -120,3 +127,20 @@ def stats_command() -> None:
     """Print resolution statistics."""
     with session_scope() as session:
         _echo(gather_stats(session))
+
+
+_DRY_RUN = typer.Option("--dry-run/--apply", help="Report only (default), or write the changes.")
+
+
+@app.command("prune-aliases")
+def prune_aliases_command(dry_run: Annotated[bool, _DRY_RUN] = True) -> None:
+    """Delete manual aliases that fail the alias rule (ADR 0033); dry run by default."""
+    with session_scope() as session:
+        _echo(prune_aliases(session, apply=not dry_run))
+
+
+@app.command("close-junk-reviews")
+def close_junk_reviews_command(dry_run: Annotated[bool, _DRY_RUN] = True) -> None:
+    """Close open entity_match items with no candidate left under the alias rule; dry run by default."""
+    with session_scope() as session:
+        _echo(close_junk_reviews(session, now=utcnow(), apply=not dry_run))

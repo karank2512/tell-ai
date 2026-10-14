@@ -2,12 +2,16 @@
 
 Spec: `docs/SPEC.md` section 6 (normalization, rules, review queue, gold set), section 5
 (`company_aliases`, `review_queue`), section 12 (Resolution test family). Code:
-`tell/resolve/normalize.py`, `tell/resolve/match.py`, `tell/resolve/review.py`,
+`tell/resolve/normalize.py`, `tell/resolve/aliases.py` (the alias rule), `tell/resolve/match.py`,
+`tell/resolve/hygiene.py` (alias and review-queue maintenance), `tell/resolve/review.py`,
 `tell/resolve/review_app.py` (Streamlit, optional). CLI: `tell resolve run [--limit N]
 [--retry]`, `tell resolve backfill-aliases`, `tell resolve review-export PATH`, `tell resolve
-review-import PATH`, `tell resolve stats`. Tests: `tests/resolve/` (rules, resolver, review
-round trip, CLI) and `tests/test_resolve.py` (gold-set precision and recall). Decisions that
-go beyond the spec's wording: `docs/decisions/0018-entity-resolution-rule-refinements.md`.
+review-import PATH`, `tell resolve stats`, `tell resolve prune-aliases [--dry-run|--apply]`,
+`tell resolve close-junk-reviews [--dry-run|--apply]`. Tests: `tests/resolve/` (alias rule,
+rules, resolver, hygiene, review round trip, CLI) and `tests/test_resolve.py` (gold-set
+precision and recall). Decisions that go beyond the spec's wording:
+`docs/decisions/0018-entity-resolution-rule-refinements.md`,
+`docs/decisions/0033-alias-hygiene.md`.
 
 The domain is the identity. ATS postings arrive already linked (discovery found the board on
 the company's domain). Form D filings, other EDGAR filings and the occasional news item
@@ -56,6 +60,35 @@ board, the identifier as words (source `ats_board`). Boards carry no display nam
 schema (discovery logs the name it verified against but does not store it), so the identifier
 is the only board-side alias.
 
+### The alias rule (ADR 0033)
+
+On 2026-10-13, production sent all 69 of one day's ambiguous Form D filings to review, and
+all 69 were wrong. 28 matched `of`, the domain label of OfOne (`of.one`): every fund named
+"X Fund I, a series of Y LLC" contains `of`, and `token_set_ratio` scores a token superset
+100. The others matched `ai`, `ad`, `l`, `the`, and `apple`, the label of a YC company whose
+directory website is an App Store page. So every alias now has to pass
+`tell.resolve.aliases.alias_problem`:
+
+- at least 3 letters or digits (spaces and hyphens not counted): `too_short` otherwise;
+- not all digits: `numeric`;
+- not made only of filler tokens: `generic`. Filler is `GENERIC_ALIAS_TOKENS` (function
+  words `the`, `of`, `and`, ...; legal and structural forms `inc`, `co`, `group`,
+  `holdings`, `hq`, ...; startup filler `ai`, `app`, `io`, `labs`, `tech`,
+  `technologies`, ...; fund and SPV vocabulary `fund`, `capital`, `partners`, `ventures`,
+  `series`, `spv`, ...; Roman numerals), any number, or a single character.
+
+A **domain label** must also pass `label_alias_problem`. A label of 4 letters or fewer must
+not be a common English word (`SHORT_ENGLISH_WORDS`, for example `ramp`, `flow`, `mesh`):
+`short_word`. The domain must not be a platform's (`apple.com`, `*.vercel.app`, ...):
+`platform_domain`. The company's *name* is unaffected by this test, so the company Ramp
+keeps `ramp` through its name. `add_aliases` applies the rule for every source, and
+`backfill_aliases` applies the label test before it writes a label.
+
+Rows written before the rule are ignored by the index (next section). `tell resolve
+prune-aliases` deletes the failing `manual` rows. It never deletes an `edgar`, `news` or
+`ats_board` row, and never a `manual` alias that a review verdict wrote. It is a dry run
+unless `--apply` is given.
+
 Linking a filing, whether by the resolver or by a review verdict, goes through one function
 (`link_event`): it sets `company_id`, fills `companies.cik` (when empty and not held by
 another company) and `companies.legal_name` (when empty), and adds the issuer name and every
@@ -82,6 +115,24 @@ table" really is the whole table: a company holding 25 aliases cannot push a sec
 company's 88-ratio alias out of a truncated pool. Full US state names fold to the two-letter
 codes Form D uses. Ten thousand aliases take milliseconds; the index is built once per run
 and kept current as the run adds aliases.
+
+### Candidate floor (ADR 0033)
+
+- The index ignores any alias that fails the alias rule, even when the table holds it. It
+  also ignores a stored `manual` alias that is the company's bare domain label and fails the
+  label test (unless a review verdict wrote it). That applies to R2 as well, so the matcher
+  behaves the same before and after `prune-aliases`.
+- A **single-token alias** sits in a pool of its own. That pool is scored only for a name
+  that is itself a single token (whole word against whole word, so `QuikNode` still finds
+  `quicknode`), and the alias is also found by exact equality (R2, or a tie at 100). A
+  one-word alias therefore never scores against a longer name: "Arboretum Apple a Series of
+  CGF2026 LLC" is no candidate for `apple`, and "Blue Stripe Bakery" is no candidate for
+  `stripe`. Multi-token aliases are scored exactly as before. A one-word *name* still finds
+  a longer alias (`ramp` vs `ramp business` is a review item).
+
+The ticket asked for "exactly that token as its whole name". Read literally, that drops the
+gold set's correct R3 link `QuikNode, Inc.` -> QuickNode, so the whole-word comparison is
+kept (ADR 0033). The rules' thresholds and confidences are unchanged.
 
 ### The superset guard (R3 and R4)
 
@@ -191,6 +242,14 @@ CSV is the default:
    the item `rejected` and the resolver skips the same (name, candidates) pair from then on.
    Errors are reported per row and never stop the import.
 
+`tell resolve close-junk-reviews [--dry-run|--apply]` (ADR 0033) re-runs the matcher on every
+open item with the current rules. An item with no candidate left at or above 85 is closed as
+`rejected`, with `verdict = "reject"` and `resolved_by = "alias_hygiene"`. Its candidates
+stay in the payload as the audit trail, and the rejected-pair memory keeps it from coming
+back. Items that still have a real candidate stay open, even when the new rules would now
+auto-link them; the command never links and never deletes. The report counts closed items
+by the aliases that caused them and by reason (`too_short`, `single_token_superset`, ...).
+
 The Streamlit page (`streamlit run tell/resolve/review_app.py`) offers the same three buttons
 over the same functions. It refuses to open unless `TELL_REVIEW_PASSWORD` is set and compares
 the typed password with `secrets.compare_digest`. It lives in the repo and is not deployed.
@@ -252,6 +311,40 @@ Gates: names precision >= 0.97 and recall >= 0.85 pass on both sets. The README 
 these numbers with the caveat that the gold set is a draft a person has not yet
 spot-checked; the caveat comes off, and the numbers may be quoted elsewhere, once the
 spot-check is done.
+
+### Re-measured 2026-10-14 after alias hygiene (ADR 0033)
+
+Same gold files, same matcher thresholds:
+
+| Set | precision | recall | by rule (names) |
+| --- | --- | --- | --- |
+| public sample, names | 1.0000 | 1.0000 | R2 57, R3 4, R5 12, R6 22 (was R5 34) |
+| full private set, names | 1.0000 | 0.9733 | R2 371, R3 9, R5 30, R6 160 (was R5 182, R6 8) |
+
+Every positive is decided exactly as before: R2 and R3 counts are unchanged, and the same 8
+renamed issuers are missed. The R5 that disappeared are superset decoys ("Blue <name>
+Bakery") against one-word aliases, which now go to R6 instead of review. The strict reading
+of the ticket (a single-token alias matches only by equality) lost `QuikNode, Inc.` ->
+QuickNode (R3), which is why the whole-word comparison was kept.
+
+Offline Form D measurement (no production access). Setup: the 1,000 YC companies and their
+boards from `tell_snapshot_20261014`, plus OfOne (`of.one`) and FameGame (`apple.com`), with
+aliases rebuilt by the pre-change `backfill_aliases`. Input: 300 synthetic issuer names (99
+"X Fund I, a series of Y", 51 "X Y a Series of Z LLC", 40 other fund names, 80
+operating-company names, 30 legal names of snapshot companies).
+
+| | R2 | R5 | R6 | true positives linked |
+| --- | --- | --- | --- | --- |
+| before | 42 | 184 | 74 | 30/30 |
+| after (code only, old alias rows) | 40 | 6 | 254 | 30/30 |
+| after (code + `prune-aliases`) | 40 | 6 | 254 | 30/30 |
+
+Under the old code, 94 of the 184 R5 items had `of` as top candidate. Under the new code,
+all 6 remaining R5 items are operating-company names: one-word typos ("Lad" vs `clad`), or
+multi-token aliases sharing one generic word ("Nimbus Technologies" vs `h3x technologies`).
+The two R2 links that disappeared were "The Apple Company" -> FameGame, made through the
+platform label `apple`. The rest of the R2 links are synthetic names equal to a YC
+company's name, which R2 links by design.
 
 ### Re-measured 2026-10-13: how much of the 300-row recall is real
 

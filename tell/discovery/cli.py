@@ -12,6 +12,9 @@ Commands:
   under the ownership-evidence rule (ADR 0031); failures become ``paused`` with a
   ``board_verify`` item. Commits after every board; idempotent.
 * ``seed-yc --file PATH | --fetch``: seed ``companies`` from the YC directory.
+* ``prune-platform-companies [--dry-run | --apply]``: list companies keyed by a platform
+  domain (``apple.com``, ``*.vercel.app``, ...; ADR 0033); ``--apply`` deletes those with
+  no events, boards, watchlist items, signals or feedback. Dry run by default.
 
 The other commands commit on success. Results print as JSON lines on stdout.
 """
@@ -30,7 +33,12 @@ from tell.collectors.base import utcnow
 from tell.db import session_scope
 from tell.discovery.ats import discover_batch, discover_domain
 from tell.discovery.reverify import reverify_guesses
-from tell.discovery.yc import fetch_directory, seed_companies, seed_from_file
+from tell.discovery.yc import (
+    fetch_directory,
+    prune_platform_companies,
+    seed_companies,
+    seed_from_file,
+)
 from tell.http import make_client
 
 app = typer.Typer(
@@ -149,3 +157,19 @@ def seed_yc_command(
             with make_client() as client:
                 stats = seed_companies(session, fetch_directory(client))
         typer.echo(json.dumps(asdict(stats), sort_keys=True))
+
+
+@app.command("prune-platform-companies")
+def prune_platform_companies_command(
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run/--apply",
+            help="List only (default), or delete the unreferenced platform-domain companies.",
+        ),
+    ] = True,
+) -> None:
+    """List (or with --apply delete) companies whose domain is a platform's (ADR 0033)."""
+    with session_scope() as session:
+        report = prune_platform_companies(session, apply=not dry_run)
+        typer.echo(json.dumps(report, sort_keys=True))
