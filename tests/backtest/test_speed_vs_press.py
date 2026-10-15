@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 
 from tell.backtest import speed_vs_press as svp
 from tell.backtest.common import render_report
-from tell.models import Company, EventRow
+from tell.models import CIK_SOURCES, Company, EventRow
+from tell.resolve import guards
 from tests.backtest.helpers import DAY, HOUR, NOW, company, event, formd, midnight, news
 
 MINUTE = HOUR / 60
@@ -279,6 +280,16 @@ def test_r0_and_a_trusted_cik_source_enter_the_cohort(db_session: Session) -> No
     formd(db_session, unknown, date(2026, 9, 3), rule=None, cik="0000000013")
     assert svp.compute(db_session, NOW).n == 2
     assert "R0" in svp.TRUSTED_RULES
+
+
+def test_cohort_trusts_exactly_the_cik_sources_rule_r0_trusts() -> None:
+    """The SQL's ``cik_source`` list is built from ``tell.models.CIK_SOURCES``: a new
+    trusted source reaches rule R0, ingest and this report together."""
+    assert svp.TRUSTED_CIK_SOURCES == CIK_SOURCES
+    assert frozenset(svp.TRUSTED_CIK_SOURCES) == guards.TRUSTED_CIK_SOURCES
+    listed = ", ".join(f"'{source}'" for source in CIK_SOURCES)
+    assert f"c.cik_source in ({listed})" in svp.SQL
+    assert "__TRUSTED_CIK_SOURCES__" not in svp.SQL
 
 
 def test_cohort_split_and_discovery_latency(db_session: Session) -> None:

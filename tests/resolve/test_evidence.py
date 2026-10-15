@@ -28,8 +28,12 @@ from tell.resolve.evidence import (
     decide,
     is_parked,
     legal_base,
+    legal_form_families,
     legal_links,
     parse_page,
+    sanitize_markup,
+    site_addresses,
+    site_years,
 )
 
 CASES_PATH = Path(__file__).with_name("issuer_evidence_20261014.json")
@@ -157,7 +161,9 @@ def test_tier_a_name_must_not_follow_a_dot_at_slash_or_letter(text: str) -> None
 def test_tier_a_needs_every_token_including_descriptors() -> None:
     profile = issuer("Acme Robotics, Inc.")
     assert assess(profile, "acme.com", [page("Acme, Inc. makes robots")]).tier != "A"
-    assert assess(profile, "acme.com", [page("Acme Robotics Corp. makes robots")]).tier == "A"
+    assert (
+        assess(profile, "acme.com", [page("Acme Robotics Incorporated makes robots")]).tier == "A"
+    )
     assert assess(profile, "acme.com", [page("© AcmeRobotics, Inc.")]).tier == "A"
 
 
@@ -369,6 +375,8 @@ def test_parse_page_og_description_and_empty_content() -> None:
     assert og.description == "x y"
     assert parse_page(b"", "/") == SitePage("/")
     assert parse_page(b"   ", "/") == SitePage("/")
+    assert parse_page(b"<!-- only a comment -->", "/") == SitePage("/")  # lxml: empty document
+    assert parse_page(b"\x00\x01\x02", "/") == SitePage("/")
 
 
 def test_legal_links() -> None:
@@ -425,3 +433,270 @@ def test_legal_span_is_bounded_by_the_legal_name_and_its_suffix() -> None:
     bound = len("".join(base)) + 3 * (len(base) - 1) + len(", incorporated.")
     assert found.span is not None
     assert len(found.span) <= bound
+
+
+# --- legal form families (shadow run 2026-10-15, defect 1) -------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "families"),
+    [
+        ("Cado Inc.", {"inc"}),
+        ("Runwayz Corp.", {"corp"}),
+        ("Acme Robotics Corporation", {"corp"}),
+        ("Saltbox Tinned Fish Co., PBC", {"co", "pbc"}),
+        ("Acme Public Benefit Corporation", {"pbc"}),
+        ("QUICKTAKE HEALTH CO", {"co"}),
+        ("Acme Robotics Company", {"co"}),
+        ("Acme Robotics", set()),
+        ("Acme Robotics LLC", set()),
+    ],
+)
+def test_legal_form_families(name: str, families: set[str]) -> None:
+    assert legal_form_families(name) == families
+
+
+def test_edgar_state_tag_is_not_part_of_the_name() -> None:
+    assert legal_base("Cicero, Inc /DE/") == ["Cicero"]
+    assert legal_base("AiGent, Inc. / DE") == ["AiGent"]
+    assert legal_form_families("Primis Inc. /DE") == {"inc"}
+    assert legal_base("Acme Public Benefit Corporation") == ["Acme"]
+    found = assess(issuer("Cicero, Inc /DE/"), "cicero.ai", [page("© 2026 Cicero, Inc.")])
+    assert (found.tier, found.span) == ("A", "Cicero, Inc.")
+
+
+def test_the_sites_legal_form_must_be_in_the_issuers_family() -> None:
+    inc = issuer("Acme Robotics, Inc.")
+    other = assess(inc, "acme.com", [page("Acme Robotics Corp. makes robots")])
+    assert (other.tier, other.reasons) == ("C", ("other_legal_form",))
+    assert assess(inc, "acme.com", [page("Acme Robotics Company")]).tier == "C"
+    corp = issuer("Acme Robotics Corp.")
+    assert assess(corp, "acme.com", [page("Acme Robotics Corporation")]).tier == "A"
+    assert assess(corp, "acme.com", [page("Acme Robotics, Inc.")]).tier == "C"
+    pbc = issuer("Acme Robotics, PBC")
+    assert assess(pbc, "acme.com", [page("Acme Robotics, PBC")]).tier == "A"
+    found = assess(pbc, "acme.com", [page("Acme Robotics Public Benefit Corporation")])
+    assert (found.tier, found.brand) == ("A", "Acme Robotics")
+    co = issuer("QUICKTAKE HEALTH CO")
+    assert assess(co, "q.com", [page("QuickTake Health Co. is")]).tier == "A"
+    assert assess(co, "q.com", [page("QuickTake Health Company")]).tier == "A"
+    assert assess(co, "q.com", [page("the QuickTake Health company")]).tier != "A"
+    assert assess(co, "q.com", [page("QuickTake Health, Inc.")]).tier != "A"
+    # Both forms of a two-form name are its own.
+    saltbox = issuer("Saltbox Tinned Fish Co., PBC", city="Tenants Harbor", state="ME")
+    assert assess(saltbox, "s.com", [page("Saltbox Tinned Fish, PBC")]).tier == "A"
+    # A name stating no form accepts any family; one stating only an LLC form gets no tier A.
+    assert assess(issuer("Acme Robotics"), "acme.com", [page("Acme Robotics Corp.")]).tier == "A"
+    llc = assess(issuer("Acme Robotics LLC"), "acme.com", [page("Acme Robotics, Inc.")])
+    assert (llc.tier, llc.reasons) == ("C", ("other_legal_form",))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "© 2026 acme robotics Co., Ltd.",
+        "Acme Robotics Co.,Ltd. Tokyo",
+        "Acme Robotics Co. Limited",
+        "Acme Robotics Inc. K.K.",
+        "Acme Robotics, Inc. GmbH",
+        "Acme Robotics Corp. S.A.",
+        "Acme Robotics Corp B.V.",
+        "Acme Robotics Inc. Pty",
+        "Acme Robotics, Inc. LLC",
+    ],
+)
+def test_a_match_followed_by_another_legal_form_is_not_tier_a(text: str) -> None:
+    for name in (
+        "Acme Robotics Co.",
+        "Acme Robotics, Inc.",
+        "Acme Robotics Corp.",
+        "Acme Robotics",
+    ):
+        assert assess(issuer(name), "acme.com", [page(text)]).tier != "A", (name, text)
+
+
+def test_cado_co_ltd_is_not_cado_inc() -> None:
+    """Shadow #5: "cado Co., Ltd." (a Japanese company) gave Cado Inc. tier A."""
+    cado = issuer("Cado Inc.", city="Evanston", state="IL")
+    found = assess(cado, "cado.com", [page("© 2026 cado Co., Ltd.")])
+    assert found.tier == "C"
+    assert assess(cado, "cado.com", [page("© 2026 Cado Inc.")]).tier == "A"
+
+
+def test_a_legal_span_holds_no_token_the_name_lacks() -> None:
+    """``&`` and ``+`` sit between legal-name tokens only where the issuer's name has one."""
+    plain = issuer("Smith Jones, Inc.")
+    assert assess(plain, "sj.com", [page("Smith & Jones, Inc.")]).tier != "A"
+    assert assess(plain, "sj.com", [page("Smith + Jones, Inc.")]).tier != "A"
+    assert assess(plain, "sj.com", [page("Smith-Jones, Inc.")]).tier == "A"
+    joined = issuer("Smith & Jones, Inc.")
+    for text in (
+        "Smith & Jones, Inc.",
+        "Smith&Jones, Inc.",
+        "Smith + Jones, Inc.",
+        "Smith Jones, Inc.",
+    ):
+        found = assess(joined, "sj.com", [page(text)])
+        assert (found.tier, found.span) == ("A", text), text
+
+
+# --- age (shadow run 2026-10-15, defect 2) ------------------------------------------------------
+
+
+def test_site_years() -> None:
+    years = site_years(
+        [
+            page("©2001 - 2022 Core Automation, Inc. All rights reserved"),
+            page("Founded in 1998 in Sacramento", "Copyright © 2024 Acme", path="/about"),
+        ]
+    )
+    assert (years.earliest, years.latest_copyright) == (1998, 2024)
+    assert site_years([page("© Acme Robotics Inc. 2025", "Est. 2023")]).earliest == 2023
+    assert site_years([page("Copyright © 2026 Left Main REI")]).latest_copyright == 2026
+    assert site_years([page("(c) 2019\u20132026 Acme")]).latest_copyright == 2026
+    # Not a notice: the Copyright Act, a year with no notice, a year after ``until``.
+    none = site_years(
+        [page("under the Copyright Act of 1976", "since 1999 we", "© 2031 Acme")], until=2027
+    )
+    assert (none.earliest, none.latest_copyright) == (None, None)
+    assert site_years([page("© 2031 Acme")]).latest_copyright == 2031
+
+
+def test_an_older_company_with_the_same_legal_name_is_tier_c() -> None:
+    """Shadow #9: a Sacramento firm (© 2001-2022) passed tier A for a 2026 SF issuer."""
+    core = issuer(
+        "Core Automation, Inc.", city="SAN FRANCISCO", state="CA", year_of_inc=2026, filed_year=2026
+    )
+    found = assess(
+        core, "coreautomation.com", [page("©2001 - 2022 Core Automation, Inc. All rights reserved")]
+    )
+    assert (found.tier, found.reasons) == ("C", ("older_site",))
+    # Without the years on the page, or without the filing's years, nothing changes.
+    assert assess(core, "c.com", [page("Core Automation, Inc.")]).tier == "A"
+    bare = issuer("Core Automation, Inc.", city="SAN FRANCISCO", state="CA")
+    assert assess(bare, "c.com", [page("©2001 - 2022 Core Automation, Inc.")]).tier == "A"
+
+
+@pytest.mark.parametrize(
+    ("text", "tier", "reasons"),
+    [
+        ("© 2022-2026 Acme Robotics, Inc.", "A", ()),  # two years before incorporation: allowed
+        ("© 2021 Acme Robotics, Inc.", "C", ("older_site",)),
+        ("Acme Robotics, Inc. Founded in 2019.", "C", ("older_site",)),
+        ("© 2022-2025 Acme Robotics, Inc.", "A", ()),  # latest = filing year - 1: allowed
+        ("© 2023-2024 Acme Robotics, Inc.", "C", ("stale_site",)),
+        ("© 2024 Acme Robotics, Inc.", "C", ("stale_site",)),
+        ("© 2027 Acme Robotics, Inc.", "A", ()),
+    ],
+)
+def test_age_check_bounds(text: str, tier: str, reasons: tuple[str, ...]) -> None:
+    profile = issuer(year_of_inc=2024, filed_year=2026)
+    found = assess(profile, "acme.com", [page(text)])
+    assert (found.tier, found.reasons) == (tier, reasons)
+
+
+def test_age_check_demotes_tier_b_too() -> None:
+    profile = issuer(year_of_inc=2025, filed_year=2026)
+    found = assess(profile, "acme.com", [page("Acme Robotics", "Austin, TX", "© 2010 Acme")])
+    assert (found.tier, found.reasons) == ("C", ("older_site",))
+    stale = issuer(filed_year=2026)
+    found = assess(stale, "acme.com", [page("Acme Robotics", "Austin, TX", "© 2020 Acme")])
+    assert (found.tier, found.reasons) == ("C", ("stale_site",))
+
+
+# --- whose address (shadow run 2026-10-15, defect 4) --------------------------------------------
+
+
+def test_another_entitys_address_is_not_the_sites() -> None:
+    """Left Main REI: a vendor's "principal place of business" in another state demoted it."""
+    nc = issuer("Left Main REI Inc.", city="CHARLOTTE", state="NC")
+    vendor = (
+        "Example Cloud, inc. a Delaware corporation having its principal place of business at "
+        "Example Tower, 415 Mission Street, 3rd Floor, San Francisco, California, 94105."
+    )
+    found = assess(
+        nc, "leftmainrei.co", [page("Left Main REI Inc, a North Carolina Corporation", vendor)]
+    )
+    assert (found.tier, found.span) == ("A", "Left Main REI Inc")
+    assert site_addresses(nc, [page(vendor)]) == []
+    # The issuer's own name before an address keeps it the site's.
+    own = page("Left Main REI Inc., 500 Congress Avenue, Austin, TX 78701")
+    assert [(a.state, a.city) for a in site_addresses(nc, [own])] == [("TX", "Austin")]
+    assert assess(nc, "leftmainrei.co", [own]).reasons == ("different_state",)
+
+
+def test_privacy_law_boilerplate_is_not_an_address() -> None:
+    nc = issuer("Acme Robotics, Inc.", city="Charlotte", state="NC")
+    for block in (
+        "Under the California Consumer Privacy Act, California residents may write to California 94105",
+        "Residents of Nevada may opt out. Nevada 89501",
+        "CCPA requests: San Francisco, CA 94105",
+        "You may contact the Attorney General, 1300 I Street, Sacramento, CA 95814",
+    ):
+        assert site_addresses(nc, [page(block)]) == [], block
+        assert assess(nc, "acme.com", [page("Acme Robotics, Inc.", block)]).tier == "A", block
+    # A law naming one state leaves an address in another state in the same block counted.
+    mixed = page("California residents: our office is at 500 Congress Avenue, Austin, TX 78701")
+    assert [a.state for a in site_addresses(nc, [mixed])] == ["TX"]
+    found = assess(nc, "acme.com", [page("Acme Robotics, Inc.", "California residents")])
+    assert found.tier == "A"
+
+
+def test_a_registered_agent_address_on_the_site_is_not_the_sites() -> None:
+    sf = issuer(state="CA", city="San Francisco")
+    agent = page("Acme Robotics, Inc.", "c/o Agent, 8 The Green, Dover, DE 19901")
+    assert site_addresses(sf, [agent]) == []
+    assert assess(sf, "acme.com", [agent]).tier == "A"
+
+
+def test_a_registered_agent_filing_is_not_compared_with_the_sites_address() -> None:
+    """Form D at an agent's city (Lewes, DE) says nothing about where the company is."""
+    lewes = issuer(city="LEWES", state="DE")
+    assert assess(lewes, "acme.com", [page("Acme Robotics, Inc.", "Austin, TX 78701")]).tier == "A"
+    brand = assess(lewes, "acme.com", [page("Acme Robotics", "Lewes, DE 19958")])
+    assert (brand.tier, brand.reasons) == ("C", ("registered_agent_city",))
+
+
+def test_tier_a_needs_another_city_and_another_state() -> None:
+    portland = issuer(city="Portland", state="OR")
+    same_city = page("Acme Robotics, Inc.", "Portland, ME 04101")
+    assert assess(portland, "acme.com", [same_city]).tier == "A"
+    assert (
+        assess(portland, "acme.com", [page("Acme Robotics, Inc.", "Boston, MA 02110")]).tier == "C"
+    )
+    # no city before the ZIP: another state is enough
+    assert assess(portland, "acme.com", [page("Acme Robotics, Inc.", "ME 04101")]).tier == "C"
+    # tier B still needs every address in the Form D state
+    brand = assess(
+        portland, "acme.com", [page("Acme Robotics", "Portland, OR", "Portland, ME 04101")]
+    )
+    assert (brand.tier, brand.reasons) == ("C", ("different_state",))
+
+
+# --- unreadable pages (shadow run 2026-10-15, defect 3) -----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"<html><body><p>Acme</p><!-- c -->\x01tail\x0b<p>Robotics, Inc.</p></body></html>",
+        b"<html><body><p>Acme</p><script>x</script>\x1ftail\x00<p>b</p></body></html>",
+    ],
+)
+def test_control_characters_never_crash_parse_page(content: bytes) -> None:
+    parsed = parse_page(content, "/")
+    assert parsed.blocks[0] == "Acme"
+    assert all("\x01" not in b and "\x1f" not in b and "\x00" not in b for b in parsed.blocks)
+
+
+def test_sanitize_markup() -> None:
+    assert sanitize_markup(b"a\x00b\x01c\td\ne\rf\x7f") == b"abc\td\ne\rf"
+    wide = "<p>caf\u00e9</p>".encode("utf-16")
+    assert sanitize_markup(wide) == wide
+    assert parse_page(wide, "/").blocks == ("caf\u00e9",)
+
+
+def test_a_page_lxml_cannot_read_is_an_empty_page() -> None:
+    """A UTF-16 page keeps its zero bytes; a control character in it still fails lxml."""
+    broken = "<html><body><p>a</p><!-- c -->\x01tail</body></html>".encode("utf-16")
+    assert parse_page(broken, "/x") == SitePage("/x")

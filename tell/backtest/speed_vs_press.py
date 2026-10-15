@@ -58,6 +58,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from tell.backtest.common import Metric, Query, Report, Section, Table, share
+from tell.models import CIK_SOURCES
 
 __all__ = [
     "ALERT_CADENCE_HOURS",
@@ -69,6 +70,7 @@ __all__ = [
     "OBSERVED_SLACK_HOURS",
     "SQL",
     "SQL_CHANGES",
+    "TRUSTED_CIK_SOURCES",
     "TRUSTED_RULES",
     "SpeedVsPress",
     "build_report",
@@ -98,6 +100,16 @@ OBSERVED_SLACK_HOURS = 4
 
 TRUSTED_RULES: tuple[str, ...] = ("R0", "R1", "R2", "R3", "R4")
 """Automatic rules whose links enter the cohort when no guard failed; ``manual`` also does."""
+
+TRUSTED_CIK_SOURCES: tuple[str, ...] = CIK_SOURCES
+"""The ``companies.cik_source`` values whose CIK rule R0 trusts (``tell.models.CIK_SOURCES``,
+the same set as ``tell.resolve.guards.TRUSTED_CIK_SOURCES``): a collector's CIK match to such
+a company enters the cohort. :data:`SQL` spells them out from this tuple, so the report's
+printed query stays runnable and never drifts from rule R0 and ingest."""
+
+_CIK_SOURCE_LIST = ", ".join(
+    "'" + source.replace("'", "''") + "'" for source in TRUSTED_CIK_SOURCES
+)
 
 
 def ingest_cadence_hours(runs_per_day: str | None) -> int:
@@ -157,8 +169,7 @@ d as (
     and e.company_id is not null
     and (e.event_id in (select event_id from trusted)
          or (e.payload->'match' is null and c.cik = e.payload->>'cik'
-             and (c.cik_source in ('issuer_first_a', 'issuer_first_b', 'r1', 'guarded_r2',
-                                   'manual')
+             and (c.cik_source in (__TRUSTED_CIK_SOURCES__)
                   or exists (select 1 from trusted t
                              where t.company_id = c.id and t.cik = c.cik))))),
 names as (
@@ -236,7 +247,7 @@ select coalesce(cohort, 'pooled') as cohort,
        sum(case when press_ambiguous then 1 else 0 end) as press_ambiguous,
        sum(case when full_brand is not null then 1 else 0 end) as full_brand_required
 from a left join p using (event_id)
-group by grouping sets ((cohort), ());"""
+group by grouping sets ((cohort), ());""".replace("__TRUSTED_CIK_SOURCES__", _CIK_SOURCE_LIST)
 
 SQL_CHANGES: tuple[str, ...] = (
     "`now()` is the bound `:as_of` instant, so a dated report can be regenerated.",

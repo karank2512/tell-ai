@@ -38,13 +38,17 @@
 2. **Evidence tiers** (decided from the site's own pages: homepage plus terms, privacy and
    legal pages, robots honoured, 1 request per second per host):
    - **Tier A:** every token of the full legal name (descriptors included), in order,
-     followed by a legal form (Inc, Corp, Corporation, PBC, Co.) with a word boundary after
-     it; not preceded by `.`, `@` or `/`. Previous names from the filing count.
+     followed by a legal form of the issuer's own family (Inc/Incorporated, Corp/Corporation,
+     PBC/Public Benefit Corporation, Co./Company) with a word boundary after it and no other
+     legal form after it (", Ltd", "GmbH", ...); not preceded by `.`, `@` or `/`. Previous
+     names from the filing count.
    - **Tier B:** the full brand plus an address in the Form D city or state, never a
      registered-agent city (Wilmington, Dover, Lewes, Newark DE, Sheridan WY).
-   - **Always:** exactly one candidate domain qualifies; the site states no address in a
-     different state; not a platform domain or a parked page. Text from separate page blocks
-     is joined with a separator.
+   - **Always:** exactly one candidate domain qualifies; the site states no address of its
+     own in a different state (for tier A: a different city and state, not compared for a
+     registered-agent filing address); the site is not older than the issuer (age check,
+     added after the 2026-10-15 shadow run); not a platform domain or a parked page. Text
+     from separate page blocks is joined with a separator.
    - **Never evidence:** a shared core token plus the same city; a title alone; an ATS board
      name alone.
    - Tier C (weaker) goes to review only when the amount sold is at least $1M, else it is
@@ -113,25 +117,44 @@
 - **Fuzzy rules for non-YC companies**: about 44 review items a week, against the target of
   under 20.
 
-## Implementation notes (PR 3, PR 4, PR 6)
+## Implementation notes (PR 3, PR 4, PR 6, shadow fixes)
 
 How the rules above were made concrete; every point is tested.
 
 - **Evidence module** (`tell/resolve/evidence.py`, pure). Page text is kept as blocks, one
   per block-level element, joined with a newline that no pattern crosses (the "FastWay"
   case). Tier A and B text must be in a page body: a `<title>` or meta description alone
-  is never evidence (`title_only`). Tier A's legal form is `Inc`, `Incorporated`, `Corp`,
-  `Corporation`, `PBC` or `Co.` (with its period); up to three spaces or punctuation
-  characters may sit between name tokens, so a stored span is never longer than the legal
-  name plus its form.
+  is never evidence (`title_only`). Tier A's legal form must be in the family of the
+  issuer's own form: `Inc`/`Incorporated`, `Corp`/`Corporation`, `PBC`/`Public Benefit
+  Corporation`, `Co.` (with its period)/`Company`; a name stating no form accepts any
+  family, one stating only another form (`LLC`) gets no tier A, and EDGAR's state tag
+  (`/DE/`) is not part of the name. A match followed by another legal form (`, Ltd`,
+  `Limited`, `GmbH`, `K.K.`, `S.A.`, `B.V.`, `Pty`, `LLC`, `PLC`) is never tier A. Up to
+  three spaces, hyphens, periods or apostrophes may sit between name tokens, and `&` or
+  `+` only where the issuer's name has one, so a stored span holds the name's tokens, at
+  most three separator characters between them, and the form, never another token
+  ("A - B - C, Incorporated" for "A B C, Inc." is the longest shape).
 - **"An address in the Form D city or state"** is `City, ST`, `City, State`, or the state
   with a ZIP code (`ST 12345`, `State 12345`), on the same page as the full brand. A state
   mentioned in prose ("seafood from Maine's working waterfront") is not an address. That
   demotes one of the design's eleven tier A/B domains (saltboxfish.com, which is also a
   "coming soon" page, so it is parked) to no evidence; the frozen hand check records it.
-- **"An address in a different state"** is any ZIP-coded US address (`ST 12345`,
-  `State 12345`) whose state is not the Form D state; for an issuer outside the US every US
-  address counts. It disqualifies tier A and B alike (they become tier C).
+- **"An address in a different state"** is a US address the site states as its own: ZIP-coded
+  (`ST 12345`, `State 12345`) or a street line plus `City, ST`, whose state is not the Form
+  D state; for an issuer outside the US every US address counts. Not the site's own, so
+  never counted: an address in a state the same text block names as privacy-law
+  boilerplate ("California residents", "CCPA", "California Consumer Privacy Act"), any
+  address in a block naming an attorney general, an address after another entity's legal
+  name within 200 characters (a vendor's "principal place of business"), and an address in
+  a registered-agent city. For tier B any such address in another state disqualifies; for
+  tier A its city must differ from the Form D city too, and a Form D address in a
+  registered-agent city is never compared (it says nothing about where the company is).
+- **Age check** (both tiers): demoted to tier C (`older_site`) when the site's earliest
+  copyright or founding year ("(c) 2001 - 2022", "Founded in 1998", "Est. 2019") is more
+  than 2 years before the filing's year of incorporation, or (`stale_site`) when its
+  latest copyright year is before the filing year minus 1; only when the pages state such
+  years (years after the filing year plus one are ignored; "Copyright Act of 1976" is no
+  notice).
 - **Parked**: a parking or placeholder phrase (for sale, coming soon, under construction,
   ...) on a page with under 3,000 characters of text, or a page with no text whose title is
   empty or the domain itself.
@@ -167,12 +190,51 @@ How the rules above were made concrete; every point is tested.
   the same function, so it also counts only trusted CIKs.
 - **Writes**: `--shadow` (the default) writes nothing, not even a `runs` row. `--apply`
   commits the selection before any request and then each issuer on its own, so no
-  transaction is open across network I/O. A created company has no `ats_boards` row, so
-  the next `tell discover batch` picks it up; its brand and domain label become `manual`
-  aliases and the filing's names `edgar` aliases.
+  transaction is open across network I/O. Board discovery is not queued explicitly: a
+  created company has no `ats_boards` row, so the next `tell discover batch` run picks it
+  up (oldest company first), and nothing in this command sets when that run happens. Its
+  brand and domain label become `manual` aliases and the filing's names `edgar` aliases.
+- **Unreadable pages and failed issuers**: control bytes are removed before lxml parses a
+  page, and a page it still cannot read is an empty page (no evidence for that page). An
+  issuer whose investigation (or recording) raises is counted in `runs.errors` and, with
+  `--apply`, recorded `no_domain` with the usual retry date (30 and 90 days, or its next
+  filing), so it is not selected and fetched again on every run.
 - **Workflow**: one step `tell discover issuers --apply` in the `filings` job after the
   EDGAR ingest, run only when the Actions variable `TELL_ISSUER_DISCOVERY` is `on` (unset
   by default, so production is unchanged until the owner turns it on).
+
+### Shadow run 2026-10-15 and the fixes
+
+The shadow backfill (1,019 issuers, 300 tier A/B) was hand-checked at 58 SAME / 2
+DIFFERENT / 0 UNCLEAR of 60 (precision 0.967, Wilson 95% [0.886, 0.991]; the bar is 59 of
+60). The two wrong links and one wrong demotion, now fixed and frozen in
+`tests/resolve/issuer_links_20261015.json` (the 60 rows plus trimmed page excerpts of the
+three cases):
+
+- **Cado Inc. -> cado.com** ("© 2026 cado Co., Ltd.", a Japanese company): the legal-form
+  family and the "followed by another form" rule.
+- **Core Automation, Inc. -> coreautomation.com** (a Sacramento firm, "(c) 2001 - 2022",
+  against a 2026 San Francisco issuer): the age check.
+- **Left Main REI Inc.** (correct site demoted to tier C): the terms page states a
+  vendor's office ("salesforce.com, inc. a Delaware corporation having its principal place
+  of business at ... San Francisco, California, 94105"), now attributed to that vendor.
+- **8 issuers crashed lxml** ("All strings must be XML compatible") and were never
+  recorded: pages are sanitised, and a failed issuer is recorded with a retry date.
+
+Re-check of the 60 rows with the fixed rule (homepage and stored evidence page fetched
+once more on 2026-10-15, robots honoured, 1 request per second per host): both DIFFERENT
+rows drop to tier C; 3 SAME rows drop too: runwayz.com (`other_legal_form`: the filing
+says Corp., the site Inc.) and 3helix.com and faradynepower.com (`stale_site`: the latest
+copyright year on the site is 2023 against 2026 filings). One more SAME row (tursio.ai)
+could not be re-read (its evidence page did not answer), so it is not counted. That is 54
+of 57 SAME rows kept, with no DIFFERENT row left at A/B: a recall cost of about 5% for the
+2-in-60 precision gain, and a lower bound, since discovery also reads further legal pages
+that can carry a copyright year or an address. The stale-site half alone
+costs 2 of those 3 and neither DIFFERENT row needs it (Core Automation also fails the
+older-site half), so it is the first candidate to loosen if recall matters more. Not yet
+measured: how many tier C issuers the narrower address rule lifts to tier A/B (those new
+links are not hand-checked); a full shadow re-run and a new 60-link hand check are needed
+before the production steps.
 
 ## Production steps that need the owner's approval
 

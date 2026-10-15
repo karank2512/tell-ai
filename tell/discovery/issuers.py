@@ -47,8 +47,10 @@ User-Agent is the client's (``TELL_HTTP_USER_AGENT``: ``tell/0.1 (+repo URL)``).
   issuer's names become trusted ``edgar`` aliases, the brand and domain label ``manual``
   ones; every unlinked EDGAR event of the CIK is linked with rule R0 (open
   ``entity_match`` items about them are resolved); ``issuer_discovery`` is ``linked``
-  with the evidence ``{path, span}``. The new company has no ``ats_boards`` row, so the
-  next ``tell discover batch`` picks it up (:func:`tell.discovery.ats.select_new_companies`).
+  with the evidence ``{path, span}``. Board discovery is not queued explicitly: the new
+  company has no ``ats_boards`` row, so the next ``tell discover batch`` run picks it up
+  (:func:`tell.discovery.ats.select_new_companies`, oldest company first), and nothing in
+  this command says when that run happens.
 * The domain already belongs to a company: an ``entity_match`` review item on the filing
   proposes that company (a ``link`` verdict writes the CIK with ``cik_source =
   'manual'``); ``conflict``. Nothing on the existing company is changed.
@@ -56,6 +58,10 @@ User-Agent is the client's (``TELL_HTTP_USER_AGENT``: ``tell/0.1 (+repo URL)``).
 * Tier C only: a review item when the amount sold is at least
   :data:`TIER_C_REVIEW_MIN_SOLD`, else logged only; ``tier_c``.
 * Nothing: ``no_domain`` with the retry schedule above.
+* The investigation (or the write) raised: logged as an error, and with ``--apply``
+  recorded as ``no_domain`` with the same retry schedule (:func:`record_error`), so a
+  failing issuer is not fetched again on every run. A page lxml cannot read is no evidence
+  for that page (:func:`tell.resolve.evidence.parse_page`), not an error.
 
 One ``runs`` row (``source = 'issuer_discovery'``) per ``--apply`` run, and one JSON run
 line (the standard fields) for both modes.
@@ -139,6 +145,7 @@ __all__ = [
     "domain_guesses",
     "investigate",
     "record",
+    "record_error",
     "select_issuers",
     "slug_guesses",
 ]
@@ -254,6 +261,8 @@ class Issuer:
     """The largest ``total_amount_sold`` across the issuer's unlinked filings."""
     retry: bool = False
     """Selected as a due retry of a ``no_domain`` issuer."""
+    year_of_inc: int | None = None
+    """The filing's ``yearOfInc`` (the evidence rule's age check compares the site with it)."""
 
     def profile(self) -> IssuerProfile:
         return IssuerProfile(
@@ -262,6 +271,8 @@ class Issuer:
             previous_names=self.previous_names,
             city=self.city,
             state=self.state,
+            year_of_inc=self.year_of_inc,
+            filed_year=int(self.filed_on[:4]) if self.filed_on[:4].isdigit() else None,
         )
 
 
@@ -381,6 +392,7 @@ def _scan_filings(
             ),
             city=_text(payload, "issuer_city"),
             state=_text(payload, "issuer_state"),
+            year_of_inc=facts.year_of_inc,
         )
     return out
 
@@ -836,6 +848,50 @@ def _next_retry(row: IssuerDiscovery, now: datetime) -> datetime | None:
     return first + timedelta(days=RETRY_AFTER_DAYS[row.attempts - 1])
 
 
+def record_error(session: Session, issuer: Issuer, *, now: datetime) -> bool:
+    """Record an issuer whose investigation or recording raised as tried: ``no_domain`` with
+    the usual retry schedule (:data:`RETRY_AFTER_DAYS`, or its next filing), so a failing
+    issuer is not selected and fetched again on every run. Its own savepoint; flushes,
+    never commits. ``False`` (nothing written) when a company holds the CIK, the issuer
+    already has another outcome, or the write itself fails.
+    """
+    try:
+        with session.begin_nested():
+            if _company_by_cik(session, issuer.cik) is not None:
+                return False
+            row = session.get(IssuerDiscovery, issuer.cik)
+            if row is None:
+                row = IssuerDiscovery(
+                    cik=issuer.cik, status="no_domain", attempts=0, created_at=now
+                )
+                session.add(row)
+            elif row.status != "no_domain":
+                return False
+            row.attempts = (row.attempts or 0) + 1
+            row.last_tried_at = now
+            row.tier = None
+            row.domain = None
+            row.evidence = None
+            row.next_retry_at = _next_retry(row, now)
+            session.flush()
+            retry_at = row.next_retry_at
+    except Exception:
+        _logger.exception("could not record the failed issuer CIK %s", issuer.cik)
+        return False
+    _logger.info(
+        json.dumps(
+            {
+                "cik": issuer.cik,
+                "issuer": issuer.name,
+                "outcome": "error",
+                "next_retry_at": iso_utc(retry_at) if retry_at is not None else None,
+            },
+            sort_keys=True,
+        )
+    )
+    return True
+
+
 def record(session: Session, finding: IssuerFinding, *, now: datetime) -> IssuerResult:
     """Write one issuer's outcome (module docstring, "Outcome"); flushes, never commits.
 
@@ -1073,6 +1129,8 @@ def discover_issuers(
         except Exception:
             _logger.exception("issuer discovery failed for CIK %s", issuer.cik)
             errors.append((index, issuer.cik))
+            if apply:
+                record_error(session, issuer, now=now)
         else:
             done.append((index, result))
             _logger.info(json.dumps(result.log_record(), sort_keys=True))

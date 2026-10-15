@@ -1,0 +1,1682 @@
+{
+ "about": "Issuer-first discovery shadow run, 2026-10-15 (ADR 0035): the 60 tier A/B companies hand-checked (random.Random(60) over 300, sorted by CIK) with their Form D facts, the evidence the shadow stored and the verdict; plus trimmed page excerpts (fetched once on 2026-10-15) for the two DIFFERENT rows and the Left Main REI tier C row the fixes are about. Company names and filing facts only; no person, e-mail address, phone number or street line of the issuer.",
+ "verdicts": {
+  "SAME": 58,
+  "DIFFERENT": 2,
+  "UNCLEAR": 0
+ },
+ "sample": [
+  {
+   "n": 1,
+   "cik": "0002147452",
+   "accession": "0002147452-26-000001",
+   "issuer": "Reika Thermal, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "SAN DIEGO",
+    "state": "CA",
+    "year_of_inc": 2026,
+    "date_filed": "2026-08-03",
+    "industry": "Other Technology",
+    "amount_sold": 500000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "reikathermal.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Reika Thermal, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "exact legal name on homepage; cold-plate hardware; CA address on site"
+  },
+  {
+   "n": 2,
+   "cik": "0002146332",
+   "accession": "0002146332-26-000001",
+   "issuer": "G-BOX Freeze Dried Candy, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "WOODSIDE",
+    "state": "NY",
+    "year_of_inc": 2026,
+    "date_filed": "2026-07-20",
+    "industry": "Manufacturing",
+    "amount_sold": 20000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "gboxfreezedriedcandy.com",
+   "tier": "B",
+   "evidence": {
+    "path": "/",
+    "span": "Gbox Freeze Dried Candy"
+   },
+   "verdict": "SAME",
+   "reason": "tier B: brand plus the filing's street address and ZIP on terms/privacy"
+  },
+  {
+   "n": 3,
+   "cik": "0002159140",
+   "accession": "0002159140-26-000001",
+   "issuer": "Ritrova Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "RED BANK",
+    "state": "NJ",
+    "year_of_inc": 2026,
+    "date_filed": "2026-10-09",
+    "industry": "Other Technology",
+    "amount_sold": 1500000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "ritrova.io",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "RITROVA INC."
+   },
+   "verdict": "SAME",
+   "reason": "'RITROVA INC.' on homepage; 2026 withholding-tax fintech; coined name"
+  },
+  {
+   "n": 4,
+   "cik": "0002054746",
+   "accession": "0002054746-26-000002",
+   "issuer": "UNPLUGS HEARING, INC.",
+   "previous_names": [],
+   "filing": {
+    "city": "BROOKLYN",
+    "state": "NY",
+    "year_of_inc": 2025,
+    "date_filed": "2026-08-04",
+    "industry": "Other Technology",
+    "amount_sold": 3399987,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "unplugshearing.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Unplugs Hearing, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name on all pages; filing street address on privacy page"
+  },
+  {
+   "n": 5,
+   "cik": "0002145796",
+   "accession": "0002145796-26-000004",
+   "issuer": "Cado Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "Evanston",
+    "state": "IL",
+    "year_of_inc": 2026,
+    "date_filed": "2026-09-08",
+    "industry": "Other Technology",
+    "amount_sold": 5000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "cado.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "cado Co."
+   },
+   "verdict": "DIFFERENT",
+   "reason": "cado.com is a Japanese air-purifier maker ('cado Co., Ltd.'); span 'cado Co.' came from 'Co., Ltd.'; issuer is a 2026 Evanston IL startup"
+  },
+  {
+   "n": 6,
+   "cik": "0002140655",
+   "accession": "0002134718-26-000058",
+   "issuer": "DFOS Inc",
+   "previous_names": [],
+   "filing": {
+    "city": "NEW YORK",
+    "state": "NY",
+    "year_of_inc": 2026,
+    "date_filed": "2026-07-16",
+    "industry": "Other",
+    "amount_sold": 3297411,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "dfos.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/terms-of-service",
+    "span": "DFOS Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address on terms"
+  },
+  {
+   "n": 7,
+   "cik": "0002154152",
+   "accession": "0002154152-26-000001",
+   "issuer": "DeepMorph.ai, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "NEWARK",
+    "state": "CA",
+    "year_of_inc": 2025,
+    "date_filed": "2026-09-09",
+    "industry": "Other Technology",
+    "amount_sold": 8575000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "deepmorph.ai",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "DeepMorph.ai, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "exact legal name on homepage, terms and privacy"
+  },
+  {
+   "n": 8,
+   "cik": "0002153526",
+   "accession": "0002153526-26-000002",
+   "issuer": "Truespire Systems, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "HOBOKEN",
+    "state": "NJ",
+    "year_of_inc": 2026,
+    "date_filed": "2026-09-04",
+    "industry": "Other Technology",
+    "amount_sold": 129,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "truespire.ai",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Truespire Systems Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name on homepage and privacy (product brand differs); coined name"
+  },
+  {
+   "n": 9,
+   "cik": "0002148145",
+   "accession": "0002148145-26-000001",
+   "issuer": "Core Automation, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "SAN FRANCISCO",
+    "state": "CA",
+    "year_of_inc": 2026,
+    "date_filed": "2026-07-30",
+    "industry": "Other Technology",
+    "amount_sold": 432125053,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "coreautomation.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Core Automation, Inc."
+   },
+   "verdict": "DIFFERENT",
+   "reason": "coreautomation.com is a Sacramento electrical-engineering firm, (c) 2001-2022; issuer is a 2026 SF company with $432M sold"
+  },
+  {
+   "n": 10,
+   "cik": "0001958777",
+   "accession": "0001493152-26-046663",
+   "issuer": "FibroBiologics, Inc.",
+   "previous_names": [
+    "FibroBiologics LLC",
+    "Fibrobiologics, Inc."
+   ],
+   "filing": {
+    "city": "HOUSTON",
+    "state": "TX",
+    "year_of_inc": 2021,
+    "date_filed": "2026-10-13",
+    "industry": "Pharmaceuticals",
+    "amount_sold": 1200000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "fibrobiologics.com",
+   "tier": "B",
+   "evidence": {
+    "path": "/",
+    "span": "FibroBiologics"
+   },
+   "verdict": "SAME",
+   "reason": "tier B: brand plus filing street address and ZIP (Houston) on homepage"
+  },
+  {
+   "n": 11,
+   "cik": "0002006694",
+   "accession": "0002006694-26-000001",
+   "issuer": "Armory Technologies, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "WORCESTER",
+    "state": "MA",
+    "year_of_inc": 2021,
+    "date_filed": "2026-08-04",
+    "industry": "Other Technology",
+    "amount_sold": 2288050,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "armorytechnologies.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Armory Technologies, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "exact legal name on homepage and legal pages; origami composites"
+  },
+  {
+   "n": 12,
+   "cik": "0002086550",
+   "accession": "0002086550-26-000003",
+   "issuer": "RxSaveCard, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "CHICAGO",
+    "state": "IL",
+    "year_of_inc": 2024,
+    "date_filed": "2026-07-29",
+    "industry": "Other Health Care",
+    "amount_sold": 1025000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "rxsavecard.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/privacy",
+    "span": "RxSaveCard Inc"
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing ZIP on privacy page (Chicago)"
+  },
+  {
+   "n": 13,
+   "cik": "0002149792",
+   "accession": "0002149792-26-000001",
+   "issuer": "Perforated AI, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "PITTSBURGH",
+    "state": "PA",
+    "year_of_inc": 2022,
+    "date_filed": "2026-09-01",
+    "industry": "Other Technology",
+    "amount_sold": 1114500,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "perforatedai.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/privacy-policy",
+    "span": "Perforated AI, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address on privacy page"
+  },
+  {
+   "n": 14,
+   "cik": "0001962463",
+   "accession": "0001962463-26-000004",
+   "issuer": "Dolce Glow, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "VALENCIA",
+    "state": "CA",
+    "year_of_inc": 2022,
+    "date_filed": "2026-08-04",
+    "industry": "Retailing",
+    "amount_sold": 4940000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "dolceglow.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/pages/affiliate-program-operating-agreement",
+    "span": "Dolce Glow, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name on affiliate agreement; CA retail brand; Series A press in window"
+  },
+  {
+   "n": 15,
+   "cik": "0002144100",
+   "accession": "0002144100-26-000001",
+   "issuer": "ImmuNovus, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "DENTON",
+    "state": "NE",
+    "year_of_inc": 2022,
+    "date_filed": "2026-07-29",
+    "industry": "Other Technology",
+    "amount_sold": 1000000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "immunovus.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "ImmuNovus, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "exact legal name on every page; coined name"
+  },
+  {
+   "n": 16,
+   "cik": "0001884725",
+   "accession": "0001884725-26-000006",
+   "issuer": "LIVEGISTICS, INC.",
+   "previous_names": [],
+   "filing": {
+    "city": "DETROIT",
+    "state": "MI",
+    "year_of_inc": 2021,
+    "date_filed": "2026-08-28",
+    "industry": "Other Technology",
+    "amount_sold": 150000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "livegistics.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Livegistics, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address on privacy/MSA"
+  },
+  {
+   "n": 17,
+   "cik": "0002150651",
+   "accession": "0002150651-26-000001",
+   "issuer": "Mendara Energy, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "DENVER",
+    "state": "CO",
+    "year_of_inc": 2026,
+    "date_filed": "2026-08-27",
+    "industry": "Other",
+    "amount_sold": 230000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "mendaraenergy.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Mendara Energy, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "exact legal name on homepage; Denver off-grid power; coined name"
+  },
+  {
+   "n": 18,
+   "cik": "0002068167",
+   "accession": "0002068167-26-000001",
+   "issuer": "Disputed, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "WASHOUGAL",
+    "state": "WA",
+    "year_of_inc": 2023,
+    "date_filed": "2026-09-21",
+    "industry": "Other Technology",
+    "amount_sold": 1065000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "disputed.ai",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Disputed, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "'Disputed, Inc.' on homepage, privacy, terms; chargeback platform"
+  },
+  {
+   "n": 19,
+   "cik": "0002040534",
+   "accession": "0002040534-26-000002",
+   "issuer": "GROUNDED RVS INC.",
+   "previous_names": [],
+   "filing": {
+    "city": "DETROIT",
+    "state": "MI",
+    "year_of_inc": 2022,
+    "date_filed": "2026-08-25",
+    "industry": "Other Technology",
+    "amount_sold": 4738475,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "groundedevs.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Grounded RVs Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address (Detroit)"
+  },
+  {
+   "n": 20,
+   "cik": "0002147373",
+   "accession": "0002147373-26-000001",
+   "issuer": "ScopeRemote, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "Atlanta",
+    "state": "GA",
+    "year_of_inc": 2024,
+    "date_filed": "2026-07-27",
+    "industry": "Other Health Care",
+    "amount_sold": 95000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "scoperemote.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "ScopeRemote, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "exact legal name on homepage; coined name"
+  },
+  {
+   "n": 21,
+   "cik": "0002051439",
+   "accession": "0002051439-26-000003",
+   "issuer": "Istari Digital, Inc.",
+   "previous_names": [
+    "Istari, Inc."
+   ],
+   "filing": {
+    "city": "ARLINGTON",
+    "state": "VA",
+    "year_of_inc": 2022,
+    "date_filed": "2026-07-24",
+    "industry": "Other Technology",
+    "amount_sold": 22649970,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "istaridigital.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Istari Digital, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address; Arlington VA"
+  },
+  {
+   "n": 22,
+   "cik": "0002156007",
+   "accession": "0002156007-26-000002",
+   "issuer": "Meadow AI, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "SEATTLE",
+    "state": "WA",
+    "year_of_inc": 2021,
+    "date_filed": "2026-09-25",
+    "industry": "Other",
+    "amount_sold": 13109993,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "meadow.ai",
+   "tier": "A",
+   "evidence": {
+    "path": "/terms",
+    "span": "Meadow AI, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name on terms; funding press in window"
+  },
+  {
+   "n": 23,
+   "cik": "0002157389",
+   "accession": "0002157389-26-000001",
+   "issuer": "MiAngel, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "CUTLER BAY",
+    "state": "FL",
+    "year_of_inc": 2025,
+    "date_filed": "2026-09-28",
+    "industry": "Other Technology",
+    "amount_sold": 50000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "miangel.ai",
+   "tier": "A",
+   "evidence": {
+    "path": "/privacy/",
+    "span": "MiAngel, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "exact legal name on all pages; coined name"
+  },
+  {
+   "n": 24,
+   "cik": "0001966710",
+   "accession": "0001062993-26-005308",
+   "issuer": "Musaffa, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "New York",
+    "state": "NY",
+    "year_of_inc": 2022,
+    "date_filed": "2026-10-13",
+    "industry": "Investing",
+    "amount_sold": 310022,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "musaffa.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Musaffa, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address on privacy page"
+  },
+  {
+   "n": 25,
+   "cik": "0002158121",
+   "accession": "0002158121-26-000001",
+   "issuer": "Vye Health Inc.",
+   "previous_names": [
+    "Theodore Health Inc."
+   ],
+   "filing": {
+    "city": "SAN FRANCISCO",
+    "state": "CA",
+    "year_of_inc": 2025,
+    "date_filed": "2026-10-08",
+    "industry": "Other Technology",
+    "amount_sold": 16234993,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "vyehealth.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/privacy",
+    "span": "Vye Health Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address on privacy/terms"
+  },
+  {
+   "n": 26,
+   "cik": "0002026763",
+   "accession": "0002026763-26-000003",
+   "issuer": "Magnendo Corp.",
+   "previous_names": [],
+   "filing": {
+    "city": "NEWTON",
+    "state": "MA",
+    "year_of_inc": 2024,
+    "date_filed": "2026-07-29",
+    "industry": "Biotechnology",
+    "amount_sold": 18000000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "magnendo.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Magnendo Corp."
+   },
+   "verdict": "SAME",
+   "reason": "legal name on homepage; $18M press matches $18M sold"
+  },
+  {
+   "n": 27,
+   "cik": "0002147093",
+   "accession": "0002147093-26-000001",
+   "issuer": "PreventiveMD, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "RALEIGH",
+    "state": "NC",
+    "year_of_inc": 2026,
+    "date_filed": "2026-07-27",
+    "industry": "Other Health Care",
+    "amount_sold": 1699999,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "preventivemd.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/terms-of-use",
+    "span": "PreventiveMD, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name on terms and privacy; telehealth"
+  },
+  {
+   "n": 28,
+   "cik": "0001924674",
+   "accession": "0001924674-26-000002",
+   "issuer": "Crusoe Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "DENVER",
+    "state": "CO",
+    "year_of_inc": 2022,
+    "date_filed": "2026-09-17",
+    "industry": "Other",
+    "amount_sold": 3108543889,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "crusoe.ai",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Crusoe, Inc"
+   },
+   "verdict": "SAME",
+   "reason": "'Crusoe, Inc' on homepage; funding press in window"
+  },
+  {
+   "n": 29,
+   "cik": "0002158679",
+   "accession": "0002158679-26-000001",
+   "issuer": "SAAZ Micro, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "CAMARILLO",
+    "state": "CA",
+    "year_of_inc": 2026,
+    "date_filed": "2026-10-13",
+    "industry": "Other Technology",
+    "amount_sold": 1500000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "saaz.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Saaz Micro Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address (Camarillo)"
+  },
+  {
+   "n": 30,
+   "cik": "0002137708",
+   "accession": "0002137708-26-000004",
+   "issuer": "Generalist AI, Inc.",
+   "previous_names": [
+    "Artificial General Dexterity, Inc."
+   ],
+   "filing": {
+    "city": "SAN FRANCISCO",
+    "state": "CA",
+    "year_of_inc": 2024,
+    "date_filed": "2026-08-24",
+    "industry": "Other Technology",
+    "amount_sold": 198224662,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "generalistai.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Generalist AI, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name on homepage; $200M press matches $198M sold"
+  },
+  {
+   "n": 31,
+   "cik": "0002146698",
+   "accession": "0002146698-26-000001",
+   "issuer": "DealWithIt, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "DOVER",
+    "state": "DE",
+    "year_of_inc": 2026,
+    "date_filed": "2026-07-21",
+    "industry": "Other Technology",
+    "amount_sold": 25000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "dealwithit.ai",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "DealWithIt, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name on all pages; filing (agent) street address on legal pages"
+  },
+  {
+   "n": 32,
+   "cik": "0002144409",
+   "accession": "0001231919-26-000765",
+   "issuer": "WALDEN ROBOTICS, INC.",
+   "previous_names": [],
+   "filing": {
+    "city": "CAMBRIDGE",
+    "state": "MA",
+    "year_of_inc": 2025,
+    "date_filed": "2026-07-15",
+    "industry": "Other Technology",
+    "amount_sold": 302029487,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "waldenrobotics.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/privacy-policy",
+    "span": "Walden Robotics Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address (Cambridge MA)"
+  },
+  {
+   "n": 33,
+   "cik": "0002156954",
+   "accession": "0002156954-26-000001",
+   "issuer": "Uvantis Therapeutics, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "COLUMBIA",
+    "state": "MD",
+    "year_of_inc": 2025,
+    "date_filed": "2026-09-23",
+    "industry": "Biotechnology",
+    "amount_sold": 100000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "uvantis.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Uvantis Therapeutics, Inc"
+   },
+   "verdict": "SAME",
+   "reason": "exact legal name on homepage; bladder-health biotech"
+  },
+  {
+   "n": 34,
+   "cik": "0002146151",
+   "accession": "0002146151-26-000002",
+   "issuer": "Tristar AI Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "CAMBRIDGE",
+    "state": "MA",
+    "year_of_inc": 2022,
+    "date_filed": "2026-07-21",
+    "industry": "Other Technology",
+    "amount_sold": 13000000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "tristar.ai",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Tristar AI, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name on homepage; coined name"
+  },
+  {
+   "n": 35,
+   "cik": "0001980335",
+   "accession": "0001980335-26-000001",
+   "issuer": "Tursio Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "SAMMAMISH",
+    "state": "WA",
+    "year_of_inc": 2023,
+    "date_filed": "2026-08-07",
+    "industry": "Other Technology",
+    "amount_sold": 50000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "tursio.ai",
+   "tier": "A",
+   "evidence": {
+    "path": "/terms-conditions",
+    "span": "Tursio Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name on terms and privacy; coined name"
+  },
+  {
+   "n": 36,
+   "cik": "0002139006",
+   "accession": "0002139006-26-000001",
+   "issuer": "Runwayz Corp.",
+   "previous_names": [],
+   "filing": {
+    "city": "CHARLOTTE",
+    "state": "NC",
+    "year_of_inc": 2024,
+    "date_filed": "2026-07-17",
+    "industry": "Other",
+    "amount_sold": 127580,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "runwayz.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/privacy/",
+    "span": "Runwayz, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "coined name; site says 'Runwayz, Inc.' while filing says Corp. (form differs)"
+  },
+  {
+   "n": 37,
+   "cik": "0002038064",
+   "accession": "0002038064-26-000003",
+   "issuer": "Loom Security, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "Lawrence",
+    "state": "KS",
+    "year_of_inc": 2024,
+    "date_filed": "2026-08-20",
+    "industry": "Other Technology",
+    "amount_sold": 3399999,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "loomsecurity.io",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Loom Security, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address (Lawrence KS)"
+  },
+  {
+   "n": 38,
+   "cik": "0002145543",
+   "accession": "0002145543-26-000001",
+   "issuer": "BridgePoint AI, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "MILLCREEK",
+    "state": "UT",
+    "year_of_inc": 2024,
+    "date_filed": "2026-07-21",
+    "industry": "Other Technology",
+    "amount_sold": 685318,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "problu.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "BridgePoint AI, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address on /legal (product brand ProBlu)"
+  },
+  {
+   "n": 39,
+   "cik": "0002124333",
+   "accession": "0002124333-26-000002",
+   "issuer": "Exmergo, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "DOVER",
+    "state": "DE",
+    "year_of_inc": 2026,
+    "date_filed": "2026-08-12",
+    "industry": "Computers",
+    "amount_sold": 40000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "exmergo.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Exmergo, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name on all pages; filing (agent) street address on privacy"
+  },
+  {
+   "n": 40,
+   "cik": "0002103205",
+   "accession": "0002103205-26-000001",
+   "issuer": "Eagle Mountain Data Inc",
+   "previous_names": [],
+   "filing": {
+    "city": "IRVINE",
+    "state": "CA",
+    "year_of_inc": 2025,
+    "date_filed": "2026-08-10",
+    "industry": "Computers",
+    "amount_sold": 710000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "eaglemountain.ai",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Eagle Mountain Data Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address (Irvine)"
+  },
+  {
+   "n": 41,
+   "cik": "0002159222",
+   "accession": "0002159222-26-000001",
+   "issuer": "Lykos Industries Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "ATLANTA",
+    "state": "GA",
+    "year_of_inc": 2026,
+    "date_filed": "2026-10-13",
+    "industry": "Manufacturing",
+    "amount_sold": 5000000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "lykosindustries.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Lykos Industries, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "exact legal name on homepage; coined name"
+  },
+  {
+   "n": 42,
+   "cik": "0002032488",
+   "accession": "0001231919-26-000810",
+   "issuer": "Alpha Design AI, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "San Jose",
+    "state": "CA",
+    "year_of_inc": 2024,
+    "date_filed": "2026-07-29",
+    "industry": "Other Technology",
+    "amount_sold": 59820856,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "chipagents.ai",
+   "tier": "A",
+   "evidence": {
+    "path": "/privacy-policy",
+    "span": "Alpha Design AI, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address on privacy (product ChipAgents)"
+  },
+  {
+   "n": 43,
+   "cik": "0002155182",
+   "accession": "0002155182-26-000001",
+   "issuer": "Zeely, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "WILMINGTON",
+    "state": "DE",
+    "year_of_inc": 2021,
+    "date_filed": "2026-09-14",
+    "industry": "Other Technology",
+    "amount_sold": 8838942,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "zeely.ai",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Zeely, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address on legal pages"
+  },
+  {
+   "n": 44,
+   "cik": "0002147694",
+   "accession": "0002147694-26-000002",
+   "issuer": "QUDARA INC.",
+   "previous_names": [],
+   "filing": {
+    "city": "SANTA BARBARA",
+    "state": "CA",
+    "year_of_inc": 2025,
+    "date_filed": "2026-08-18",
+    "industry": "Other Technology",
+    "amount_sold": 5250000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "qudara.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Qudara Inc."
+   },
+   "verdict": "SAME",
+   "reason": "exact legal name on homepage; photonic quantum; coined name"
+  },
+  {
+   "n": 45,
+   "cik": "0002154967",
+   "accession": "0002154967-26-000001",
+   "issuer": "SKINSYNC AI INC.",
+   "previous_names": [],
+   "filing": {
+    "city": "PLAINFIELD",
+    "state": "IL",
+    "year_of_inc": 2025,
+    "date_filed": "2026-09-11",
+    "industry": "Computers",
+    "amount_sold": 300000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "skinsyncai.com",
+   "tier": "B",
+   "evidence": {
+    "path": "/",
+    "span": "SkinSync AI"
+   },
+   "verdict": "SAME",
+   "reason": "tier B: full brand plus Illinois ZIP address; checked in the design pass too"
+  },
+  {
+   "n": 46,
+   "cik": "0002149097",
+   "accession": "0002149097-26-000001",
+   "issuer": "EmulateAI, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "WAYLAND",
+    "state": "MA",
+    "year_of_inc": 2025,
+    "date_filed": "2026-08-07",
+    "industry": "Other Technology",
+    "amount_sold": 400000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "emulateai.ai",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "EmulateAI, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name on all pages; MA address"
+  },
+  {
+   "n": 47,
+   "cik": "0002149399",
+   "accession": "0002149399-26-000001",
+   "issuer": "Flightcast Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "WEST HOLLYWOOD",
+    "state": "CA",
+    "year_of_inc": 2025,
+    "date_filed": "2026-08-12",
+    "industry": "Other Technology",
+    "amount_sold": 1750000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "flightcast.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/privacy-policy",
+    "span": "Flightcast, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address on privacy/terms"
+  },
+  {
+   "n": 48,
+   "cik": "0002001622",
+   "accession": "0002001622-26-000003",
+   "issuer": "3Helix, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "SALT LAKE CITY",
+    "state": "UT",
+    "year_of_inc": 2023,
+    "date_filed": "2026-09-21",
+    "industry": "Biotechnology",
+    "amount_sold": 7835028,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "3helix.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "3Helix Inc"
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address (Salt Lake City)"
+  },
+  {
+   "n": 49,
+   "cik": "0002156358",
+   "accession": "0002156358-26-000001",
+   "issuer": "Twenty Technologies, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "ARLINGTON",
+    "state": "VA",
+    "year_of_inc": 2025,
+    "date_filed": "2026-09-25",
+    "industry": "Other Technology",
+    "amount_sold": 131314503,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "twenty.io",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Twenty Technologies, Inc"
+   },
+   "verdict": "SAME",
+   "reason": "legal name on homepage and privacy; defense software"
+  },
+  {
+   "n": 50,
+   "cik": "0002014393",
+   "accession": "0002014393-26-000004",
+   "issuer": "CodeRabbit Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "SAN FRANCISCO",
+    "state": "CA",
+    "year_of_inc": 2023,
+    "date_filed": "2026-08-14",
+    "industry": "Other Technology",
+    "amount_sold": 142998760,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "coderabbit.ai",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "CodeRabbit Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name on all pages; $143M press matches $143M sold"
+  },
+  {
+   "n": 51,
+   "cik": "0001946732",
+   "accession": "0001946732-26-000002",
+   "issuer": "Balance Theory Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "Fulton",
+    "state": "MD",
+    "year_of_inc": 2021,
+    "date_filed": "2026-09-04",
+    "industry": "Other Technology",
+    "amount_sold": 12000000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "balancetheory.io",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Balance Theory Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address (Fulton MD)"
+  },
+  {
+   "n": 52,
+   "cik": "0001929673",
+   "accession": "0001929673-26-000003",
+   "issuer": "QUICKTAKE HEALTH CO",
+   "previous_names": [],
+   "filing": {
+    "city": "New Orleans",
+    "state": "LA",
+    "year_of_inc": 2022,
+    "date_filed": "2026-08-06",
+    "industry": "Biotechnology",
+    "amount_sold": 2070000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "quicktakehealth.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/privacy-policy/",
+    "span": "QuickTake Health Co."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address (New Orleans)"
+  },
+  {
+   "n": 53,
+   "cik": "0002157421",
+   "accession": "0002157421-26-000001",
+   "issuer": "Carebility, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "RICHARDSON",
+    "state": "TX",
+    "year_of_inc": 2025,
+    "date_filed": "2026-10-02",
+    "industry": "Other Technology",
+    "amount_sold": 8835000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "carebility.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Carebility, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "exact legal name on all pages; coined name"
+  },
+  {
+   "n": 54,
+   "cik": "0002005162",
+   "accession": "0002005162-26-000004",
+   "issuer": "Coco Coders Inc",
+   "previous_names": [],
+   "filing": {
+    "city": "INCLINE VILLAGE",
+    "state": "NV",
+    "year_of_inc": 2023,
+    "date_filed": "2026-10-07",
+    "industry": "Other Technology",
+    "amount_sold": 1999999,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "cococoders.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Coco Coders, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address on terms/privacy"
+  },
+  {
+   "n": 55,
+   "cik": "0001999613",
+   "accession": "0001999613-26-000006",
+   "issuer": "Faradyne Power Systems Corp.",
+   "previous_names": [],
+   "filing": {
+    "city": "MIAMI",
+    "state": "FL",
+    "year_of_inc": 2023,
+    "date_filed": "2026-10-06",
+    "industry": "Other Technology",
+    "amount_sold": 430512,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "faradynepower.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/terms-and-coniditions-1",
+    "span": "Faradyne Power Systems Corp."
+   },
+   "verdict": "SAME",
+   "reason": "exact legal name on terms/privacy; coined name"
+  },
+  {
+   "n": 56,
+   "cik": "0002074564",
+   "accession": "0002074564-26-000005",
+   "issuer": "CORGI INSURANCE SERVICES, INC.",
+   "previous_names": [],
+   "filing": {
+    "city": "SAN FRANCISCO",
+    "state": "CA",
+    "year_of_inc": 2024,
+    "date_filed": "2026-09-04",
+    "industry": "Insurance",
+    "amount_sold": 16199417,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "corgi.insure",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Corgi Insurance Services, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name on homepage; startup insurance, SF"
+  },
+  {
+   "n": 57,
+   "cik": "0002147559",
+   "accession": "0002147559-26-000001",
+   "issuer": "Flytechy, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "CATALDO",
+    "state": "ID",
+    "year_of_inc": 2024,
+    "date_filed": "2026-08-25",
+    "industry": "Other Technology",
+    "amount_sold": 131643,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "fishtechy.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Flytechy Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address on terms (brand Fishtechy)"
+  },
+  {
+   "n": 58,
+   "cik": "0002158087",
+   "accession": "0002158087-26-000001",
+   "issuer": "SkyNexus AI Corp.",
+   "previous_names": [
+    "SkyNexus AI, LLC"
+   ],
+   "filing": {
+    "city": "Boston",
+    "state": "MA",
+    "year_of_inc": 2025,
+    "date_filed": "2026-10-06",
+    "industry": "Other Technology",
+    "amount_sold": 100000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "skynexus.ai",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "SkyNexus AI Corp."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address (Boston)"
+  },
+  {
+   "n": 59,
+   "cik": "0002149786",
+   "accession": "0002149786-26-000001",
+   "issuer": "AlpacaX Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "MENLO PARK",
+    "state": "CA",
+    "year_of_inc": 2025,
+    "date_filed": "2026-08-13",
+    "industry": "Computers",
+    "amount_sold": 100000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "alpacax.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "AlpacaX Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name and filing street address (Menlo Park)"
+  },
+  {
+   "n": 60,
+   "cik": "0002069594",
+   "accession": "0002069594-26-000002",
+   "issuer": "Clinware Solutions, Inc.",
+   "previous_names": [],
+   "filing": {
+    "city": "APEX",
+    "state": "NC",
+    "year_of_inc": 2025,
+    "date_filed": "2026-09-10",
+    "industry": "Computers",
+    "amount_sold": 4916000,
+    "entity_type": "Corporation",
+    "jurisdiction": "DELAWARE"
+   },
+   "domain": "clinware.com",
+   "tier": "A",
+   "evidence": {
+    "path": "/",
+    "span": "Clinware Solutions, Inc."
+   },
+   "verdict": "SAME",
+   "reason": "legal name on all pages; NC address next to filing city"
+  }
+ ],
+ "regressions": [
+  {
+   "id": "cado",
+   "sample_n": 5,
+   "hand_check": "DIFFERENT",
+   "issuer": {
+    "cik": "0002145796",
+    "name": "Cado Inc.",
+    "previous_names": [],
+    "city": "Evanston",
+    "state": "IL",
+    "year_of_inc": 2026,
+    "filed_year": 2026
+   },
+   "domains": [
+    {
+     "domain": "cado.com",
+     "pages": [
+      {
+       "path": "/",
+       "title": "cado - カドー公式サイト | 空気をデザインする",
+       "description": "カドー公式サイト | 空気をデザインする世界No.1の清浄能力を持つ空気清浄機や、パワフルなミストとデザイン性を追求した加湿器等を製造・販売。キレイな空気を取り戻し、すべては豊かな空間のために。",
+       "blocks": [
+        "CLUB CADO",
+        "© 2026 cado Co., Ltd."
+       ]
+      }
+     ]
+    }
+   ],
+   "shadow": {
+    "outcome": "linked",
+    "tier": "A",
+    "path": "/",
+    "span": "cado Co."
+   },
+   "expected": {
+    "outcome": "tier_c",
+    "tier": "C",
+    "domain": null,
+    "path": null,
+    "span": null,
+    "domains": [
+     "cado.com"
+    ]
+   }
+  },
+  {
+   "id": "core_automation",
+   "sample_n": 9,
+   "hand_check": "DIFFERENT",
+   "issuer": {
+    "cik": "0002148145",
+    "name": "Core Automation, Inc.",
+    "previous_names": [],
+    "city": "SAN FRANCISCO",
+    "state": "CA",
+    "year_of_inc": 2026,
+    "filed_year": 2026
+   },
+   "domains": [
+    {
+     "domain": "coreautomation.com",
+     "pages": [
+      {
+       "path": "/",
+       "title": "Core Automation Inc. – Accuracy, Efficiency, Automation – it's at the Core!",
+       "description": "",
+       "blocks": [
+        "Core Automation, Inc. is a California-based electrical engineering firm specializing in industrial facility electrical/control design, with a focus on the food and beverage, pharmaceutical, discrete, and bulk manufacturing environments.",
+        "With our fabrication facility strategically located in Central Northern California (Sacramento) and many years of experience…",
+        "©2001 - 2022 Core Automation, Inc. All rights reserved / Privacy / Contact Us / FAQs"
+       ]
+      }
+     ]
+    }
+   ],
+   "shadow": {
+    "outcome": "linked",
+    "tier": "A",
+    "path": "/",
+    "span": "Core Automation, Inc."
+   },
+   "expected": {
+    "outcome": "tier_c",
+    "tier": "C",
+    "domain": null,
+    "path": null,
+    "span": null,
+    "domains": [
+     "coreautomation.com"
+    ]
+   }
+  },
+  {
+   "id": "left_main_rei",
+   "sample_n": null,
+   "tier_c_sample_n": 20,
+   "hand_check": "SAME",
+   "issuer": {
+    "cik": "0001967300",
+    "name": "Left Main REI Inc.",
+    "previous_names": [],
+    "city": "CHARLOTTE",
+    "state": "NC",
+    "year_of_inc": 2025,
+    "filed_year": 2026
+   },
+   "domains": [
+    {
+     "domain": "leftmainrei.co",
+     "pages": [
+      {
+       "path": "/",
+       "title": "Left Main REI | Real Estate Investor CRM",
+       "description": "Left Main REI is a powerful real estate investor CRM built on Salesforce to manage leads, automate follow-up, and scale acquisitions with confidence.",
+       "blocks": [
+        "Unlike generic CRMs and disconnected tools, Left Main REI is built for scaling investment companies. Powered by Salesforce and AI, it combines enterprise-grade reliability with investor-focused workflows.",
+        "Copyright © 2026 Left Main REI"
+       ]
+      },
+      {
+       "path": "/terms-of-service/",
+       "title": "Terms of Service | Left Main REI",
+       "description": "Read Left Main REI’s terms of service covering use, responsibilities, and policies for the real estate CRM platform.",
+       "blocks": [
+        "“SFDC” means salesforce.com, inc. a Delaware corporation having its principal place of business at Salesforce Tower, 415 Mission Street, 3rd Floor, San Francisco, California, 94105.",
+        "Copyright © 2026 Left Main REI"
+       ]
+      },
+      {
+       "path": "/privacy-policy/",
+       "title": "Privacy Policy | Left Main REI",
+       "description": "Read Left Main REI’s privacy policy outlining data use, protection, and compliance for the real estate investor CRM platform.",
+       "blocks": [
+        "Thank you for choosing to be part of our community at Left Main REI Inc, a North Carolina Corporation doing business as Left Main REI (“Company”, “we”, “us”, “our”). We are committed to protecting your personal information and your right to privacy.",
+        "California Consumer Privacy Act (CCPA) Privacy Notice",
+        "The following rights and regulations apply to California residents:",
+        "Charlotte, NC 28273",
+        "Copyright © 2026 Left Main REI"
+       ]
+      }
+     ]
+    }
+   ],
+   "shadow": {
+    "outcome": "tier_c",
+    "tier": "C",
+    "path": null,
+    "span": null
+   },
+   "expected": {
+    "outcome": "linked",
+    "tier": "A",
+    "domain": "leftmainrei.co",
+    "path": "/privacy-policy/",
+    "span": "Left Main REI Inc",
+    "domains": []
+   }
+  }
+ ]
+}

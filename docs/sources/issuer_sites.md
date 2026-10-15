@@ -4,9 +4,11 @@ Decision: [ADR 0035](../decisions/0035-issuer-first-discovery.md) (proposed). Co
 `tell discover issuers [--since DATE] [--limit N] [--shadow | --apply] [--retry-due]
 [--concurrency C] [--max-minutes M]`. Code: `tell/discovery/issuers.py` (network and
 database), `tell/resolve/evidence.py` (the pure evidence rule). Tests:
-`tests/discovery/test_issuers.py`, `tests/resolve/test_evidence.py`. Fixtures:
-`tests/fixtures/issuer_sites/{normal,empty_board,drift}`, and the frozen hand check
-`tests/resolve/issuer_evidence_20261014.json`.
+`tests/discovery/test_issuers.py`, `tests/resolve/test_evidence.py`,
+`tests/resolve/test_issuer_links.py`. Fixtures:
+`tests/fixtures/issuer_sites/{normal,empty_board,drift}`, the design's frozen hand check
+`tests/resolve/issuer_evidence_20261014.json`, and the shadow run's frozen hand check
+`tests/resolve/issuer_links_20261015.json`.
 
 This is not a collector: it writes no events. It reads the Form D events EDGAR already
 stored, looks for each new issuer's own website, and creates the company only when the
@@ -90,9 +92,35 @@ What the run prints for that issuer (one JSON line; the run line follows):
 | `tier_c` | only weaker evidence (the brand in a title or description) | a review item when the amount sold is at least $1M, else nothing but the record |
 | `no_domain` | nothing found | retried 30 and 90 days after the first try (selected from the issuer's newest eligible filing whatever its date, so the plain daily step runs the 90-day retry although that filing is then outside the 90-day window), and on the issuer's next filing |
 | `known_cik` | a company took the CIK while the network half ran | nothing |
+| error | the investigation (or the write) raised | counted in `runs.errors`; the issuer is recorded `no_domain` with the same retry schedule (a JSON line with `"outcome": "error"` and `next_retry_at`), so it is not fetched again on every run |
+
+A created company gets no explicit board-discovery job: it has no `ats_boards` row, so the
+next `tell discover batch` run picks it up (oldest company first).
 
 `--shadow` (the default) writes nothing at all and prints the same lines, for the hand
 checks in ADR 0035's measurement plan.
+
+## Evidence rule, as shipped
+
+`tell/resolve/evidence.py` decides from the page bodies (ADR 0035 has the full rule):
+
+- **Tier A**: the full legal name with a legal form of the issuer's own family
+  (Inc/Incorporated, Corp/Corporation, PBC/Public Benefit Corporation, Co./Company), not
+  followed by another form (`cado Co., Ltd.` is not `Cado Inc.`).
+- **Tier B**: the full brand plus an address in the Form D city or state.
+- **Demoted to tier C**: an address the site states as its own in another state (for tier
+  A, another city and state, and never compared for a registered-agent filing address;
+  privacy-law boilerplate, another entity's office and agent addresses do not count), or a
+  site older than the issuer (earliest copyright or founding year more than 2 years before
+  the year of incorporation) or stale (latest copyright year before the filing year minus
+  1).
+- **Unreadable pages**: control bytes are stripped before parsing; a page lxml still
+  cannot read counts as an empty page.
+
+Shadow run 2026-10-15 (1,019 issuers, 300 tier A/B; private report in `tell-private`):
+58 of 60 hand-checked links correct before the fixes. Re-read with the fixed rule, both
+wrong links drop to tier C and 54 of the 57 re-readable correct ones stay at A/B (one
+`other_legal_form`, two `stale_site`).
 
 ## Fixtures
 
@@ -100,4 +128,7 @@ checks in ADR 0035's measurement plan.
 `empty_board` (the guessed domain belongs to someone else), `drift` (the legal entity line
 moved into a script and the title; the contract test fails loudly). Under 5 KB in all, no
 person's data. The real excerpts of the design's hand check are in
-`tests/resolve/issuer_evidence_20261014.json`.
+`tests/resolve/issuer_evidence_20261014.json`; the shadow run's 60 hand-checked links
+(company and filing facts, stored evidence, verdicts) and trimmed excerpts of its three
+regression cases (Cado, Core Automation, Left Main REI; fetched once, 2026-10-15) are in
+`tests/resolve/issuer_links_20261015.json`.

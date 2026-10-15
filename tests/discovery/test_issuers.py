@@ -822,6 +822,88 @@ def test_one_failing_issuer_does_not_stop_the_run(
     run_row = db_session.get(Run, result.run_id)
     assert run_row is not None
     assert run_row.errors == 1
+    # The failed issuer is recorded as tried, with the usual retry date, so the next run does
+    # not select and fetch it again (shadow run 2026-10-15: 8 issuers re-fetched every run).
+    row = db_session.get(IssuerDiscovery, "0002990012")
+    assert row is not None
+    assert (row.status, row.attempts, row.tier, row.domain, row.evidence) == (
+        "no_domain",
+        1,
+        None,
+        None,
+        None,
+    )
+    assert row.next_retry_at == NOW + timedelta(days=RETRY_AFTER_DAYS[0])
+    later = NOW + timedelta(days=1)
+    assert select_issuers(db_session, now=later) == []
+    due = select_issuers(db_session, now=NOW + timedelta(days=RETRY_AFTER_DAYS[0]))
+    assert [(i.cik, i.retry) for i in due] == [("0002990012", True)]
+
+
+def test_record_error_never_overwrites_another_outcome(db_session: Session) -> None:
+    issuer = issuers.Issuer(cik=CIK, name=NAME, event_id="e1", filed_on="2026-10-12")
+    db_session.add(
+        IssuerDiscovery(cik=CIK, status="tier_c", attempts=1, created_at=NOW, domain="q.com")
+    )
+    db_session.flush()
+    assert issuers.record_error(db_session, issuer, now=NOW) is False
+    row = db_session.get(IssuerDiscovery, CIK)
+    assert row is not None
+    assert (row.status, row.attempts, row.domain) == ("tier_c", 1, "q.com")
+    db_session.add(Company(domain="held.example", name="Held", cik=CIK))
+    db_session.flush()
+    other = issuers.Issuer(cik=CIK, name=NAME, event_id="e1", filed_on="2026-10-12")
+    assert issuers.record_error(db_session, other, now=NOW) is False
+
+
+def test_record_error_failing_write_is_logged_not_raised(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_: Any, **__: Any) -> None:
+        raise RuntimeError("database gone")
+
+    monkeypatch.setattr(issuers, "_company_by_cik", boom)
+    issuer = issuers.Issuer(cik=CIK, name=NAME, event_id="e1", filed_on="2026-10-12")
+    assert issuers.record_error(db_session, issuer, now=NOW) is False
+    assert db_session.get(IssuerDiscovery, CIK) is None
+
+
+def test_a_page_with_control_characters_is_read_not_an_error(
+    db_session: Session, client: httpx.Client, router: respx.MockRouter
+) -> None:
+    """lxml refused control characters ("All strings must be XML compatible") and the
+    issuer was never recorded; the page is now read without them."""
+    ashby_none(router)
+    home = fixture("normal", "home.html").replace(b"<main>", b"<main>\x01\x00<!-- x -->\x0b")
+    terms = fixture("normal", "terms.html").replace(b"</p>", b"</p>\x1f", 1)
+    router.get(f"{BASE}/robots.txt").respond(200, content=fixture("normal", "robots.txt"))
+    router.get(f"{BASE}/").respond(200, content=home)
+    router.get(f"{BASE}/legal/terms-of-service").respond(200, content=terms)
+    router.get(url__startswith=f"{BASE}/").respond(404)
+    form_d(db_session)
+    result = run(db_session, client)
+    assert result.errors == []
+    assert [(r.outcome, r.tier) for r in result.results] == [("linked", "A")]
+
+
+def test_the_filing_years_reach_the_evidence_rule(
+    db_session: Session, client: httpx.Client, router: respx.MockRouter
+) -> None:
+    """An older company with the issuer's exact legal name (shadow run 2026-10-15, Core
+    Automation) is tier C: the profile carries the filing's year of incorporation."""
+    ashby_none(router)
+    home = fixture("normal", "home.html").replace(b"&copy; 2026", b"&copy; 2001 - 2022")
+    router.get(f"{BASE}/robots.txt").respond(200, content=fixture("normal", "robots.txt"))
+    router.get(f"{BASE}/").respond(200, content=home)
+    router.get(f"{BASE}/legal/terms-of-service").respond(
+        200, content=fixture("normal", "terms.html")
+    )
+    router.get(url__startswith=f"{BASE}/").respond(404)
+    form_d(db_session, year_of_inc=2025)
+    [issuer] = select_issuers(db_session, now=NOW)
+    assert (issuer.year_of_inc, issuer.profile().filed_year) == (2025, 2026)
+    result = run(db_session, client)
+    assert [(r.outcome, r.tier) for r in result.results] == [("tier_c", "C")]
 
 
 def test_out_of_time_defers_issuers(
