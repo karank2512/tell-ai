@@ -1,6 +1,6 @@
 # 0035. Issuer-first discovery, rule R0, and the evidence rule for non-YC companies
 
-- Status: proposed (2026-10-15; needs the owner's sign-off: it deviates from SPEC section 6
+- Status: accepted (proposed 2026-10-15; confirmed by Karan 2026-10-15)
   and is a SPEC section 17-style business rule)
 - Date: 2026-10-15
 

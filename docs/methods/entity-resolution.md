@@ -148,7 +148,7 @@ additionally writes the queue item's name as a `manual` alias.
 
 | Rule | Condition | Confidence | Outcome |
 | --- | --- | --- | --- |
-| R0 CIK (ADR 0035, proposed) | an EDGAR event's CIK equals `companies.cik` and that CIK has a trusted `cik_source` | 0.99 | auto-link, trusted, no Form D guards |
+| R0 CIK (ADR 0035) | an EDGAR event's CIK equals `companies.cik` and that CIK has a trusted `cik_source` | 0.99 | auto-link, trusted, no Form D guards |
 | R1 domain | the source URL is on the watched domain (`on_domain_company_id`: board found by discovery, company RSS) | 0.98 | auto-link |
 | R2 exact alias | normalized name, or its alt form, equals an alias held by exactly one company | 0.95 | auto-link |
 | R3 name + geography | `rapidfuzz.fuzz.token_set_ratio(norm, alias) >= 92`, issuer state == `hq_state` (city == `hq_city` when either state is missing), the geography singles out **exactly one** company, and the superset guard holds | 0.90 | auto-link, logged; **review (R5) for a Form D** (ADR 0034) |
@@ -206,7 +206,7 @@ other EDGAR forms are matched without them. The rule order and confidences stay 
   from the filing year minus 2 on (`over_five_years_for_recent_batch`; for 2026 filings,
   batches from 2024 on).
 
-- **(f) Site evidence for a company without YC facts (ADR 0035, proposed).** When the
+- **(f) Site evidence for a company without YC facts (ADR 0035).** When the
   company has no `yc_status`, an auto-link passes only when the issuer's CIK is the
   company's CIK with a trusted `cik_source`, or a `linked` tier A/B `issuer_discovery`
   record exists for the (CIK, company domain) pair (`no_site_evidence`). See below.
@@ -216,7 +216,7 @@ review item carry `guard_failed`, `demoted_from` and `proposed_company_id`, so t
 sees which company was proposed and why it was held back. A human verdict links it with full
 enrichment.
 
-### Issuer-first companies: rule R0 and guard (f) (ADR 0035, proposed)
+### Issuer-first companies: rule R0 and guard (f) (ADR 0035)
 
 The YC seed gives about 18 trusted Form D links per 90 days, far from the 100 SPEC 13.1
 needs. Issuer-first discovery creates a company from a Form D issuer when the company's own
