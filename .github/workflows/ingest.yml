@@ -173,10 +173,12 @@ jobs:
       ${{ needs.preflight.outputs.enabled == 'true' &&
       (!inputs.source || inputs.source == 'edgar' || inputs.source == 'news') }}
     runs-on: ubuntu-latest
-    # 45, not 30: the second production run took 29.9 of 30 minutes. News stops itself
-    # after its own 25-minute run budget (RUN_BUDGET in tell/collectors/news.py), so EDGAR
-    # gets the rest; a slow EDGAR day no longer cuts news off mid-run.
-    timeout-minutes: 45
+    # 45 was enough for EDGAR + news (the second production run took 29.9 of the earlier
+    # 30). News stops itself after its own 25-minute run budget (RUN_BUDGET in
+    # tell/collectors/news.py), so EDGAR gets the rest. The extra 15 minutes are for the
+    # optional issuer-first step (ADR 0035), which stops starting issuers after 12 minutes
+    # and has its own 15-minute step timeout; with the step off they are never used.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
@@ -187,16 +189,32 @@ jobs:
       - name: Ingest edgar
         if: ${{ !inputs.source || inputs.source == 'edgar' }}
         run: uv run tell ingest --source edgar
+      - name: Discover issuers (issuer-first, ADR 0035)
+        # Off unless the Actions variable TELL_ISSUER_DISCOVERY is "on" (the owner turns it on
+        # after accepting ADR 0035 and running migration 0009; docs/deploy/github-actions.md).
+        # Runs only after a successful EDGAR ingest, on the filings it just stored: about 12
+        # new issuers a day, each host at 1 request per second, up to 8 issuers in flight.
+        # No new issuer starts after 12 minutes; a failure here never stops news (below).
+        if: >-
+          ${{ success() && vars.TELL_ISSUER_DISCOVERY == 'on' &&
+          (!inputs.source || inputs.source == 'edgar') }}
+        timeout-minutes: 15
+        run: uv run tell discover issuers --apply
       - name: Ingest news
         # News runs even when EDGAR failed: the two sources are independent.
         if: ${{ !cancelled() && (!inputs.source || inputs.source == 'news') }}
         run: uv run tell ingest --source news
       - name: Run lines to the step summary
         if: always()
+        env:
+          ISSUER_DISCOVERY: ${{ vars.TELL_ISSUER_DISCOVERY }}
         run: |
           {
             echo '```json'
             uv run tell runlog --source edgar || true
+            if [ "$ISSUER_DISCOVERY" = on ]; then
+              uv run tell runlog --source issuer_discovery || true
+            fi
             uv run tell runlog --source news || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

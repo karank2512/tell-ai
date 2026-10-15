@@ -39,19 +39,22 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tell.collectors.base import Event, WriteStats, update_event_payload, write_events
-from tell.models import Company, EventRow
+from tell.models import CIK_SOURCES, Company, EventRow
 
 __all__ = [
     "FORM_D_AMENDMENT",
     "FORM_D_FILED",
     "QUARTERLY_FILES",
     "SOURCE",
+    "TRUSTED_CIK_SOURCES",
+    "CikHolder",
     "FormDFiling",
     "FormDFilings",
     "FormDIngest",
     "amendment_entry",
     "amendment_patch",
     "cik10",
+    "cik_holders",
     "company_ids_by_cik",
     "filing_folder_url",
     "formd_event",
@@ -516,18 +519,54 @@ def amendment_patch(original: Mapping[str, Any], filing: FormDFiling) -> dict[st
 # --- database side ---------------------------------------------------------------------------------
 
 
-def company_ids_by_cik(session: Session, ciks: Iterable[str]) -> dict[str, int]:
-    """``{10-digit cik: companies.id}`` for the CIKs that belong to a known company."""
+TRUSTED_CIK_SOURCES: frozenset[str] = frozenset(CIK_SOURCES)
+"""``companies.cik_source`` values whose CIK links an EDGAR filing at ingest: the set rule
+R0 trusts (:data:`tell.resolve.guards.TRUSTED_CIK_SOURCES`, ADR 0035). ``NULL`` (origin
+unknown) is not trusted."""
+
+
+@dataclass(frozen=True)
+class CikHolder:
+    """The company holding a CIK, and whether that CIK may link a filing by itself."""
+
+    company_id: int
+    trusted: bool
+    """``companies.cik_source`` is in :data:`TRUSTED_CIK_SOURCES`."""
+
+
+def cik_holders(session: Session, ciks: Iterable[str]) -> dict[str, CikHolder]:
+    """``{10-digit cik: CikHolder}`` for every CIK some company holds, trusted or not.
+
+    The EDGAR collector uses the untrusted ones only to decide which 8-Ks belong to a
+    monitored company (and are worth a submissions request); linking goes through
+    :func:`company_ids_by_cik`.
+    """
     wanted = {cik10(c) for c in ciks if str(c).strip().isdigit()}
     if not wanted:
         return {}
     candidates = wanted | {str(int(c)) for c in wanted}
-    rows = session.execute(select(Company.id, Company.cik).where(Company.cik.in_(candidates)))
-    out: dict[str, int] = {}
-    for company_id, cik in rows:
-        if cik is not None:
-            out[cik10(cik)] = company_id
+    rows = session.execute(
+        select(Company.id, Company.cik, Company.cik_source).where(Company.cik.in_(candidates))
+    )
+    out: dict[str, CikHolder] = {}
+    for company_id, cik, cik_source in rows:  # every cik matched a digit-only candidate
+        holder = CikHolder(company_id, cik_source in TRUSTED_CIK_SOURCES)
+        key = cik10(str(cik))
+        if key not in out or (holder.trusted and not out[key].trusted):
+            out[key] = holder
     return out
+
+
+def company_ids_by_cik(session: Session, ciks: Iterable[str]) -> dict[str, int]:
+    """``{10-digit cik: companies.id}`` for the CIKs a company holds with a trusted
+    ``cik_source`` (ADR 0035, the rule R0 set).
+
+    Ingest links a filing by CIK only through this map. A company whose CIK has an unknown
+    origin (``cik_source`` NULL, for example one written by a link the ADR 0034 guards would
+    now refuse) does not get the filing here: the event is written unlinked and left for
+    ``tell resolve run``, whose name rules and guards decide it.
+    """
+    return {cik: h.company_id for cik, h in cik_holders(session, ciks).items() if h.trusted}
 
 
 def _find_original(session: Session, filing: FormDFiling) -> tuple[str, dict[str, Any]] | None:

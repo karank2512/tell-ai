@@ -6,7 +6,8 @@ below its floor. The floors live in ``pyproject.toml``::
 
     [tool.tell.coverage]
     overall = 80
-    packages = { "tell/collectors" = 90, "tell/resolve" = 90, "tell/signals" = 90 }
+    packages = { "tell/collectors" = 90, "tell/discovery" = 90,
+                 "tell/resolve" = 90, "tell/signals" = 90 }
 
 When the table is missing the defaults above apply. A package floor is skipped while
 that package has no measured statements yet, so the gate works from Phase 0 onwards.
@@ -28,6 +29,7 @@ DEFAULT_PYPROJECT = REPO_ROOT / "pyproject.toml"
 OVERALL_FLOOR = 80.0
 PACKAGE_FLOORS: dict[str, float] = {
     "tell/collectors": 90.0,
+    "tell/discovery": 90.0,
     "tell/resolve": 90.0,
     "tell/signals": 90.0,
 }

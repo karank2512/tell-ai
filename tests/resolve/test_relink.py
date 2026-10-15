@@ -273,6 +273,7 @@ def test_cik_links_follow_the_link_that_wrote_the_cik(db_session: Session) -> No
     backfill_aliases(db_session)
     wrong = _event(db_session, "ev-r3", "Zeta Analytica LLC", cik="0000000777")
     _old_link(db_session, wrong, zeta.id, "R3")
+    zeta.cik_source = "guarded_r2"  # however it was labelled, the source goes with the CIK
     follower = _event(db_session, "ev-follow", "Zeta Analytica LLC", cik="0000000777")
     follower.company_id = zeta.id  # the collector linked it by the CIK the R3 link wrote
     db_session.flush()
@@ -283,7 +284,7 @@ def test_cik_links_follow_the_link_that_wrote_the_cik(db_session: Session) -> No
     assert reasons["ev-r3"] == [R3_REASON]
     assert "cik_untrusted" in reasons["ev-follow"]
     db_session.refresh(zeta)
-    assert (zeta.cik, zeta.legal_name) == (None, None)
+    assert (zeta.cik, zeta.cik_source, zeta.legal_name) == (None, None, None)
     assert _edgar_aliases(db_session, zeta) == set()
     # both events now wait in review (one item each)
     assert len(db_session.scalars(select(ReviewQueueItem)).all()) == 2
@@ -394,3 +395,39 @@ def test_rejected_pair_is_not_reopened(db_session: Session) -> None:
     assert applied["review_items_opened"] == 0
     assert event.payload["match"]["rejected"] is True
     assert event.company_id is None
+
+
+def test_r0_links_of_an_issuer_first_company_are_kept(db_session: Session) -> None:
+    """An R0 link rests on a CIK discovery set (ADR 0035); relink never undoes it, even when
+    the issuer's name no longer finds the company."""
+    company = Company(
+        domain="veined.example",
+        name="Veined",
+        source="issuer_first",
+        cik="0002100001",
+        cik_source="issuer_first_a",
+    )
+    db_session.add(company)
+    db_session.flush()
+    backfill_aliases(db_session)
+    case = {
+        "event_id": "ev-r0",
+        "type": "form_d_filed",
+        "payload": {
+            "issuer_name": "Entirely Renamed Holdings Inc",
+            "cik": "0002100001",
+            "entity_type": "Corporation",
+            "jurisdiction_of_inc": "DELAWARE",
+            "year_of_inc": 2025,
+            "date_filed": "2026-10-01",
+            "previous_names": [],
+        },
+    }
+    event = add_event(db_session, case)
+    assert resolve_events(db_session, now=NOW).by_rule == {"R0": 1}
+    assert event.company_id == company.id
+    report = relink_formd(db_session, now=LATER, apply=True)
+    assert (report["kept"], report["unlinked"], report["ciks_reset"]) == (1, 0, 0)
+    assert event.company_id == company.id
+    db_session.refresh(company)
+    assert (company.cik, company.cik_source) == ("0002100001", "issuer_first_a")

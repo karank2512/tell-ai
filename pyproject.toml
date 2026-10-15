@@ -191,4 +191,4 @@ pretty_print = false
 # A package floor is skipped while that package has no measured statements yet.
 [tool.tell.coverage]
 overall = 80
-packages = { "tell/collectors" = 90, "tell/resolve" = 90, "tell/signals" = 90 }
+packages = { "tell/collectors" = 90, "tell/discovery" = 90, "tell/resolve" = 90, "tell/signals" = 90 }

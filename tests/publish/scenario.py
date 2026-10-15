@@ -84,7 +84,9 @@ def replay(session: Session, spec: CollectorSpec, case: str, now: datetime) -> N
 def _company(session: Session, domain: str, name: str) -> Company:
     company = session.scalars(select(Company).where(Company.domain == domain)).one_or_none()
     if company is None:
-        company = Company(domain=domain, name=name)
+        # A YC directory company (ADR 0009): the Form D guards' YC facts are present, so
+        # guard (f) for companies without them (ADR 0035) does not apply.
+        company = Company(domain=domain, name=name, yc_status="Active")
         session.add(company)
         session.flush()
     return company

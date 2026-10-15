@@ -441,8 +441,16 @@ def test_formd_payload_fields() -> None:
 
 @pytest.mark.db
 def test_run_fixture_writes_form_d_events_linked_by_cik(db_session: Session) -> None:
-    company = Company(domain="example-robotics.test", name="Example Robotics", cik="0009990001")
-    db_session.add(company)
+    """Only a CIK with a trusted ``cik_source`` links at ingest (ADR 0035); a CIK of unknown
+    origin leaves the filing unlinked for ``tell resolve run``."""
+    company = Company(
+        domain="example-robotics.test",
+        name="Example Robotics",
+        cik="0009990001",
+        cik_source="manual",
+    )
+    untrusted = Company(domain="untrusted.test", name="Untrusted Holder", cik="9990002")
+    db_session.add_all([company, untrusted])
     db_session.flush()
     run_id = start_run(db_session, "edgar", now=NOW)
     result = run_fixture(db_session, FIXTURES / "normal.json", run_id=run_id, now=NOW)
@@ -730,7 +738,9 @@ def _mock_sec(router: respx.MockRouter, *, index_text: str | None = None) -> dic
 def test_collect_end_to_end(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SEC_USER_AGENT", "tell-test/0.1 (ops at example.invalid)")
     get_settings.cache_clear()
-    monitored = Company(domain="monitored.test", name="Monitored Software", cik="0009990020")
+    monitored = Company(
+        domain="monitored.test", name="Monitored Software", cik="0009990020", cik_source="r1"
+    )
     db_session.add(monitored)
     db_session.flush()
     clock = FakeClock()
@@ -1068,6 +1078,42 @@ def test_collect_catches_up_without_holding_a_transaction_across_http(
 
 
 @pytest.mark.db
+def test_collect_leaves_untrusted_cik_events_for_resolve(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A company whose CIK has an unknown origin (``cik_source`` NULL) still marks its 8-Ks
+    as monitored, so they are fetched, but no event is linked to it at ingest."""
+    monkeypatch.setenv("SEC_USER_AGENT", "tell-test/0.1 (ops at example.invalid)")
+    get_settings.cache_clear()
+    trusted = Company(
+        domain="cloud.test", name="Example Cloud", cik="0009990040", cik_source="issuer_first_a"
+    )
+    db_session.add_all(
+        [
+            Company(domain="monitored.test", name="Monitored Software", cik="0009990020"),
+            Company(domain="example-robotics.test", name="Example Robotics", cik="0009990001"),
+            trusted,
+        ]
+    )
+    db_session.flush()
+    with respx.mock(assert_all_called=False) as router:
+        routes = _mock_sec(router)
+        result = collect(
+            db_session, run_id="edgar-run", now=NOW, dates=[DAY], budget=RateBudget(1000, burst=10)
+        )
+    assert result.errors == 0
+    assert routes["subs_8k"].call_count == 1  # still a monitored 8-K filer
+    events = _events(db_session)
+    assert {row.type for row in events} == {FORM_8K_FILED, FORM_D_FILED, FORM_S1_FILED}
+    # the S-1's CIK is trusted (issuer_first_a); everything else waits for resolve
+    assert {(row.type, row.company_id) for row in events} == {
+        (FORM_8K_FILED, None),
+        (FORM_D_FILED, None),
+        (FORM_S1_FILED, trusted.id),
+    }
+
+
+@pytest.mark.db
 def test_collect_with_since_records_it(db_session: Session) -> None:
     with respx.mock(assert_all_called=True) as router:
         router.get(quarter_listing_url(DAY)).respond(200, json=_listing())
@@ -1377,3 +1423,36 @@ def test_quarterly_events_write_and_dedupe_with_daily_keys(db_session: Session) 
     )
     assert (first.inserted, again.inserted, again.skipped) == (2, 0, 2)
     assert edgar_formd.SOURCE == "edgar"
+
+
+@pytest.mark.db
+def test_company_ids_by_cik_trusts_only_a_known_cik_source(db_session: Session) -> None:
+    """ADR 0035: ingest links by CIK only with a trusted ``cik_source`` (the rule R0 set)."""
+    trusted = Company(domain="a.test", name="A", cik="0009990001", cik_source="guarded_r2")
+    unknown = Company(domain="b.test", name="B", cik="9990002")
+    odd = Company(domain="c.test", name="C", cik="0009990003", cik_source="something_else")
+    db_session.add_all([trusted, unknown, odd])
+    db_session.flush()
+    ciks = ["9990001", "0009990002", "0009990003", "not-a-cik", "0009990004"]
+    assert edgar_formd.company_ids_by_cik(db_session, ciks) == {"0009990001": trusted.id}
+    assert edgar_formd.cik_holders(db_session, ciks) == {
+        "0009990001": edgar_formd.CikHolder(trusted.id, True),
+        "0009990002": edgar_formd.CikHolder(unknown.id, False),
+        "0009990003": edgar_formd.CikHolder(odd.id, False),
+    }
+    assert edgar_formd.company_ids_by_cik(db_session, []) == {}
+    # Two spellings of one CIK: the trusted holder wins, whichever row comes first.
+    padded = Company(domain="d.test", name="D", cik="0009990005")
+    bare = Company(domain="e.test", name="E", cik="9990005", cik_source="manual")
+    later = Company(domain="f.test", name="F", cik="0009990006", cik_source="r1")
+    plain = Company(domain="g.test", name="G", cik="9990006")
+    db_session.add_all([padded, bare, later, plain])
+    db_session.flush()
+    assert edgar_formd.company_ids_by_cik(db_session, ["9990005", "9990006"]) == {
+        "0009990005": bare.id,
+        "0009990006": later.id,
+    }
+    assert (
+        frozenset({"issuer_first_a", "issuer_first_b", "r1", "guarded_r2", "manual"})
+        == edgar_formd.TRUSTED_CIK_SOURCES
+    )

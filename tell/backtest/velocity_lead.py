@@ -30,7 +30,8 @@ Versions:
   are invisible, so spikes are undercounted). Filings since :data:`RETRO_SINCE` (2025 Q4)
   from the database (daily index, plus any backfill) and from quarterly Form D data sets
   passed as ``--formd`` (loaded in memory with
-  :func:`tell.collectors.edgar_formd.load_formd_quarterly`, linked by CIK). Same control
+  :func:`tell.collectors.edgar_formd.load_formd_quarterly`, linked by CIK only to a
+  company whose ``cik_source`` is trusted, as at ingest; ADR 0035). Same control
   matching. Coverage: the share of filers with at least one reconstructed posting in the
   12 weeks before the filing.
 * **Retrospective (b), Wayback snapshots.** For filers with a Greenhouse or Lever board,
@@ -285,7 +286,7 @@ def db_filings(session: Session, since: date, now: datetime) -> list[Filing]:
 def quarterly_filings(
     session: Session, paths: Sequence[Path], since: date, now: datetime
 ) -> list[Filing]:
-    """New Form D filings from quarterly data sets, linked to companies by CIK."""
+    """New Form D filings from quarterly data sets, linked to companies by a trusted CIK."""
     out: list[Filing] = []
     for path in paths:
         events = [

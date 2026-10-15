@@ -30,6 +30,7 @@ LATER = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
 
 
 def _company(session: Session, domain: str, name: str, **extra: Any) -> Company:
+    extra.setdefault("yc_status", "Active")  # a YC directory company (guard f is off)
     company = Company(domain=domain, name=name, **extra)
     session.add(company)
     session.flush()
@@ -463,7 +464,15 @@ def test_candidates_capped_at_five_and_ranked(db_session: Session) -> None:
 
 
 def test_confidence_table_is_the_spec_table() -> None:
-    assert CONFIDENCE == {"R1": 0.98, "R2": 0.95, "R3": 0.90, "R4": 0.85, "R5": 0.60, "R6": 0.0}
+    assert CONFIDENCE == {
+        "R0": 0.99,  # ADR 0035: exact CIK with a trusted cik_source
+        "R1": 0.98,
+        "R2": 0.95,
+        "R3": 0.90,
+        "R4": 0.85,
+        "R5": 0.60,
+        "R6": 0.0,
+    }
 
 
 def test_alias_index_reused_across_calls(

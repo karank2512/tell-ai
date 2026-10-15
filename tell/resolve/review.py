@@ -13,7 +13,8 @@ so every rule lives here and is unit-tested without a display.
   resolves through R2); the item's name also becomes a ``manual`` alias of that company
   so the pair never comes back; item ``resolved``.
 * ``create``: a new ``companies`` row (``domain`` required, ``name`` from
-  ``new_company_name`` or the event name), then as ``link``.
+  ``new_company_name`` or the event name, ``source = 'manual'``), then as ``link``. A CIK
+  a verdict writes gets ``cik_source = 'manual'`` (ADR 0035), so rule R0 trusts it.
 * ``reject``: item ``rejected`` with its verdict recorded; the resolver skips the same
   (name, candidates) pair afterwards (:func:`tell.resolve.match.resolve_events`).
 """
@@ -40,11 +41,14 @@ from tell.resolve.match import REVIEW_KIND, add_aliases, link_event
 __all__ = [
     "CSV_CANDIDATES",
     "CSV_COLUMNS",
+    "DISCOVERY_COLUMNS",
+    "DISCOVERY_KEY",
     "VERDICTS",
     "ImportStats",
     "ReviewError",
     "apply_verdict",
     "check_password",
+    "discovery_details",
     "export_review_csv",
     "import_review_csv",
     "open_items",
@@ -55,6 +59,19 @@ VERDICTS: tuple[str, ...] = ("link", "create", "reject")
 
 CSV_CANDIDATES = 3
 """Candidates written per CSV row (``candidate_1_*`` .. ``candidate_3_*``)."""
+
+DISCOVERY_KEY = "issuer_discovery"
+"""The payload key of an item opened by issuer-first discovery (ADR 0035): its proposal
+(reason, tier, domains, evidence, amount sold) sits there, not in ``candidates``."""
+
+DISCOVERY_COLUMNS: tuple[str, ...] = (
+    "discovery_reason",
+    "discovery_tier",
+    "discovery_domains",
+    "discovery_evidence",
+    "discovery_amount_sold",
+)
+"""CSV columns for an issuer-discovery item (blank on every other item)."""
 
 CSV_COLUMNS: tuple[str, ...] = (
     "id",
@@ -68,6 +85,7 @@ CSV_COLUMNS: tuple[str, ...] = (
         for n in range(1, CSV_CANDIDATES + 1)
         for part in ("id", "alias", "ratio")
     ),
+    *DISCOVERY_COLUMNS,
     "verdict",
     "company_id_or_domain",
     "new_company_name",
@@ -86,6 +104,41 @@ def open_items(session: Session, kind: str = REVIEW_KIND) -> list[ReviewQueueIte
         .order_by(ReviewQueueItem.id)
     )
     return list(session.scalars(stmt))
+
+
+def _evidence_text(evidence: Any) -> str:
+    if not isinstance(evidence, dict):
+        return ""
+    path, span = evidence.get("path"), evidence.get("span")
+    if isinstance(path, str) and isinstance(span, str):
+        return f"{path}: {span}"
+    return ""
+
+
+def discovery_details(payload: Mapping[str, Any]) -> dict[str, str]:
+    """The issuer-discovery proposal of an item, one string per :data:`DISCOVERY_COLUMNS`
+    entry (all blank when the item was not opened by ``tell discover issuers``).
+
+    ``discovery_domains`` lists the proposed domains space-separated (a tier C or
+    ``several_domains`` item has no ``candidates``, so this is what a ``create`` verdict
+    needs); ``discovery_evidence`` is ``path: span``.
+    """
+    info = payload.get(DISCOVERY_KEY)
+    if not isinstance(info, Mapping):
+        return dict.fromkeys(DISCOVERY_COLUMNS, "")
+    domains = info.get("domains")
+    amount = info.get("amount_sold")
+    return {
+        "discovery_reason": str(info.get("reason") or ""),
+        "discovery_tier": str(info.get("tier") or ""),
+        "discovery_domains": " ".join(
+            d for d in (domains if isinstance(domains, list) else []) if isinstance(d, str)
+        ),
+        "discovery_evidence": _evidence_text(info.get("evidence")),
+        "discovery_amount_sold": ""
+        if isinstance(amount, bool) or not isinstance(amount, int | float)
+        else str(int(amount)),
+    }
 
 
 def _row(item: ReviewQueueItem) -> dict[str, Any]:
@@ -107,6 +160,7 @@ def _row(item: ReviewQueueItem) -> dict[str, Any]:
         row[f"candidate_{n}_id"] = candidate.get("company_id", "")
         row[f"candidate_{n}_alias"] = candidate.get("alias", "")
         row[f"candidate_{n}_ratio"] = candidate.get("ratio", "")
+    row.update(discovery_details(payload))
     return row
 
 
@@ -144,7 +198,7 @@ def _link(session: Session, item: ReviewQueueItem, company: Company, now: dateti
     name = str(item.payload.get("name") or "")
     event = _event(session, item)
     if event is not None:
-        link_event(session, event, company.id)
+        link_event(session, event, company.id, cik_source="manual")
         match = dict(event.payload.get("match") or {})
         match.update(
             {
@@ -208,7 +262,7 @@ def apply_verdict(
         company = session.scalars(select(Company).where(Company.domain == domain)).first()
         if company is None:
             name = (new_company_name or "").strip() or str(item.payload.get("name") or domain)
-            company = Company(domain=domain, name=name)
+            company = Company(domain=domain, name=name, source="manual")
             session.add(company)
             session.flush()
         _link(session, item, company, when)

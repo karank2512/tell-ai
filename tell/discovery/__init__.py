@@ -2,6 +2,8 @@
 
 * :mod:`tell.discovery.ats` finds the ATS board behind a domain and writes ``ats_boards``.
 * :mod:`tell.discovery.yc` seeds ``companies`` from the public YC company directory.
+* :mod:`tell.discovery.issuers` creates companies from Form D issuers on site evidence
+  (issuer-first discovery, ADR 0035).
 * :mod:`tell.discovery.cli` is the ``tell discover`` typer sub-app.
 
 The domain helpers live here because both modules normalise domains the same way:

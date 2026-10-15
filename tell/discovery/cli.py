@@ -15,6 +15,13 @@ Commands:
 * ``prune-platform-companies [--dry-run | --apply]``: list companies keyed by a platform
   domain (``apple.com``, ``*.vercel.app``, ...; ADR 0033); ``--apply`` deletes those with
   no events, boards, watchlist items, signals or feedback. Dry run by default.
+* ``issuers [--since DATE] [--limit N] [--shadow | --apply] [--retry-due]
+  [--concurrency C] [--max-minutes M]``: issuer-first discovery (ADR 0035,
+  :mod:`tell.discovery.issuers`): find the own site of each new Form D issuer (a Delaware
+  corporation no company holds yet) and, on tier A/B site evidence, create the company and
+  link its filings by CIK (rule R0). Shadow by default (writes nothing, prints what it
+  would do); ``--apply`` writes and commits after every issuer. ``--retry-due`` takes only
+  the ``no_domain`` issuers whose retry is due. One JSON line per issuer, then the run line.
 
 The other commands commit on success. Results print as JSON lines on stdout.
 """
@@ -23,6 +30,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -32,6 +40,13 @@ from sqlalchemy.orm import Session
 from tell.collectors.base import utcnow
 from tell.db import session_scope
 from tell.discovery.ats import discover_batch, discover_domain
+from tell.discovery.issuers import (
+    DEFAULT_CONCURRENCY,
+    DEFAULT_LIMIT,
+    DEFAULT_MAX_MINUTES,
+    DEFAULT_WINDOW_DAYS,
+    discover_issuers,
+)
 from tell.discovery.reverify import reverify_guesses
 from tell.discovery.yc import (
     fetch_directory,
@@ -173,3 +188,57 @@ def prune_platform_companies_command(
     with session_scope() as session:
         report = prune_platform_companies(session, apply=not dry_run)
         typer.echo(json.dumps(report, sort_keys=True))
+
+
+@app.command("issuers")
+def issuers_command(  # noqa: PLR0917 - typer maps each parameter to one CLI option
+    since: Annotated[
+        datetime | None,
+        typer.Option(
+            "--since",
+            formats=["%Y-%m-%d"],
+            help=f"Filings on or after this date (default: the last {DEFAULT_WINDOW_DAYS} days).",
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        typer.Option("--limit", min=0, help="Max issuers this run (new first, then retries)."),
+    ] = DEFAULT_LIMIT,
+    shadow: Annotated[
+        bool,
+        typer.Option(
+            "--shadow/--apply",
+            help="Shadow (default): write nothing, print the decisions. --apply writes them.",
+        ),
+    ] = True,
+    retry_due: Annotated[
+        bool,
+        typer.Option("--retry-due", help="Only the no_domain issuers whose retry is due."),
+    ] = False,
+    concurrency: Annotated[
+        int,
+        typer.Option("--concurrency", min=1, max=8, help="Issuers in flight at once."),
+    ] = DEFAULT_CONCURRENCY,
+    max_minutes: Annotated[
+        float,
+        typer.Option("--max-minutes", min=0.01, help="Start no new issuer after this."),
+    ] = DEFAULT_MAX_MINUTES,
+) -> None:
+    """Create companies from new Form D issuers on site evidence (ADR 0035)."""
+    start = since.replace(tzinfo=UTC) if since is not None else None
+    with session_scope() as session, make_client() as client:
+        run = discover_issuers(
+            session,
+            client,
+            now=utcnow(),
+            apply=not shadow,
+            since=start,
+            limit=limit,
+            retry_due=retry_due,
+            concurrency=concurrency,
+            max_minutes=max_minutes,
+            commit=Session.commit,
+        )
+        for result in run.results:
+            typer.echo(json.dumps(result.log_record(), sort_keys=True))
+        typer.echo(json.dumps(run.run_line(), sort_keys=True))

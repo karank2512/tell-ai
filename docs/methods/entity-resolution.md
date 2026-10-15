@@ -148,6 +148,7 @@ additionally writes the queue item's name as a `manual` alias.
 
 | Rule | Condition | Confidence | Outcome |
 | --- | --- | --- | --- |
+| R0 CIK (ADR 0035, proposed) | an EDGAR event's CIK equals `companies.cik` and that CIK has a trusted `cik_source` | 0.99 | auto-link, trusted, no Form D guards |
 | R1 domain | the source URL is on the watched domain (`on_domain_company_id`: board found by discovery, company RSS) | 0.98 | auto-link |
 | R2 exact alias | normalized name, or its alt form, equals an alias held by exactly one company | 0.95 | auto-link |
 | R3 name + geography | `rapidfuzz.fuzz.token_set_ratio(norm, alias) >= 92`, issuer state == `hq_state` (city == `hq_city` when either state is missing), the geography singles out **exactly one** company, and the superset guard holds | 0.90 | auto-link, logged; **review (R5) for a Form D** (ADR 0034) |
@@ -205,10 +206,55 @@ other EDGAR forms are matched without them. The rule order and confidences stay 
   from the filing year minus 2 on (`over_five_years_for_recent_batch`; for 2026 filings,
   batches from 2024 on).
 
+- **(f) Site evidence for a company without YC facts (ADR 0035, proposed).** When the
+  company has no `yc_status`, an auto-link passes only when the issuer's CIK is the
+  company's CIK with a trusted `cik_source`, or a `linked` tier A/B `issuer_discovery`
+  record exists for the (CIK, company domain) pair (`no_site_evidence`). See below.
+
 A failed guard demotes the auto-link to **R5 review, never R6**: the audit record and the
 review item carry `guard_failed`, `demoted_from` and `proposed_company_id`, so the reviewer
 sees which company was proposed and why it was held back. A human verdict links it with full
 enrichment.
+
+### Issuer-first companies: rule R0 and guard (f) (ADR 0035, proposed)
+
+The YC seed gives about 18 trusted Form D links per 90 days, far from the 100 SPEC 13.1
+needs. Issuer-first discovery creates a company from a Form D issuer when the company's own
+site carries tier A evidence (the full legal name with its legal form) or tier B evidence
+(the full brand plus an address in the Form D city or state), records the outcome per CIK in
+`issuer_discovery` (evidence stored as `{path, span}` only, the page path and the matched
+legal-name string), and links the filing by CIK. Two resolver changes make that safe:
+
+- **R0, exact CIK.** `resolve_events` tries every EDGAR event's CIK first. It links when the
+  CIK is a company's `companies.cik` *and* `companies.cik_source` names a trusted path:
+  `issuer_first_a` / `issuer_first_b` (discovery evidence), `r1`, `guarded_r2` (an R2 that
+  passed the Form D guards) or `manual` (a review verdict). A CIK of unknown origin (`NULL`,
+  for example one written before migration 0009 by a link that would fail the guards today)
+  never fires R0; the event falls through to the name rules. R0 is trusted enrichment
+  (`edgar` aliases for the issuer name and previous names, `legal_name` when empty) and the
+  Form D guards do not apply to it: the CIK is the issuer's own identifier.
+- **Guard (f) `no_site_evidence`.** Before it, a company without YC facts had only guard
+  (b): "Marble, Inc." (a Delaware corporation) would have auto-linked through an exact R2
+  alias to an unrelated marble.studio in Paris. Now such a link is R5 review unless the
+  trusted-CIK or stored-evidence test passes, and it writes nothing on the company. The 41
+  links of the 2026-10-14 production sample (all YC companies) decide exactly as before.
+  The same test applies, alone, to the auto-links (R2, R3, R4) of every other EDGAR filing
+  (S-1, 8-K): those carry no issuer facts for guards (b)-(d), and an exact name on an S-1
+  is no better evidence than on a Form D.
+- **`cik_source` is written with the CIK.** A trusted link that fills `companies.cik` writes
+  `r1`, `guarded_r2` or `manual` with it; when the CIK is already the company's and its
+  source is unknown, the link records the source. `guarded_r2` needs an R2 that the Form D
+  guards ran on: an R2 of an S-1 or 8-K writes its CIK with `cik_source` NULL (so R0 ignores
+  it until a guarded Form D link confirms it). `tell resolve relink-formd` clears
+  `cik_source` together with any CIK it resets. Migration 0009 backfilled `cik_source`
+  only where an `edgar` event still linked to the company shows how the CIK was earned: a
+  reviewer's link, an R1 link, or an R2 Form D link whose facts pass the ADR 0034 guards.
+- **`companies.source`** says where a company came from: `yc` (the directory seed, the
+  default for every existing row), `issuer_first`, `board_first`, or `manual` (a review
+  `create` verdict, `tell discover` on a new domain, an intake list).
+
+Test fixtures that stand for YC directory companies carry `yc_status = 'Active'` (the gold
+set included), since a company with no YC status now needs site evidence.
 
 ### Distinctive-token floor for R5 (ADR 0034)
 
@@ -317,8 +363,9 @@ Scans `events` with `company_id NULL` from the EDGAR and news sources: Form D
 (`issuer_name`, `issuer_state`, `issuer_city`, `previous_names`, `cik`), other EDGAR forms
 (`company_name`), news events (the company name in the Google News query). R5 opens one
 `review_queue` item (`kind='entity_match'`, payload `{event_id, name, state, city,
-candidates}`) per event and never a second one for the same `event_id`. Events that already
-carry an R1-R6 decision are skipped, so a second run changes nothing; `--retry` re-evaluates
+candidates}`) per event and never a second one for the same `event_id`. Every EDGAR event is
+tried by its CIK first (R0). Events that already
+carry an R0-R6 decision are skipped, so a second run changes nothing; `--retry` re-evaluates
 them after aliases or companies were added (the rejected-pair check and the
 one-item-per-event rule still hold).
 
@@ -328,7 +375,12 @@ CSV is the default:
 
 1. `tell resolve review-export review.csv` writes the open items: `id, kind, event_id, name,
    state, city, candidate_1_id, candidate_1_alias, candidate_1_ratio, ... candidate_3_*,
-   verdict, company_id_or_domain, new_company_name`.
+   discovery_reason, discovery_tier, discovery_domains, discovery_evidence,
+   discovery_amount_sold, verdict, company_id_or_domain, new_company_name`. The
+   `discovery_*` columns are filled only for items opened by `tell discover issuers` (ADR
+   0035): a tier C or several-domains item has no candidates, and its proposed domains (space
+   separated), tier, evidence (`path: span`) and amount sold are what a `create` verdict
+   needs. The Streamlit page shows the same lines under the candidates.
 2. Fill `verdict` with `link` (plus a company id or domain), `create` (plus the new company's
    domain and optionally its name) or `reject`. Blank rows are skipped.
 3. `tell resolve review-import review.csv` applies them: `link` links the event with the
@@ -347,6 +399,9 @@ stay in the payload as the audit trail, and the rejected-pair memory keeps it fr
 back. Items that still have a real candidate stay open, even when the new rules would now
 auto-link them; the command never links and never deletes. The report counts closed items
 by the aliases that caused them and by reason (`too_short`, `single_token_superset`, ...).
+Issuer-discovery items (ADR 0035; their payload has an `issuer_discovery` key) are never
+closed: they propose a domain, not an alias candidate, so the matcher's R6 says nothing about
+them. The report counts them as `kept_issuer_discovery`.
 
 `tell resolve relink-formd [--dry-run|--apply]` (ADR 0034) re-evaluates every linked Form D
 event under the current rules. The alias index is built without the `edgar` aliases those

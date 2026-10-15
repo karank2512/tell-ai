@@ -1,4 +1,4 @@
-"""Form D linking guards and the distinctive-token floor (ADR 0034).
+"""Form D linking guards and the distinctive-token floor (ADR 0034), guard (f) (ADR 0035).
 
 The fixture ``formd_links_20261014.json`` holds the 41 Form D links production made to YC
 companies on 2026-10-14, each hand-verified against the SEC filing and the company's site
@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from tell.models import Company, CompanyAlias, EventRow, ReviewQueueItem
+from tell.models import Company, CompanyAlias, EventRow, IssuerDiscovery, ReviewQueueItem
 from tell.resolve.aliases import (
     DESCRIPTOR_TOKENS,
     GENERIC_ALIAS_TOKENS,
@@ -23,12 +23,17 @@ from tell.resolve.aliases import (
 )
 from tell.resolve.guards import (
     GUARD_REASONS,
+    NO_SITE_EVIDENCE,
     R3_REVIEW_ONLY,
+    TRUSTED_CIK_SOURCES,
     CompanyFacts,
     IssuerFacts,
     batch_year,
+    cik10,
+    filing_guard_failures,
     fund_signals,
     guard_failures,
+    site_evidence,
 )
 from tell.resolve.match import (
     AliasIndex,
@@ -166,7 +171,9 @@ def test_incorporation_year_against_batch() -> None:
 def test_entity_and_status_guards() -> None:
     corp = IssuerFacts("Acme", "corporation", "Delaware")
     assert guard_failures(corp, None) == []  # case-insensitive; no company facts known
-    assert guard_failures(corp, CompanyFacts()) == []  # status and batch unknown: pass
+    # no YC status: guard (f) wants site evidence (ADR 0035); batch unknown: (d) passes
+    assert guard_failures(corp, CompanyFacts()) == [NO_SITE_EVIDENCE]
+    assert guard_failures(corp, CompanyFacts("Active", None)) == []
     assert guard_failures(corp, CompanyFacts("Public", None)) == ["yc_status_not_active"]
     assert guard_failures(IssuerFacts("Acme"), None) == [
         "entity_type_not_corporation",
@@ -310,7 +317,12 @@ def test_descriptor_only_candidate_is_r6_not_review(db_session: Session) -> None
 
 def test_r3_is_review_only_for_form_d_but_not_for_news(db_session: Session) -> None:
     ncompass = _company(
-        db_session, "ncompass.tech", "nCompass Technologies", hq_city="New York City", hq_state="NY"
+        db_session,
+        "ncompass.tech",
+        "nCompass Technologies",
+        hq_city="New York City",
+        hq_state="NY",
+        yc_status="Active",
     )
     backfill_aliases(db_session)
     plain = match_name(db_session, "Compass, Inc.", state="NY")
@@ -454,3 +466,331 @@ def test_review_verdict_writes_enrichment_a_demoted_link_did_not(db_session: Ses
     db_session.refresh(payload_co)
     assert payload_co.legal_name == "Payload, Inc."
     assert payload_co.cik == payload_case["payload"]["cik"]
+
+
+# --- guard (f): companies without YC facts (ADR 0035) ------------------------------------------
+
+MARBLE_CIK = "0002100001"
+
+
+def test_production_sample_never_trips_guard_f() -> None:
+    """Every company in the 2026-10-14 sample has a YC status: guard (f) changes nothing."""
+    for case in CASES:
+        assert case["company"]["yc_status"], case["payload"]["issuer_name"]
+        assert NO_SITE_EVIDENCE not in guard_failures(_issuer(case), _company_facts(case))
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("0001916502", "0001916502"),
+        ("1916502", "0001916502"),
+        (1916502, "0001916502"),
+        (" 42 ", "0000000042"),
+        ("", None),
+        ("CIK1", None),
+        ("12345678901", None),
+        (None, None),
+        (True, None),
+    ],
+)
+def test_cik10(value: object, expected: str | None) -> None:
+    assert cik10(value) == expected
+
+
+def test_site_evidence_needs_a_trusted_cik_or_a_stored_record() -> None:
+    issuer = _formd_facts("Marble, Inc.", cik=MARBLE_CIK)
+    assert issuer.cik == MARBLE_CIK
+    assert site_evidence(issuer, CompanyFacts()) is False
+    for source in sorted(TRUSTED_CIK_SOURCES):
+        assert site_evidence(issuer, CompanyFacts(cik="2100001", cik_source=source)) is True
+    # a CIK of unknown origin is no evidence, nor is someone else's trusted CIK
+    assert site_evidence(issuer, CompanyFacts(cik=MARBLE_CIK)) is False
+    assert site_evidence(issuer, CompanyFacts(cik=MARBLE_CIK, cik_source="guessed")) is False
+    other = CompanyFacts(cik="0002100002", cik_source="r1")
+    assert site_evidence(issuer, other) is False
+    assert site_evidence(issuer, CompanyFacts(evidence_ciks=frozenset({MARBLE_CIK}))) is True
+    no_cik = _formd_facts("Marble, Inc.")
+    assert no_cik.cik is None
+    assert site_evidence(no_cik, CompanyFacts(evidence_ciks=frozenset({MARBLE_CIK}))) is False
+    # a YC company is never asked for site evidence
+    assert guard_failures(issuer, CompanyFacts("Active", "Winter 2024")) == []
+
+
+def _marble(session: Session, **extra: Any) -> Company:
+    """The 2026-10-14 board-first example: an unrelated Paris studio named Marble."""
+    company = _company(
+        session, "marble.studio", "Marble", hq_city="Paris", source="board_first", **extra
+    )
+    backfill_aliases(session)
+    return company
+
+
+def _marble_event(session: Session, event_id: str = "ev-marble", **extra: Any) -> EventRow:
+    payload: dict[str, Any] = {
+        "issuer_name": "Marble, Inc.",
+        "issuer_city": "San Francisco",
+        "issuer_state": "CA",
+        "cik": MARBLE_CIK,
+        "previous_names": [],
+        "entity_type": "Corporation",
+        "jurisdiction_of_inc": "DELAWARE",
+        "year_of_inc": 2025,
+        "date_filed": "2026-10-01",
+        "industry_group_type": "Other Technology",
+        **extra,
+    }
+    case = {"event_id": event_id, "type": "form_d_filed", "payload": payload}
+    return add_event(session, case)
+
+
+def test_marble_exact_name_goes_to_review_not_a_link(db_session: Session) -> None:
+    """An exact R2 alias to a company with no YC facts is no longer enough (guard f)."""
+    marble = _marble(db_session)
+    decision = match_name(
+        db_session, "Marble, Inc.", issuer=_formd_facts("Marble, Inc.", cik=MARBLE_CIK)
+    )
+    assert (decision.rule, decision.action, decision.company_id) == ("R5", "review", None)
+    assert decision.guard_failed == [NO_SITE_EVIDENCE]
+    assert (decision.demoted_from, decision.proposed_company_id) == ("R2", marble.id)
+    # news is matched as before; any other EDGAR filing gets guard (f) alone
+    assert match_name(db_session, "Marble, Inc.").rule == "R2"
+    s1 = match_name(db_session, "Marble, Inc.", edgar=True)
+    assert (s1.rule, s1.guard_failed, s1.demoted_from) == ("R5", [NO_SITE_EVIDENCE], "R2")
+
+    event = _marble_event(db_session)
+    stats = resolve_events(db_session, now=NOW)
+    assert (stats.auto_linked, stats.review, stats.guard_demoted) == (0, 1, 1)
+    assert event.company_id is None
+    assert event.payload["match"]["guard_failed"] == [NO_SITE_EVIDENCE]
+    (item,) = db_session.scalars(select(ReviewQueueItem)).all()
+    assert item.payload["guard_failed"] == [NO_SITE_EVIDENCE]
+    assert item.payload["proposed_company_id"] == marble.id
+    # nothing was written on the company: no edgar alias, no CIK, no legal name
+    db_session.refresh(marble)
+    assert (marble.cik, marble.cik_source, marble.legal_name) == (None, None, None)
+    edgar = db_session.scalars(select(CompanyAlias).where(CompanyAlias.source == "edgar")).all()
+    assert edgar == []
+
+
+@pytest.mark.parametrize(
+    ("status", "tier", "domain", "links"),
+    [
+        ("linked", "A", "marble.studio", True),
+        ("linked", "B", "marble.studio", True),
+        ("linked", "C", "marble.studio", False),  # tier C is never evidence
+        ("tier_c", "C", "marble.studio", False),
+        ("conflict", "A", "marble.studio", False),  # a human decides a conflict
+        ("rejected", "A", "marble.studio", False),
+        ("linked", "A", "marble.example", False),  # evidence for another domain
+        ("linked", "A", None, False),
+    ],
+)
+def test_stored_site_evidence_lets_the_link_through(
+    db_session: Session, status: str, tier: str, domain: str | None, links: bool
+) -> None:
+    marble = _marble(db_session)
+    db_session.add(
+        IssuerDiscovery(
+            cik=MARBLE_CIK,
+            status=status,
+            tier=tier,
+            domain=domain,
+            evidence={"path": "/terms", "span": "Marble, Inc."},
+        )
+    )
+    event = _marble_event(db_session)
+    stats = resolve_events(db_session, now=NOW)
+    db_session.refresh(marble)
+    if links:
+        assert stats.by_rule == {"R2": 1}
+        assert event.company_id == marble.id
+        # a guarded R2 is a trusted link: the CIK lands with its source
+        assert (marble.cik, marble.cik_source) == (MARBLE_CIK, "guarded_r2")
+    else:
+        assert stats.by_rule == {"R5": 1}
+        assert event.company_id is None
+        assert marble.cik is None
+
+
+@pytest.mark.parametrize(
+    ("cik_source", "rule"),
+    [("issuer_first_a", "R0"), ("guarded_r2", "R0"), ("manual", "R0"), (None, "R5")],
+)
+def test_r0_links_a_trusted_cik_and_only_a_trusted_one(
+    db_session: Session, cik_source: str | None, rule: str
+) -> None:
+    marble = _marble(db_session, cik=MARBLE_CIK, cik_source=cik_source)
+    # renamed since: the name rules would find nothing, R0 links it by CIK anyway
+    renamed = _marble_event(db_session, "ev-renamed", issuer_name="Veined Stone Labs, Inc.")
+    first = _marble_event(db_session)
+    stats = resolve_events(db_session, now=NOW)
+    if rule == "R0":
+        assert stats.by_rule == {"R0": 2}
+        assert renamed.company_id == first.company_id == marble.id
+        audit = renamed.payload["match"]
+        assert (audit["rule"], audit["confidence"]) == ("R0", 0.99)
+        assert "guard_failed" not in audit
+        # a trusted link: the issuer names become edgar aliases, legal_name is filled
+        edgar = set(
+            db_session.scalars(
+                select(CompanyAlias.alias).where(CompanyAlias.company_id == marble.id)
+            )
+        )
+        assert {"marble", "veined stone"} <= edgar
+    else:
+        # a CIK of unknown origin never fires R0, nor does it pass guard (f)
+        assert stats.by_rule == {"R6": 1, "R5": 1}
+        assert renamed.company_id is None
+        assert first.company_id is None
+        assert first.payload["match"]["guard_failed"] == [NO_SITE_EVIDENCE]
+
+
+def test_r0_ignores_news_and_untrusted_ciks(db_session: Session) -> None:
+    marble = _marble(db_session, cik=MARBLE_CIK, cik_source="issuer_first_b")
+    index = AliasIndex.from_session(db_session)
+    assert index.cik_company("2100001") == marble.id
+    assert index.cik_company("0002100002") is None
+    assert index.cik_company(None) is None
+    assert index.cik_company("not a cik") is None
+    # match_name only tries R0 when given a CIK: news never carries one
+    assert match_name(db_session, "Veined Stone Labs", index=index).rule == "R6"
+    decision = match_name(db_session, "Veined Stone Labs", index=index, cik=MARBLE_CIK)
+    assert (decision.rule, decision.company_id) == ("R0", marble.id)
+
+
+def test_a_cik_written_in_a_run_links_the_next_filing_by_r0(db_session: Session) -> None:
+    """A YC company's first guarded R2 writes its CIK; the renamed next filing is R0."""
+    acme = _company(
+        db_session, "acme.dev", "Acme Robotics", yc_status="Active", yc_batch="Winter 2024"
+    )
+    backfill_aliases(db_session)
+    first = _marble_event(db_session, "ev-1", issuer_name="Acme Robotics, Inc.", year_of_inc=2023)
+    later = _marble_event(db_session, "ev-2", issuer_name="Nova Arm Corp", date_filed="2026-10-02")
+    later.occurred_at = first.occurred_at.replace(day=2)
+    db_session.flush()
+    stats = resolve_events(db_session, now=NOW)
+    assert stats.by_rule == {"R2": 1, "R0": 1}
+    assert first.company_id == later.company_id == acme.id
+    db_session.refresh(acme)
+    assert (acme.cik, acme.cik_source) == (MARBLE_CIK, "guarded_r2")
+
+
+def test_a_trusted_link_records_the_source_of_a_known_cik(db_session: Session) -> None:
+    """A CIK of unknown origin that a guarded R2 confirms gets ``cik_source``."""
+    acme = _company(
+        db_session,
+        "acme.dev",
+        "Acme Robotics",
+        yc_status="Active",
+        yc_batch="Winter 2024",
+        cik="2100001",
+    )
+    backfill_aliases(db_session)
+    event = _marble_event(db_session, issuer_name="Acme Robotics, Inc.", year_of_inc=2023)
+    assert resolve_events(db_session, now=NOW).by_rule == {"R2": 1}
+    assert event.company_id == acme.id
+    db_session.refresh(acme)
+    assert (acme.cik, acme.cik_source) == ("2100001", "guarded_r2")
+
+
+def test_set_cik_on_a_hand_built_index() -> None:
+    index = AliasIndex([("acme robotics", 1)])
+    index.set_cik(1, "not a cik", "r1")
+    assert index.cik_company("not a cik") is None
+    index.set_cik(1, "42", None)  # an untrusted CIK never feeds R0
+    assert index.cik_company("42") is None
+    index.set_cik(1, "42", "r1")
+    assert index.cik_company("0000000042") == 1
+    assert index.company_facts(1) is None  # built without facts: nothing to update
+
+
+def _s1_event(
+    session: Session, name: str, event_id: str = "ev-s1", cik: str | None = MARBLE_CIK
+) -> EventRow:
+    """An S-1 (no issuer facts: the Form D guards cannot run on it)."""
+    payload: dict[str, Any] = {"company_name": name, "date_filed": "2026-09-01"}
+    if cik is not None:
+        payload["cik"] = cik
+    return add_event(session, {"event_id": event_id, "type": "form_s1_filed", "payload": payload})
+
+
+def test_filing_guard_failures_is_guard_f_alone() -> None:
+    """For a non-Form-D filing only guard (f) runs, on the filer's CIK."""
+    assert filing_guard_failures(MARBLE_CIK, None) == []  # no company facts: nothing checked
+    assert filing_guard_failures(MARBLE_CIK, CompanyFacts("Active", "Winter 2024")) == []
+    assert filing_guard_failures(MARBLE_CIK, CompanyFacts("Inactive")) == []  # (c) is Form D's
+    assert filing_guard_failures(MARBLE_CIK, CompanyFacts()) == [NO_SITE_EVIDENCE]
+    assert filing_guard_failures(None, CompanyFacts()) == [NO_SITE_EVIDENCE]
+    trusted = CompanyFacts(cik="2100001", cik_source="issuer_first_a")
+    assert filing_guard_failures("2100001", trusted) == []
+    assert filing_guard_failures(MARBLE_CIK, CompanyFacts(cik=MARBLE_CIK)) == [NO_SITE_EVIDENCE]
+    evidence = CompanyFacts(evidence_ciks=frozenset({MARBLE_CIK}))
+    assert filing_guard_failures(MARBLE_CIK, evidence) == []
+
+
+def test_s1_exact_name_cannot_hand_a_non_yc_company_a_trusted_cik(db_session: Session) -> None:
+    """The verifier's bypass: an S-1 "Marble, Inc." used to link marble.studio by R2 and write
+    its CIK as ``guarded_r2``, so the issuer's Form D then linked by R0 past guard (f)."""
+    marble = _marble(db_session)
+    s1 = _s1_event(db_session, "Marble, Inc.")
+    stats = resolve_events(db_session, now=NOW)
+    assert (stats.by_rule, stats.guard_demoted) == ({"R5": 1}, 1)
+    assert s1.company_id is None
+    assert s1.payload["match"]["guard_failed"] == [NO_SITE_EVIDENCE]
+    assert s1.payload["match"]["proposed_company_id"] == marble.id
+    db_session.refresh(marble)
+    assert (marble.cik, marble.cik_source, marble.legal_name) == (None, None, None)
+    edgar = db_session.scalars(select(CompanyAlias).where(CompanyAlias.source == "edgar")).all()
+    assert edgar == []
+
+    formd = _marble_event(db_session)
+    assert resolve_events(db_session, now=NOW).by_rule == {"R5": 1}
+    assert formd.company_id is None
+    assert formd.payload["match"]["rule"] == "R5"
+    assert formd.payload["match"]["guard_failed"] == [NO_SITE_EVIDENCE]
+
+    # an S-1 without a CIK has no evidence either
+    no_cik = _s1_event(db_session, "Marble, Inc.", "ev-s1-nocik", cik=None)
+    assert resolve_events(db_session, now=NOW).by_rule == {"R5": 1}
+    assert no_cik.company_id is None
+
+
+def test_s1_with_stored_site_evidence_links_but_earns_no_cik_source(db_session: Session) -> None:
+    marble = _marble(db_session)
+    db_session.add(
+        IssuerDiscovery(
+            cik=MARBLE_CIK,
+            status="linked",
+            tier="A",
+            domain="marble.studio",
+            evidence={"path": "/terms", "span": "Marble, Inc."},
+        )
+    )
+    s1 = _s1_event(db_session, "Marble, Inc.")
+    assert resolve_events(db_session, now=NOW).by_rule == {"R2": 1}
+    assert s1.company_id == marble.id
+    db_session.refresh(marble)
+    # no Form D guard ran: the CIK is stored as of unknown origin, which R0 does not trust
+    assert (marble.cik, marble.cik_source) == (MARBLE_CIK, None)
+
+
+def test_an_unguarded_r2_never_writes_guarded_r2(db_session: Session) -> None:
+    """A YC company's S-1 R2 writes the CIK with no source; its Form D, passing the guards,
+    then records ``guarded_r2`` (the link is R2, not R0)."""
+    acme = _company(
+        db_session, "acme.dev", "Acme Robotics", yc_status="Active", yc_batch="Winter 2024"
+    )
+    backfill_aliases(db_session)
+    s1 = _s1_event(db_session, "Acme Robotics, Inc.")
+    assert resolve_events(db_session, now=NOW).by_rule == {"R2": 1}
+    assert s1.company_id == acme.id
+    db_session.refresh(acme)
+    assert (acme.cik, acme.cik_source, acme.legal_name) == (MARBLE_CIK, None, "Acme Robotics, Inc.")
+    assert AliasIndex.from_session(db_session).cik_company(MARBLE_CIK) is None
+
+    formd = _marble_event(db_session, issuer_name="Acme Robotics, Inc.", year_of_inc=2023)
+    assert resolve_events(db_session, now=NOW).by_rule == {"R2": 1}
+    assert formd.company_id == acme.id
+    db_session.refresh(acme)
+    assert (acme.cik, acme.cik_source) == (MARBLE_CIK, "guarded_r2")

@@ -186,6 +186,8 @@ def test_company_key_strips_punctuation_and_legal_suffix() -> None:
     assert company_key("Quillstone Analytics, Inc.") == "quillstone analytics"
     assert company_key("Acme.ai") == "acme ai"
     assert company_key("Co") == "co"
+    assert company_key("Edacious, PBC") == "edacious"  # ADR 0035
+    assert company_key("Saltbox Tinned Fish Co., PBC") == "saltbox tinned fish"
     assert company_key("  ") == ""
 
 

@@ -15,7 +15,8 @@ what ``tell backfill formd`` runs:
 * :func:`backfill_formd` loads each data set with
   :func:`tell.collectors.edgar_formd.load_formd_quarterly` (ZIP or unpacked directory),
   keeps the filings dated within ``since_days`` of ``now``, links an issuer whose CIK is
-  already a company's ``cik`` (as the daily collector does) and writes the events with
+  already a company's ``cik`` with a trusted ``cik_source`` (as the daily collector does,
+  ADR 0035) and writes the events with
   :func:`tell.collectors.base.write_events`. Events keep ``source = 'edgar'`` and the
   daily key ``edgar:{accession}``, so a rerun, or a filing the daily index already
   delivered, inserts nothing. Every other link is left to ``tell resolve``.

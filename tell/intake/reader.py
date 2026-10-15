@@ -645,7 +645,7 @@ def _ensure_companies(session: Session, domains: Iterable[str]) -> tuple[dict[st
     for domain in wanted:
         if domain in found:
             continue
-        company = Company(domain=domain, name=domain_label(domain) or domain)
+        company = Company(domain=domain, name=domain_label(domain) or domain, source="manual")
         session.add(company)
         session.flush()
         found[domain] = company.id

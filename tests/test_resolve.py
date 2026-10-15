@@ -196,8 +196,14 @@ def load_gold(path: Path) -> list[GoldRow]:
 def seed(session: Session, rows: list[GoldRow]) -> None:
     """Companies from the gold rows, their boards linked as discovery links them, aliases."""
     for row in rows:
+        # The gold companies come from the YC directory (ADR 0009): Active, batch not
+        # recorded, so guards (c)/(d) pass and guard (f) (no YC status, ADR 0035) is off.
         company = Company(
-            domain=row.domain, name=row.name, hq_city=row.hq_city, hq_state=row.hq_state
+            domain=row.domain,
+            name=row.name,
+            hq_city=row.hq_city,
+            hq_state=row.hq_state,
+            yc_status="Active",
         )
         session.add(company)
         session.flush()

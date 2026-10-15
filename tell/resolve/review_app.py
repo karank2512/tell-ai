@@ -14,7 +14,13 @@ from typing import Any
 
 from tell.config import get_settings
 from tell.db import session_scope
-from tell.resolve.review import ReviewError, apply_verdict, check_password, open_items
+from tell.resolve.review import (
+    ReviewError,
+    apply_verdict,
+    check_password,
+    discovery_details,
+    open_items,
+)
 
 __all__ = ["main"]
 
@@ -22,10 +28,24 @@ TITLE = "tell: entity-match review"
 
 
 def _candidates_text(payload: dict[str, Any]) -> str:
+    """The item's alias candidates, then (for an issuer-discovery item, ADR 0035) the
+    proposed domains, tier, evidence and amount sold, which a ``create`` verdict needs."""
     lines = [
         f"{c.get('company_id')}: {c.get('alias')} ({c.get('ratio')})"
         for c in payload.get("candidates") or []
     ]
+    found = discovery_details(payload)
+    if found["discovery_reason"] or found["discovery_domains"]:
+        lines.append(
+            f"issuer discovery: {found['discovery_reason'] or '-'}"
+            f", tier {found['discovery_tier'] or '-'}"
+        )
+        lines.append(f"  domains: {found['discovery_domains'] or '(none)'}")
+        if found["discovery_evidence"]:
+            lines.append(f"  evidence: {found['discovery_evidence']}")
+        if found["discovery_amount_sold"]:
+            lines.append(f"  amount sold: {found['discovery_amount_sold']}")
+        return "\n".join(lines)
     return "\n".join(lines) or "(no candidates)"
 
 

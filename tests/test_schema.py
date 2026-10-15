@@ -7,7 +7,8 @@ the ``posting_ghost_votes`` table (migration ``0005``, ADR 0017) and the public-
 columns ``watchlists.slug`` / ``watchlists.is_public`` (migration ``0006``, ADR 0022) and
 the FastAPI v1 ``api_keys`` / ``api_usage`` tables (migration ``0007``, ADR 0024) and
 the YC directory columns ``companies.yc_status`` / ``companies.yc_batch`` (migration
-``0008``, ADR 0034).
+``0008``, ADR 0034) and the issuer-first columns ``companies.source`` /
+``companies.cik_source`` plus the ``issuer_discovery`` table (migration ``0009``, ADR 0035).
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from tests.conftest import alembic_config
 
 pytestmark = pytest.mark.db
 
-HEAD_REVISION = "0008"
+HEAD_REVISION = "0009"
 
 # --- the spec, hardcoded -----------------------------------------------------------------
 
@@ -48,6 +49,8 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
         "updated_at",
         "yc_status",  # ADR 0034, migration 0008
         "yc_batch",  # ADR 0034, migration 0008
+        "source",  # ADR 0035, migration 0009
+        "cik_source",  # ADR 0035, migration 0009
     ],
     "company_aliases": ["company_id", "alias", "source"],
     "ats_boards": [
@@ -158,6 +161,18 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
         "revoked_at",
     ],
     "api_usage": ["key_id", "day", "calls"],
+    # ADR 0035, migration 0009
+    "issuer_discovery": [
+        "cik",
+        "status",
+        "tier",
+        "domain",
+        "evidence",
+        "attempts",
+        "last_tried_at",
+        "next_retry_at",
+        "created_at",
+    ],
 }
 
 EXPECTED_PRIMARY_KEYS: dict[str, list[str]] = {
@@ -178,6 +193,7 @@ EXPECTED_PRIMARY_KEYS: dict[str, list[str]] = {
     "posting_ghost_votes": ["id"],
     "api_keys": ["id"],
     "api_usage": ["key_id", "day"],
+    "issuer_discovery": ["cik"],
 }
 
 EXPECTED_UNIQUES: dict[str, set[tuple[str, ...]]] = {
@@ -234,6 +250,9 @@ EXPECTED_INDEXES: dict[str, dict[str, tuple[list[str], dict[str, str]]]] = {
     "posting_ghost_votes": {
         "posting_ghost_votes_posting_id_idx": (["posting_id"], {}),
     },
+    "issuer_discovery": {
+        "issuer_discovery_status_next_retry_at_idx": (["status", "next_retry_at"], {}),
+    },
 }
 
 EXPECTED_NULLABLE: dict[str, set[str]] = {
@@ -246,6 +265,7 @@ EXPECTED_NULLABLE: dict[str, set[str]] = {
         "github_org",
         "yc_status",
         "yc_batch",
+        "cik_source",
     },
     "company_aliases": set(),
     "ats_boards": {
@@ -278,6 +298,7 @@ EXPECTED_NULLABLE: dict[str, set[str]] = {
     "posting_ghost_votes": set(),
     "api_keys": {"last_used_at", "revoked_at"},
     "api_usage": set(),
+    "issuer_discovery": {"tier", "domain", "evidence", "last_tried_at", "next_retry_at"},
 }
 
 # Columns with a server default, with the default's leading token after cast stripping.
@@ -301,6 +322,9 @@ EXPECTED_SERVER_DEFAULTS: dict[tuple[str, str], str] = {
     ("api_keys", "created_at"): "now()",
     ("api_keys", "daily_quota"): "1000",
     ("api_usage", "calls"): "0",
+    ("companies", "source"): "'yc'",
+    ("issuer_discovery", "attempts"): "0",
+    ("issuer_discovery", "created_at"): "now()",
 }
 
 EXPECTED_TYPES: dict[tuple[str, str], str] = {
@@ -331,6 +355,14 @@ EXPECTED_TYPES: dict[tuple[str, str], str] = {
     ("api_usage", "key_id"): "BIGINT",
     ("api_usage", "day"): "DATE",
     ("api_usage", "calls"): "INTEGER",
+    ("companies", "source"): "TEXT",
+    ("companies", "cik_source"): "TEXT",
+    ("issuer_discovery", "cik"): "TEXT",
+    ("issuer_discovery", "evidence"): "JSONB",
+    ("issuer_discovery", "attempts"): "INTEGER",
+    ("issuer_discovery", "last_tried_at"): "TIMESTAMP WITH TIME ZONE",
+    ("issuer_discovery", "next_retry_at"): "TIMESTAMP WITH TIME ZONE",
+    ("issuer_discovery", "created_at"): "TIMESTAMP WITH TIME ZONE",
 }
 
 SERIAL_PRIMARY_KEYS = {

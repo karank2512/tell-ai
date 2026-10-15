@@ -18,9 +18,12 @@ from tell.resolve import review, review_app
 from tell.resolve.match import backfill_aliases, resolve_events
 from tell.resolve.review import (
     CSV_COLUMNS,
+    DISCOVERY_COLUMNS,
+    DISCOVERY_KEY,
     ReviewError,
     apply_verdict,
     check_password,
+    discovery_details,
     export_review_csv,
     import_review_csv,
     open_items,
@@ -30,13 +33,16 @@ NOW = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
 
 
 def _company(session: Session, domain: str, name: str, **extra: Any) -> Company:
+    extra.setdefault("yc_status", "Active")  # a YC directory company (guard f is off)
     company = Company(domain=domain, name=name, **extra)
     session.add(company)
     session.flush()
     return company
 
 
-def _formd_event(session: Session, event_id: str, name: str, state: str = "WA") -> EventRow:
+def _formd_event(
+    session: Session, event_id: str, name: str, state: str = "WA", cik: str = "0000012345"
+) -> EventRow:
     row = EventRow(
         event_id=event_id,
         source="edgar",
@@ -49,7 +55,7 @@ def _formd_event(session: Session, event_id: str, name: str, state: str = "WA") 
             "issuer_name": name,
             "issuer_state": state,
             "issuer_city": "Seattle",
-            "cik": "0000012345",
+            "cik": cik,
             "previous_names": [],
             "date_filed": "2026-10-05",
             "entity_type": "Corporation",
@@ -173,6 +179,9 @@ def test_csv_round_trip_link_create_reject(
     assert created_event.company_id == created.id
     assert _aliases(db_session, created.id) == {"acme robotics ventures": "edgar"}
     assert (created.cik, created.legal_name) == ("0000012345", "Acme Robotics Ventures")
+    # a verdict's CIK is trusted (ADR 0035) and the created company is not from the YC
+    # directory
+    assert (created.cik_source, created.source) == ("manual", "manual")
 
     rejected = db_session.get(EventRow, "ev-reject")
     assert rejected is not None
@@ -183,10 +192,18 @@ def test_csv_round_trip_link_create_reject(
     assert item.resolved_at == NOW
 
     # the linked pair never returns: the same name now hits R2
-    _formd_event(db_session, "ev-again", "Acme Robotics Group, Inc.")
+    _formd_event(db_session, "ev-again", "Acme Robotics Group, Inc.", cik="0000099999")
     again = resolve_events(db_session, now=NOW)
     assert again.by_rule == {"R2": 1}
     assert open_items(db_session) == []
+    # and the created company's next filing links by its CIK (R0), whatever its name
+    _formd_event(db_session, "ev-next", "Entirely Renamed Holdings Inc")
+    nxt = resolve_events(db_session, now=NOW)
+    assert nxt.by_rule == {"R0": 1}
+    next_event = db_session.get(EventRow, "ev-next")
+    assert next_event is not None
+    assert next_event.company_id == created.id
+    assert next_event.payload["match"]["confidence"] == 0.99
 
 
 def test_import_skips_blank_and_reports_errors(
@@ -328,4 +345,82 @@ def test_review_app_imports_without_streamlit_display() -> None:
     )
     assert text == "1: acme (90)"
     assert review_app._candidates_text({}) == "(no candidates)"
+
+
+def _discovery(reason: str, **extra: Any) -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "reason": reason,
+        "cik": "0002990001",
+        "tier": "C",
+        "domains": ["quillfeather.com", "quillfeather.ai"],
+        "evidence": {"path": "/terms", "span": "Quillfeather Robotics, Inc."},
+        "amount_sold": 2_500_000,
+    }
+    info.update(extra)
+    return {
+        "event_id": "ev-d",
+        "name": "Quillfeather Robotics, Inc.",
+        "candidates": [],
+        DISCOVERY_KEY: info,
+    }
+
+
+def test_review_app_shows_issuer_discovery_proposals() -> None:
+    """ADR 0035: a tier C / several-domains item has no candidates; the page shows its
+    proposed domains, tier, evidence and amount sold."""
+    text = review_app._candidates_text(_discovery("tier_c"))
+    assert text.splitlines() == [
+        "issuer discovery: tier_c, tier C",
+        "  domains: quillfeather.com quillfeather.ai",
+        "  evidence: /terms: Quillfeather Robotics, Inc.",
+        "  amount sold: 2500000",
+    ]
+    proposed = _discovery("domain_exists", tier="A", domains=["acme.com"], evidence=None)
+    proposed["candidates"] = [{"company_id": 7, "alias": "acme.com", "ratio": None}]
+    assert review_app._candidates_text(proposed).splitlines() == [
+        "7: acme.com (None)",
+        "issuer discovery: domain_exists, tier A",
+        "  domains: acme.com",
+        "  amount sold: 2500000",
+    ]
+    bare = _discovery("several_domains", tier=None, domains="junk", evidence={"path": 1})
+    bare[DISCOVERY_KEY]["amount_sold"] = True
+    assert review_app._candidates_text(bare).splitlines() == [
+        "issuer discovery: several_domains, tier -",
+        "  domains: (none)",
+    ]
+    assert discovery_details({DISCOVERY_KEY: "junk"}) == dict.fromkeys(DISCOVERY_COLUMNS, "")
+
+
+def test_export_shows_issuer_discovery_columns(db_session: Session, tmp_path: Path) -> None:
+    assert set(DISCOVERY_COLUMNS) < set(CSV_COLUMNS)
+    db_session.add_all(
+        [
+            ReviewQueueItem(kind="entity_match", payload=_discovery("tier_c"), created_at=NOW),
+            ReviewQueueItem(
+                kind="entity_match",
+                payload={"event_id": "ev-plain", "name": "Plain", "candidates": []},
+                created_at=NOW,
+            ),
+        ]
+    )
+    db_session.flush()
+    path = tmp_path / "review.csv"
+    assert export_review_csv(db_session, path) == 2
+    found, plain = _rows(path)
+    assert (
+        found["discovery_reason"],
+        found["discovery_tier"],
+        found["discovery_domains"],
+        found["discovery_evidence"],
+        found["discovery_amount_sold"],
+    ) == (
+        "tier_c",
+        "C",
+        "quillfeather.com quillfeather.ai",
+        "/terms: Quillfeather Robotics, Inc.",
+        "2500000",
+    )
+    assert found["candidate_1_id"] == ""
+    assert all(plain[column] == "" for column in DISCOVERY_COLUMNS)
     assert review.VERDICTS == ("link", "create", "reject")

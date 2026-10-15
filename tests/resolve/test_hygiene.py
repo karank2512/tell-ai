@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from tell.discovery import issuers
 from tell.models import Company, CompanyAlias, EventRow, ReviewQueueItem
 from tell.resolve import hygiene
 from tell.resolve.hygiene import (
@@ -19,7 +20,7 @@ from tell.resolve.hygiene import (
     prune_aliases,
 )
 from tell.resolve.match import resolve_events
-from tell.resolve.review import apply_verdict
+from tell.resolve.review import DISCOVERY_KEY, apply_verdict
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=UTC)
 
@@ -297,3 +298,57 @@ def test_close_junk_reviews_closes_descriptor_only_and_fund_items(db_session: Se
     # with no candidate left at all the reason is no_candidate
     _item(db_session, "ev-none", "Completely Unrelated Holdings", [])
     assert close_junk_reviews(db_session, now=NOW)["by_reason"] == {"no_candidate": 1}
+
+
+def _discovery_item(session: Session, event_id: str, name: str, reason: str, **extra: Any) -> int:
+    """An item the way ``tell discover issuers`` opens it (ADR 0035): no candidates for
+    tier C and several domains, the proposal under ``payload.issuer_discovery``."""
+    item = ReviewQueueItem(
+        kind="entity_match",
+        payload={
+            "event_id": event_id,
+            "name": name,
+            "state": "TX",
+            "city": "AUSTIN",
+            "candidates": extra.pop("candidates", []),
+            issuers.SOURCE: {
+                "reason": reason,
+                "cik": "0002990001",
+                "tier": "C" if reason == "tier_c" else None,
+                "domains": ["quillfeather.com"],
+                "evidence": None,
+                "amount_sold": 2_500_000,
+                **extra,
+            },
+        },
+        created_at=NOW,
+    )
+    session.add(item)
+    session.flush()
+    return item.id
+
+
+def test_close_junk_reviews_never_closes_issuer_discovery_items(db_session: Session) -> None:
+    """A new issuer with no similar alias is R6 to the matcher, but its discovery item
+    proposes a domain: it stays open and is counted as ``kept_issuer_discovery``."""
+    assert issuers.SOURCE == DISCOVERY_KEY
+    _event(db_session, "ev-c", "Quillfeather Robotics, Inc.", state="TX")
+    tier_c = _discovery_item(db_session, "ev-c", "Quillfeather Robotics, Inc.", "tier_c")
+    several = _discovery_item(
+        db_session, "ev-s", "Quillfeather Robotics, Inc.", "several_domains", tier="A"
+    )
+    junk = _item(db_session, "ev-j", "Completely Unrelated Holdings", [])
+
+    dry = close_junk_reviews(db_session, now=NOW)
+    assert (dry["open_scanned"], dry["junk"], dry["kept_issuer_discovery"]) == (3, 1, 2)
+    assert [e["id"] for e in dry["examples"]] == [junk]
+
+    applied = close_junk_reviews(db_session, now=NOW, apply=True)
+    assert (applied["closed"], applied["kept_issuer_discovery"]) == (1, 2)
+    for item_id, status in ((tier_c, "open"), (several, "open"), (junk, "rejected")):
+        item = db_session.get(ReviewQueueItem, item_id)
+        assert item is not None
+        assert item.status == status
+    kept = db_session.get(ReviewQueueItem, tier_c)
+    assert kept is not None
+    assert "resolved_by" not in kept.payload

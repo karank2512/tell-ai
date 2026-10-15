@@ -1,0 +1,923 @@
+[
+ {
+  "id": "uviquity",
+  "hand_check": "SAME",
+  "issuer": {
+   "cik": "0002011121",
+   "name": "UVIQUITY, INC.",
+   "previous_names": [],
+   "city": "RALEIGH",
+   "state": "NC"
+  },
+  "domains": [
+   {
+    "domain": "uviquity.com",
+    "pages": [
+     {
+      "path": "/",
+      "title": "Uviquity | Engineered light on a chip — quantum, sensing, and disinfection",
+      "description": "Uviquity builds aluminum nitride photonic integrated circuits",
+      "blocks": []
+     },
+     {
+      "path": "/terms",
+      "title": "Terms",
+      "description": "",
+      "blocks": [
+       "www.uviquity.com (the “Site”) is a copyrighted work belonging to Uviquity, Inc. (“Company”, “us”, “our”, and “we”).",
+       "Raleigh, North Carolina 27606."
+      ]
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "linked",
+   "tier": "A",
+   "domain": "uviquity.com",
+   "path": "/terms",
+   "span": "Uviquity, Inc.",
+   "domains": []
+  }
+ },
+ {
+  "id": "anura_connect",
+  "hand_check": "SAME",
+  "issuer": {
+   "cik": "0002156466",
+   "name": "Anura Connect, Inc.",
+   "previous_names": [],
+   "city": "MADISON",
+   "state": "WI"
+  },
+  "domains": [
+   {
+    "domain": "anuraconnect.com",
+    "pages": [
+     {
+      "path": "/",
+      "title": "Anura Connect | Epic Consulting, Done Right",
+      "description": "Anura Connect places highly vetted Epic consultants with health systems",
+      "blocks": [
+       "experienced consultants and Epic professionals in Madison, Wisconsin, Epic’s backyard."
+      ]
+     },
+     {
+      "path": "/terms",
+      "title": "Terms & Conditions | Anura Connect",
+      "description": "",
+      "blocks": [
+       "Company (\"the Company,\" \"We,\" \"Us,\" or \"Our\") refers to Anura Connect, Inc., Madison, WI 53703."
+      ]
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "linked",
+   "tier": "A",
+   "domain": "anuraconnect.com",
+   "path": "/terms",
+   "span": "Anura Connect, Inc.",
+   "domains": []
+  }
+ },
+ {
+  "id": "emerald_ai",
+  "hand_check": "SAME",
+  "note": "domain from the Ashby board's publicWebsite (board name alone is not evidence)",
+  "issuer": {
+   "cik": "0002047797",
+   "name": "Emerald AI, Inc.",
+   "previous_names": [],
+   "city": "WASHINGTON",
+   "state": "DC"
+  },
+  "domains": [
+   {
+    "domain": "emeraldai.co",
+    "pages": [
+     {
+      "path": "/",
+      "title": "Emerald AI",
+      "description": "Emerald AI turns AI data centers into flexible grid assets",
+      "blocks": []
+     },
+     {
+      "path": "/privacy-policy",
+      "title": "Privacy Policy | Emerald AI",
+      "description": "",
+      "blocks": [
+       "This Privacy Policy describes how Emerald AI, Inc. and its subsidiaries and affiliates"
+      ]
+     }
+    ]
+   },
+   {
+    "domain": "emerald.io",
+    "pages": [
+     {
+      "path": "/",
+      "title": "emerald",
+      "description": "internet toy factory",
+      "blocks": []
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "linked",
+   "tier": "A",
+   "domain": "emeraldai.co",
+   "path": "/privacy-policy",
+   "span": "Emerald AI, Inc.",
+   "domains": []
+  }
+ },
+ {
+  "id": "eigenq",
+  "hand_check": "SAME",
+  "issuer": {
+   "cik": "0002064142",
+   "name": "EigenQ Inc",
+   "previous_names": [],
+   "city": "AUSTIN",
+   "state": "TX"
+  },
+  "domains": [
+   {
+    "domain": "eigenq.com",
+    "pages": [
+     {
+      "path": "/",
+      "title": "EigenQ | Market-Ready Quantum Security for a Connected Future",
+      "description": "",
+      "blocks": [
+       "EigenQ Inc. makes no representation or warranty as to the accuracy, completeness,"
+      ]
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "linked",
+   "tier": "A",
+   "domain": "eigenq.com",
+   "path": "/",
+   "span": "EigenQ Inc.",
+   "domains": []
+  }
+ },
+ {
+  "id": "memrico",
+  "hand_check": "SAME",
+  "issuer": {
+   "cik": "0002158790",
+   "name": "Memrico Inc.",
+   "previous_names": [],
+   "city": "WOODINVILLE",
+   "state": "WA"
+  },
+  "domains": [
+   {
+    "domain": "memrico.com",
+    "pages": [
+     {
+      "path": "/",
+      "title": "Memrico — The Best Family Conversations Start With a Photo",
+      "description": "Private family albums where every story stays with the photo.",
+      "blocks": [
+       "Terms & Conditions",
+       "© Memrico, Inc. · Memrico® is a registered trademark of Memrico, Inc."
+      ]
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "linked",
+   "tier": "A",
+   "domain": "memrico.com",
+   "path": "/",
+   "span": "Memrico, Inc.",
+   "domains": []
+  }
+ },
+ {
+  "id": "edacious",
+  "hand_check": "SAME",
+  "issuer": {
+   "cik": "0002018655",
+   "name": "Edacious, PBC",
+   "previous_names": [],
+   "city": "MARLBOROUGH",
+   "state": "MA"
+  },
+  "domains": [
+   {
+    "domain": "edacious.com",
+    "pages": [
+     {
+      "path": "/",
+      "title": "Edacious | Nutrient Density Testing & Food Quality Software",
+      "description": "Edacious helps food producers and brands verify nutrient density",
+      "blocks": [
+       "Food Lab",
+       "Software",
+       "Company",
+       "Careers",
+       "FAQ",
+       "© 2026 Edacious, PBC. All rights reserved.",
+       "Terms & Privacy Policy"
+      ]
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "linked",
+   "tier": "A",
+   "domain": "edacious.com",
+   "path": "/",
+   "span": "Edacious, PBC",
+   "domains": []
+  }
+ },
+ {
+  "id": "way_bio",
+  "hand_check": "SAME",
+  "note": "waybiosolutions.com redirects to waybio.us; joined without separators the blocks read 'Move FastWay Biosolutions, Inc.' (no match)",
+  "issuer": {
+   "cik": "0002155613",
+   "name": "Way Biosolutions, Inc.",
+   "previous_names": [],
+   "city": "CAMBRIDGE",
+   "state": "MA"
+  },
+  "domains": [
+   {
+    "domain": "waybio.us",
+    "pages": [
+     {
+      "path": "/",
+      "title": "Waybio",
+      "description": "",
+      "blocks": [
+       "Move Fast",
+       "Way Biosolutions, Inc.",
+       "(WayBio) Cambridge, MA 02140 United States"
+      ]
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "linked",
+   "tier": "A",
+   "domain": "waybio.us",
+   "path": "/",
+   "span": "Way Biosolutions, Inc.",
+   "domains": []
+  }
+ },
+ {
+  "id": "restara_medical",
+  "hand_check": "SAME",
+  "note": "restaramedical.com redirects to restaramed.com",
+  "issuer": {
+   "cik": "0002156770",
+   "name": "Restara Medical, Inc.",
+   "previous_names": [],
+   "city": "FAYETTEVILLE",
+   "state": "AR"
+  },
+  "domains": [
+   {
+    "domain": "restaramed.com",
+    "pages": [
+     {
+      "path": "/",
+      "title": "Restara Medical – Verified protection from pressure injuries",
+      "description": "",
+      "blocks": [
+       "Restara Medical",
+       "Fayetteville, AR 72701"
+      ]
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "linked",
+   "tier": "B",
+   "domain": "restaramed.com",
+   "path": "/",
+   "span": "Restara Medical",
+   "domains": []
+  }
+ },
+ {
+  "id": "saltbox",
+  "hand_check": "SAME",
+  "note": "design pass counted 'Maine' in prose as tier B; the page is a 'coming soon' placeholder, so it is parked under the rule",
+  "issuer": {
+   "cik": "0002152391",
+   "name": "Saltbox Tinned Fish Co., PBC",
+   "previous_names": [],
+   "city": "TENANTS HARBOR",
+   "state": "ME"
+  },
+  "domains": [
+   {
+    "domain": "saltboxfish.com",
+    "pages": [
+     {
+      "path": "/",
+      "title": "Saltbox Tinned Fish Co.",
+      "description": "Premium tinned seafood from Maine’s working waterfront. Coming soon.",
+      "blocks": [
+       "Coming soon."
+      ]
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "no_domain",
+   "tier": null,
+   "domain": null,
+   "path": null,
+   "span": null,
+   "domains": []
+  }
+ },
+ {
+  "id": "mangrove",
+  "hand_check": "DIFFERENT",
+  "note": "shared core word plus the same city is never evidence",
+  "issuer": {
+   "cik": "0002111089",
+   "name": "Mangrove Therapeutics Inc.",
+   "previous_names": [],
+   "city": "SACRAMENTO",
+   "state": "CA"
+  },
+  "domains": [
+   {
+    "domain": "mangrove.ai",
+    "pages": [
+     {
+      "path": "/",
+      "title": "Mangrove – Build, test and run automated trading strategies without writing code",
+      "description": "Build, test and run automated trading strategies without writing code",
+      "blocks": []
+     },
+     {
+      "path": "/terms-of-service",
+      "title": "Terms of Service – Mangrove",
+      "description": "The terms governing your use of Mangrove, covering your account",
+      "blocks": [
+       "writing at Sacramento, CA 95834"
+      ]
+     }
+    ]
+   },
+   {
+    "domain": "mangrove.io",
+    "pages": [
+     {
+      "path": "/",
+      "title": "Mangrove — The tools hedge funds use. Built for everyone.",
+      "description": "Take charge of your financial freedom.",
+      "blocks": []
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "tier_c",
+   "tier": "C",
+   "domain": null,
+   "path": null,
+   "span": null,
+   "domains": [
+    "mangrove.ai",
+    "mangrove.io"
+   ]
+  }
+ },
+ {
+  "id": "communion",
+  "hand_check": "DIFFERENT",
+  "issuer": {
+   "cik": "0002067226",
+   "name": "Communion Inc.",
+   "previous_names": [],
+   "city": "BROOKLYN",
+   "state": "NY"
+  },
+  "domains": [
+   {
+    "domain": "communion.com",
+    "pages": [
+     {
+      "path": "/",
+      "title": "Communion — Closer to the Bible than you’ve ever been",
+      "description": "Communion is a new kind of Bible app",
+      "blocks": []
+     },
+     {
+      "path": "/terms",
+      "title": "Terms and Conditions · Communion",
+      "description": "Terms and conditions for the Communion",
+      "blocks": []
+     }
+    ]
+   },
+   {
+    "domain": "communion.co",
+    "pages": [
+     {
+      "path": "/",
+      "title": "communion.co for sale | Spaceship.com",
+      "description": "communion.co is for sale on Spaceship.",
+      "blocks": []
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "tier_c",
+   "tier": "C",
+   "domain": null,
+   "path": null,
+   "span": null,
+   "domains": [
+    "communion.com"
+   ]
+  }
+ },
+ {
+  "id": "kaleidoscope",
+  "hand_check": "DIFFERENT",
+  "issuer": {
+   "cik": "0002138436",
+   "name": "KALEIDOSCOPE VENTURES, INC.",
+   "previous_names": [],
+   "city": "LONGBOAT KEY",
+   "state": "FL"
+  },
+  "domains": [
+   {
+    "domain": "kaleidoscope.com",
+    "pages": [
+     {
+      "path": "/",
+      "title": "The Financial Modelling Platform that stays true to your business | Kaleidoscope",
+      "description": "AI-native financial modelling for small",
+      "blocks": []
+     }
+    ]
+   },
+   {
+    "domain": "kaleidoscope.io",
+    "pages": [
+     {
+      "path": "/",
+      "title": "Domain for Sale",
+      "description": "",
+      "blocks": []
+     }
+    ]
+   },
+   {
+    "domain": "kaleidoscope.co",
+    "pages": [
+     {
+      "path": "/",
+      "title": "Kaleidoscope | Creative Technology Agency",
+      "description": "Building platforms that improve lives",
+      "blocks": []
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "tier_c",
+   "tier": "C",
+   "domain": null,
+   "path": null,
+   "span": null,
+   "domains": [
+    "kaleidoscope.com",
+    "kaleidoscope.co"
+   ]
+  }
+ },
+ {
+  "id": "palermo",
+  "hand_check": "DIFFERENT",
+  "issuer": {
+   "cik": "0002157616",
+   "name": "Palermo Solutions, Inc.",
+   "previous_names": [],
+   "city": "KELLER",
+   "state": "TX"
+  },
+  "domains": [
+   {
+    "domain": "palermo.io",
+    "pages": [
+     {
+      "path": "/",
+      "title": "palermo.io",
+      "description": "",
+      "blocks": []
+     }
+    ]
+   },
+   {
+    "domain": "getpalermo.com",
+    "pages": [
+     {
+      "path": "/",
+      "title": "Μια νύχτα στο Παλέρμο",
+      "description": "",
+      "blocks": []
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "no_domain",
+   "tier": null,
+   "domain": null,
+   "path": null,
+   "span": null,
+   "domains": []
+  }
+ },
+ {
+  "id": "ironsite",
+  "hand_check": "UNCLEAR",
+  "note": "ironsite.com is a gate maker (DIFFERENT); ironsite.ai serves a JavaScript-only page (UNCLEAR)",
+  "issuer": {
+   "cik": "0002155699",
+   "name": "Ironsite AI Inc.",
+   "previous_names": [],
+   "city": "SAN FRANCISCO",
+   "state": "CA"
+  },
+  "domains": [
+   {
+    "domain": "ironsite.com",
+    "pages": [
+     {
+      "path": "/",
+      "title": "Automatic Gates, Bollards, Barriers, Overhead Doors | IronSite",
+      "description": "IronSite provides turnkey perimeter",
+      "blocks": []
+     }
+    ]
+   },
+   {
+    "domain": "ironsite.ai",
+    "pages": [
+     {
+      "path": "/",
+      "title": "Ironsite.ai",
+      "description": "Ironsite attacks the single biggest cost",
+      "blocks": []
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "tier_c",
+   "tier": "C",
+   "domain": null,
+   "path": null,
+   "span": null,
+   "domains": [
+    "ironsite.com",
+    "ironsite.ai"
+   ]
+  }
+ },
+ {
+  "id": "sparked_innovations",
+  "hand_check": "DIFFERENT",
+  "issuer": {
+   "cik": "0002150940",
+   "name": "Sparked Innovations.AI, Inc.",
+   "previous_names": [],
+   "city": "DOVER",
+   "state": "DE"
+  },
+  "domains": [
+   {
+    "domain": "sparkedinnovations.com",
+    "pages": [
+     {
+      "path": "/",
+      "title": "Sparked Innovations | Car Audio & Bass Systems | Authorized",
+      "description": "Sparked Innovations - your source for",
+      "blocks": []
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "tier_c",
+   "tier": "C",
+   "domain": null,
+   "path": null,
+   "span": null,
+   "domains": [
+    "sparkedinnovations.com"
+   ]
+  }
+ },
+ {
+  "id": "optain",
+  "hand_check": "DIFFERENT",
+  "note": "the Greenhouse board found by slug links no site",
+  "issuer": {
+   "cik": "0001977208",
+   "name": "Optain Health, Inc.",
+   "previous_names": [],
+   "city": "Charlotte",
+   "state": "NC"
+  },
+  "domains": [
+   {
+    "domain": "optain.ai",
+    "pages": [
+     {
+      "path": "/",
+      "title": "optain.ai for sale | Spaceship",
+      "description": "",
+      "blocks": []
+     }
+    ]
+   },
+   {
+    "domain": "optain.co",
+    "pages": [
+     {
+      "path": "/",
+      "title": "Optain: One Application. Every Funding Option.",
+      "description": "One application unlocks 16+ funding",
+      "blocks": []
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "tier_c",
+   "tier": "C",
+   "domain": null,
+   "path": null,
+   "span": null,
+   "domains": [
+    "optain.co"
+   ]
+  }
+ },
+ {
+  "id": "skinsync",
+  "hand_check": "DIFFERENT",
+  "note": "skinsyncai.com (the design's tier B) is left out: the pass kept no text for it",
+  "issuer": {
+   "cik": "0002154967",
+   "name": "SKINSYNC AI INC.",
+   "previous_names": [],
+   "city": "PLAINFIELD",
+   "state": "IL"
+  },
+  "domains": [
+   {
+    "domain": "skinsync.com",
+    "pages": [
+     {
+      "path": "/",
+      "title": "Skin Care Clinic | Skinsync Clinical Spa | Wakefield, MA",
+      "description": "Advanced, science-based skin treatments",
+      "blocks": []
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "tier_c",
+   "tier": "C",
+   "domain": null,
+   "path": null,
+   "span": null,
+   "domains": [
+    "skinsync.com"
+   ]
+  }
+ },
+ {
+  "id": "aspicio",
+  "hand_check": "SAME",
+  "note": "probably the same company (tier C goes to review, never auto)",
+  "issuer": {
+   "cik": "0002025735",
+   "name": "Aspicio Therapeutics, Inc.",
+   "previous_names": [],
+   "city": "DOWNINGTOWN",
+   "state": "PA"
+  },
+  "domains": [
+   {
+    "domain": "aspicio.ai",
+    "pages": [
+     {
+      "path": "/",
+      "title": "aspicio.ai",
+      "description": "",
+      "blocks": []
+     }
+    ]
+   },
+   {
+    "domain": "aspiciotherapeutics.com",
+    "pages": [
+     {
+      "path": "/",
+      "title": "aspiciotherapeutics.com",
+      "description": "Explore biotechnology innovation",
+      "blocks": []
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "tier_c",
+   "tier": "C",
+   "domain": null,
+   "path": null,
+   "span": null,
+   "domains": [
+    "aspiciotherapeutics.com"
+   ]
+  }
+ },
+ {
+  "id": "dextris",
+  "hand_check": "SAME",
+  "note": "probably the same company; JavaScript-only page",
+  "issuer": {
+   "cik": "0002145862",
+   "name": "Dextris Group Inc.",
+   "previous_names": [],
+   "city": "JACKSONVILLE BEACH",
+   "state": "FL"
+  },
+  "domains": [
+   {
+    "domain": "dextris.io",
+    "pages": [
+     {
+      "path": "/",
+      "title": "DEXtris — Specialty insurance products built for where risk is going",
+      "description": "DEXtris is an AI-native underwriting",
+      "blocks": []
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "tier_c",
+   "tier": "C",
+   "domain": null,
+   "path": null,
+   "span": null,
+   "domains": [
+    "dextris.io"
+   ]
+  }
+ },
+ {
+  "id": "kelai",
+  "hand_check": "UNCLEAR",
+  "note": "JavaScript-only page",
+  "issuer": {
+   "cik": "0002145665",
+   "name": "KelAI Tech, Inc.",
+   "previous_names": [],
+   "city": "NEW YORK",
+   "state": "NY"
+  },
+  "domains": [
+   {
+    "domain": "kelai.ai",
+    "pages": [
+     {
+      "path": "/",
+      "title": "KelAI — The AI Alpha Engine",
+      "description": "KelAI is the AI alpha engine for hedge",
+      "blocks": []
+     }
+    ]
+   },
+   {
+    "domain": "kelaitech.com",
+    "pages": [
+     {
+      "path": "/",
+      "title": "KelAI — The AI Alpha Engine",
+      "description": "KelAI is the AI alpha engine for hedge",
+      "blocks": []
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "tier_c",
+   "tier": "C",
+   "domain": null,
+   "path": null,
+   "span": null,
+   "domains": [
+    "kelai.ai",
+    "kelaitech.com"
+   ]
+  }
+ },
+ {
+  "id": "bollystep",
+  "hand_check": "UNCLEAR",
+  "note": "Form D address in Lewes, DE (a registered-agent city)",
+  "issuer": {
+   "cik": "0002145459",
+   "name": "BollyStep INC",
+   "previous_names": [],
+   "city": "LEWES",
+   "state": "DE"
+  },
+  "domains": [
+   {
+    "domain": "bollystep.com",
+    "pages": [
+     {
+      "path": "/",
+      "title": "BollyStep",
+      "description": "",
+      "blocks": []
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "tier_c",
+   "tier": "C",
+   "domain": null,
+   "path": null,
+   "span": null,
+   "domains": [
+    "bollystep.com"
+   ]
+  }
+ },
+ {
+  "id": "payload_trap",
+  "hand_check": null,
+  "synthetic": true,
+  "note": "the board-first design's false hit: 'Payload, inc' matched 'Payload, including'",
+  "issuer": {
+   "cik": "0000000001",
+   "name": "Payload, Inc.",
+   "previous_names": [],
+   "city": "SAN FRANCISCO",
+   "state": "CA"
+  },
+  "domains": [
+   {
+    "domain": "payload.example",
+    "pages": [
+     {
+      "path": "/terms",
+      "title": "Terms",
+      "description": "",
+      "blocks": [
+       "Payload, including its affiliates, may update these terms."
+      ]
+     }
+    ]
+   }
+  ],
+  "expected": {
+   "outcome": "tier_c",
+   "tier": "C",
+   "domain": null,
+   "path": null,
+   "span": null,
+   "domains": [
+    "payload.example"
+   ]
+  }
+ }
+]

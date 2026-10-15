@@ -28,7 +28,8 @@ event (dry run unless ``apply``):
    still linked to that company carries that name (the company's own normalized name and
    domain label are never touched). ``companies.legal_name`` is reset to ``NULL`` when it is
    an unlinked event's issuer name and no still-linked event of the company has that name;
-   ``companies.cik`` when it is an unlinked event's CIK and no still-linked event has it.
+   ``companies.cik`` (with its ``cik_source``) when it is an unlinked event's CIK and no
+   still-linked event has it.
 
 Running it twice changes nothing the second time: unlinked events are no longer scanned,
 and every kept event is decided the same way.
@@ -157,9 +158,10 @@ class _Relinker:
             if e.cik:
                 self.trusted_ciks[e.company_id].add(e.cik)
         self.establishing: dict[tuple[int, str], set[str]] = defaultdict(set)
-        """(company, cik) -> events whose own match wrote that CIK (not collector CIK links)."""
+        """(company, cik) -> events whose own match wrote that CIK (not collector CIK links,
+        and not R0 links: R0 fires only on a CIK some trusted path already wrote)."""
         for e in linked:
-            if e.cik and (e.rule in RULES or e.rule == "manual"):
+            if e.cik and e.rule != "R0" and (e.rule in RULES or e.rule == "manual"):
                 self.establishing[(e.company_id, e.cik)].add(e.event.event_id)
         self.kept: dict[str, _Linked] = {e.event.event_id: e for e in manual}
         self.decisions: dict[str, MatchDecision] = {}
@@ -175,7 +177,13 @@ class _Relinker:
     def _decide(self, e: _Linked) -> MatchDecision:
         s = e.subject
         return match_name(
-            self.session, s.name, state=s.state, city=s.city, index=self.index, issuer=s.facts
+            self.session,
+            s.name,
+            state=s.state,
+            city=s.city,
+            index=self.index,
+            issuer=s.facts,
+            edgar=True,
         )
 
     def _keep(self, e: _Linked, *, trusted: bool) -> None:
@@ -333,11 +341,18 @@ def _apply(session: Session, outcomes: list[_Outcome], cleanup: _Cleanup, *, now
         company = session.get(Company, cid)
         if company is not None:
             company.cik = None
+            company.cik_source = None  # the source described the CIK just removed
     session.flush()
     for o in outcomes:
         if o.moved_to is not None:
             trusted = o.decision.rule in TRUSTED_RULES
-            link_event(session, o.linked.event, o.moved_to, trusted=trusted)
+            link_event(
+                session,
+                o.linked.event,
+                o.moved_to,
+                trusted=trusted,
+                cik_source=o.decision.cik_source if trusted else None,
+            )
     session.flush()
     return opened
 

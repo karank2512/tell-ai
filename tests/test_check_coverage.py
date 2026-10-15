@@ -22,7 +22,7 @@ def test_green_when_packages_have_no_code_yet(capsys: pytest.CaptureFixture[str]
     report = _report(95.0, {"tell/http.py": (90, 100)})
     assert check_coverage.check(report) == []
     out = capsys.readouterr().out
-    assert out.count("skipped (no code yet)") == 3
+    assert out.count("skipped (no code yet)") == len(check_coverage.PACKAGE_FLOORS)
 
 
 def test_overall_floor() -> None:
@@ -64,7 +64,12 @@ def test_main_exit_codes(tmp_path: Path) -> None:
 def test_repo_pyproject_declares_the_hard_constraint_floors() -> None:
     floors = check_coverage.load_floors()
     assert floors.overall == 80.0
-    assert floors.packages == {"tell/collectors": 90.0, "tell/resolve": 90.0, "tell/signals": 90.0}
+    assert floors.packages == {
+        "tell/collectors": 90.0,
+        "tell/discovery": 90.0,  # ADR 0035 acceptance criteria
+        "tell/resolve": 90.0,
+        "tell/signals": 90.0,
+    }
     assert floors == check_coverage.Floors()  # the defaults mirror pyproject.toml
 
 

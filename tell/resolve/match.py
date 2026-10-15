@@ -1,10 +1,12 @@
-"""Match rules R1-R6 (spec section 6) and the resolver that links unlinked events.
+"""Match rules R0-R6 (spec section 6 plus R0, ADR 0035) and the resolver that links unlinked events.
 
 Rules are evaluated top to bottom; the first that fires sets ``confidence``:
 
 ======  ===========================================================  ==========  =========
 Rule    Condition                                                    Confidence  Action
 ======  ===========================================================  ==========  =========
+R0      an EDGAR event's CIK equals ``companies.cik`` and that CIK has a
+        trusted ``cik_source`` (ADR 0035)                            0.99        auto_link
 R1      the source URL is on the watched domain (``on_domain_company_id``)  0.98  auto_link
 R2      normalized name (or its alt form) equals exactly one company's alias  0.95  auto_link
 R3      ``token_set_ratio >= 92``, issuer state == ``hq_state`` (city when no state), the
@@ -16,6 +18,14 @@ R6      otherwise                                                    0          
 ======  ===========================================================  ==========  =========
 
 Interpretation notes (recorded in ``docs/methods/entity-resolution.md`` and ADR 0018):
+
+* R0 (ADR 0035, proposed; a deviation from SPEC section 6, which starts at R1) links an
+  EDGAR event exactly by CIK, but only to a company whose ``cik_source`` says how the CIK
+  was earned (issuer-first tier A/B evidence, R1, an R2 that passed the Form D guards, or
+  a review verdict; :data:`tell.resolve.guards.TRUSTED_CIK_SOURCES`). A CIK of unknown
+  origin (``cik_source`` NULL) never fires R0; the event falls through to the name rules.
+  R0 is not subject to the Form D guards: the CIK is the issuer's own identifier, so
+  amendments and later rounds of a company already linked once link exactly.
 
 * R2 with an alias shared by two companies is ambiguous and falls through (R3 may
   disambiguate by geography; otherwise R5).
@@ -47,17 +57,29 @@ Interpretation notes (recorded in ``docs/methods/entity-resolution.md`` and ADR 
   vehicle is no candidate for an operating company and goes straight to R6, with no review
   item; (a) an R3 link becomes R5 review (``r3_review_only``); (b)-(d) an R2 or R4 link
   whose issuer is not a Delaware corporation, whose company's YC status is known and not
-  Active, or whose incorporation year does not fit the YC batch becomes R5 review. A
-  demoted decision records ``guard_failed`` (and ``demoted_from``); a guard never demotes
-  to R6.
+  Active, or whose incorporation year does not fit the YC batch becomes R5 review; (f,
+  ADR 0035) an auto-link to a company with no YC status becomes R5 review unless the
+  issuer's CIK is the company's trusted CIK or issuer-first discovery stored tier A/B site
+  evidence for the pair (``no_site_evidence``). Guard (f) alone also applies to the
+  auto-links of every other EDGAR filing (S-1, 8-K; ``match_name(..., edgar=True)``),
+  which carries no issuer facts: an exact name on an S-1 is no more evidence for a
+  company without a YC status than on a Form D. A demoted decision records
+  ``guard_failed`` (and ``demoted_from``); a guard never demotes to R6.
 * Distinctive-token floor (ADR 0034): an R5 review candidate must share a distinctive
   token with the name (:func:`tell.resolve.aliases.shares_distinctive_token`; not filler,
   not a descriptor such as ``technologies`` / ``therapeutics``). A name whose only
   candidates share a descriptor is R6. Auto-link rules and guard demotions are unaffected.
 * Enrichment (ADR 0034): only a trusted link writes ``edgar`` aliases, ``legal_name`` and
-  ``cik``: R1, R2 (after its guards), or a human review verdict. An R4 link of an EDGAR
+  ``cik``: R0, R1, R2 (after its guards), or a human review verdict. An R4 link of an EDGAR
   event links the event and writes nothing else, so a fuzzy link can never mint the exact
-  alias that makes the next filing an R2.
+  alias that makes the next filing an R2. A trusted link that writes ``cik`` also writes
+  ``cik_source`` (``r1`` / ``guarded_r2`` / ``manual``, :data:`CIK_SOURCE_BY_RULE`), and
+  one whose CIK equals a stored CIK of unknown origin records that source for it, so the
+  company's later filings link through R0. ``guarded_r2`` is earned only by an R2 decided
+  with the Form D guards (:attr:`MatchDecision.form_d_guarded`); an R2 of any other filing
+  (an S-1 has no issuer facts to guard) writes its CIK with ``cik_source`` NULL, which R0
+  does not trust, so the company's next Form D still goes through the name rules and
+  guards (and, passing them, records ``guarded_r2``).
 
 Every decision is written into ``events.payload["match"]`` as
 ``{rule, ratio, candidates[:5], confidence, resolved_at}`` so a wrong link can be audited.
@@ -69,7 +91,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Literal
 from urllib.parse import parse_qs, urlparse
@@ -80,7 +102,16 @@ from sqlalchemy.orm import Session
 
 from tell.collectors.base import iso_utc
 from tell.db import upsert
-from tell.models import ALIAS_SOURCES, AtsBoard, Company, CompanyAlias, EventRow, ReviewQueueItem
+from tell.models import (
+    ALIAS_SOURCES,
+    TRUSTED_EVIDENCE_TIERS,
+    AtsBoard,
+    Company,
+    CompanyAlias,
+    EventRow,
+    IssuerDiscovery,
+    ReviewQueueItem,
+)
 from tell.resolve.aliases import (
     alias_problem,
     is_single_token,
@@ -90,8 +121,11 @@ from tell.resolve.aliases import (
 from tell.resolve.guards import (
     FORM_D_TYPES,
     R3_REVIEW_ONLY,
+    TRUSTED_CIK_SOURCES,
     CompanyFacts,
     IssuerFacts,
+    cik10,
+    filing_guard_failures,
     fund_signals,
     guard_failures,
 )
@@ -100,6 +134,7 @@ from tell.resolve.normalize import domain_label, normalize_name, normalize_name_
 __all__ = [
     "AUTO_LINK_RULES",
     "CANDIDATE_LIMIT",
+    "CIK_SOURCE_BY_RULE",
     "CONFIDENCE",
     "GEO_RATIO",
     "GUARD_RATIO",
@@ -125,15 +160,19 @@ __all__ = [
 
 _log = logging.getLogger(__name__)
 
-Rule = Literal["R1", "R2", "R3", "R4", "R5", "R6"]
+Rule = Literal["R0", "R1", "R2", "R3", "R4", "R5", "R6"]
 Action = Literal["auto_link", "review", "unlinked"]
 
-RULES: tuple[str, ...] = ("R1", "R2", "R3", "R4", "R5", "R6")
-AUTO_LINK_RULES: frozenset[str] = frozenset({"R1", "R2", "R3", "R4"})
-TRUSTED_RULES: frozenset[str] = frozenset({"R1", "R2", "manual"})
-"""Links that write enrichment (``edgar`` aliases, ``legal_name``, ``cik``; ADR 0034): R1,
-R2 after its guards, and a human review verdict (``manual``)."""
+RULES: tuple[str, ...] = ("R0", "R1", "R2", "R3", "R4", "R5", "R6")
+AUTO_LINK_RULES: frozenset[str] = frozenset({"R0", "R1", "R2", "R3", "R4"})
+TRUSTED_RULES: frozenset[str] = frozenset({"R0", "R1", "R2", "manual"})
+"""Links that write enrichment (``edgar`` aliases, ``legal_name``, ``cik``; ADR 0034): R0
+(ADR 0035), R1, R2 after its guards, and a human review verdict (``manual``)."""
+CIK_SOURCE_BY_RULE: dict[str, str] = {"R1": "r1", "R2": "guarded_r2", "manual": "manual"}
+"""``companies.cik_source`` a trusted link writes with the CIK (ADR 0035). R0 never writes
+one: it fires only on a CIK that already has a trusted source."""
 CONFIDENCE: dict[str, float] = {
+    "R0": 0.99,
     "R1": 0.98,
     "R2": 0.95,
     "R3": 0.90,
@@ -272,6 +311,20 @@ class MatchDecision:
     """The company the demoted auto-link would have linked."""
     fund_signals: list[str] = field(default_factory=list)
     """Why a Form D issuer is a pooled investment vehicle (guard e); the decision is then R6."""
+    form_d_guarded: bool = False
+    """Whether this auto-link passed the Form D guards (b)-(d) and (f) with the issuer's and
+    the company's facts. Only such an R2 earns ``cik_source = 'guarded_r2'``."""
+
+    @property
+    def cik_source(self) -> str | None:
+        """The ``companies.cik_source`` a link made by this decision writes (ADR 0035).
+
+        :data:`CIK_SOURCE_BY_RULE` for the rule, except that an R2 the Form D guards did not
+        run on (an S-1, an 8-K) earns none: its CIK is stored as of unknown origin.
+        """
+        if self.rule == "R2" and not self.form_d_guarded:
+            return None
+        return CIK_SOURCE_BY_RULE.get(self.rule)
 
     def audit(self, *, now: datetime) -> dict[str, Any]:
         """The ``payload["match"]`` record: ``{rule, ratio, candidates[:5], confidence, resolved_at}``.
@@ -360,6 +413,7 @@ class AliasIndex:
         entries: Iterable[tuple[str, int]] = (),
         geography: Mapping[int, tuple[str | None, str | None]] | None = None,
         facts: Mapping[int, CompanyFacts] | None = None,
+        trusted_ciks: Mapping[str, int] | None = None,
     ) -> None:
         self._companies: dict[str, set[int]] = {}
         self._aliases: list[str] = []
@@ -376,7 +430,13 @@ class AliasIndex:
         """alt form -> aliases that fold to it (so :meth:`exact` is a dict lookup)."""
         self._geo: dict[int, tuple[str | None, str | None]] = {}
         self._facts: dict[int, CompanyFacts] = dict(facts or {})
-        """company -> YC status and batch, for the Form D guards."""
+        """company -> YC status and batch (plus CIK facts and site evidence), for the guards."""
+        self._trusted_ciks: dict[str, int] = {}
+        """10-digit CIK -> company, for CIKs with a trusted ``cik_source`` (rule R0)."""
+        for cik, company_id in (trusted_ciks or {}).items():
+            key = cik10(cik)
+            if key is not None:
+                self._trusted_ciks[key] = company_id
         if geography:
             for company_id, (state, city) in geography.items():
                 self._geo[company_id] = (_geo_key(state), _city_key(city))
@@ -388,7 +448,8 @@ class AliasIndex:
         cls, session: Session, *, skip_edgar: Iterable[tuple[int, str]] = ()
     ) -> AliasIndex:
         """Load ``company_aliases`` and ``companies`` (name normalized, ``hq_state``/``hq_city``,
-        ``yc_status``/``yc_batch``).
+        ``yc_status``/``yc_batch``, ``cik``/``cik_source``) and the tier A/B ``linked``
+        ``issuer_discovery`` records (site evidence for guard f, ADR 0035).
 
         A stored ``manual`` alias that is the company's bare domain label and fails the
         label rule (``apple`` for a company keyed by ``apple.com``, ``ramp`` from
@@ -407,11 +468,28 @@ class AliasIndex:
                 Company.hq_city,
                 Company.yc_status,
                 Company.yc_batch,
+                Company.cik,
+                Company.cik_source,
             )
         ).all()
+        evidence = _site_evidence(session)
         index = cls(
             geography={row[0]: (row[3], row[4]) for row in companies},
-            facts={row[0]: CompanyFacts(yc_status=row[5], yc_batch=row[6]) for row in companies},
+            facts={
+                row[0]: CompanyFacts(
+                    yc_status=row[5],
+                    yc_batch=row[6],
+                    cik=cik10(row[7]),
+                    cik_source=row[8],
+                    evidence_ciks=evidence.get(row[2], frozenset()),
+                )
+                for row in companies
+            },
+            trusted_ciks={
+                row[7]: row[0]
+                for row in companies
+                if row[7] is not None and row[8] in TRUSTED_CIK_SOURCES
+            },
         )
         owners: dict[int, tuple[str, str]] = {}
         for cid, name, domain, *_ in companies:
@@ -467,6 +545,22 @@ class AliasIndex:
     def company_facts(self, company_id: int) -> CompanyFacts | None:
         """The company's YC status and batch, when the index was built with them."""
         return self._facts.get(company_id)
+
+    def cik_company(self, cik: str | None) -> int | None:
+        """The company whose trusted CIK is ``cik`` (rule R0), or ``None``."""
+        key = cik10(cik)
+        return self._trusted_ciks.get(key) if key is not None else None
+
+    def set_cik(self, company_id: int, cik: str, cik_source: str | None) -> None:
+        """Record a CIK a link just wrote, so later events of the same run see it."""
+        key = cik10(cik)
+        if key is None:
+            return
+        facts = self._facts.get(company_id)
+        if facts is not None:
+            self._facts[company_id] = replace(facts, cik=key, cik_source=cik_source)
+        if cik_source is not None and cik_source in TRUSTED_CIK_SOURCES:
+            self._trusted_ciks.setdefault(key, company_id)
 
     def _exact_aliases(self, norm: str, alt: str) -> set[str]:
         """Aliases equal to ``norm`` or ``alt``, or whose alt form equals ``alt``."""
@@ -578,6 +672,23 @@ class AliasIndex:
         return issuer_city is not None and issuer_city == company_city
 
 
+def _site_evidence(session: Session) -> dict[str, frozenset[str]]:
+    """``domain -> CIKs`` with a ``linked`` tier A/B ``issuer_discovery`` record (guard f)."""
+    rows = session.execute(
+        select(IssuerDiscovery.domain, IssuerDiscovery.cik).where(
+            IssuerDiscovery.status == "linked",
+            IssuerDiscovery.tier.in_(sorted(TRUSTED_EVIDENCE_TIERS)),
+            IssuerDiscovery.domain.is_not(None),
+        )
+    )
+    found: dict[str, set[str]] = {}
+    for domain, cik in rows:
+        key = cik10(cik)
+        if domain and key is not None:
+            found.setdefault(domain, set()).add(key)
+    return {domain: frozenset(ciks) for domain, ciks in found.items()}
+
+
 def stored_alias_problem(alias: str, *, name: str, domain: str) -> str | None:
     """Why a stored alias of the company (``name``, ``domain``) fails the alias rule, or ``None``.
 
@@ -644,15 +755,31 @@ def _demote(decision: MatchDecision, failed: list[str]) -> MatchDecision:
 
 
 def _guarded(
-    decision: MatchDecision, issuer: IssuerFacts | None, index: AliasIndex
+    decision: MatchDecision,
+    issuer: IssuerFacts | None,
+    index: AliasIndex,
+    *,
+    edgar: bool = False,
+    cik: str | None = None,
 ) -> MatchDecision:
-    """Apply the Form D guards to an auto-link (no-op without issuer facts)."""
-    if issuer is None or decision.action != "auto_link" or decision.company_id is None:
+    """Apply the Form D guards to an auto-link; for another EDGAR filing (``edgar`` without
+    ``issuer``), guard (f) alone on the filer's ``cik``. A no-op for news."""
+    if decision.action != "auto_link" or decision.company_id is None:
         return decision
-    failed = guard_failures(issuer, index.company_facts(decision.company_id))
-    if decision.rule == "R3":
-        failed = [R3_REVIEW_ONLY, *failed]
-    return _demote(decision, failed) if failed else decision
+    company = index.company_facts(decision.company_id)
+    if issuer is not None:
+        failed = guard_failures(issuer, company)
+        if decision.rule == "R3":
+            failed = [R3_REVIEW_ONLY, *failed]
+        if failed:
+            return _demote(decision, failed)
+        decision.form_d_guarded = company is not None
+        return decision
+    if edgar:
+        failed = filing_guard_failures(cik, company)
+        if failed:
+            return _demote(decision, failed)
+    return decision
 
 
 def _name_rules(
@@ -664,14 +791,20 @@ def _name_rules(
     state: str | None,
     city: str | None,
     issuer: IssuerFacts | None,
+    edgar: bool = False,
+    cik: str | None = None,
 ) -> MatchDecision:
     """R2-R6 for a name (R1 and the fund exclusion are decided by :func:`match_name`)."""
+
+    def guarded(decision: MatchDecision) -> MatchDecision:
+        return _guarded(decision, issuer, idx, edgar=edgar, cik=cik)
+
     best = candidates[0].ratio if candidates else None
     exact = idx.exact(norm, alt)
     if len(exact) == 1:
         company_id = next(iter(exact))
         ratio = next((c.ratio for c in candidates if c.company_id == company_id), 100.0)
-        return _guarded(_decision("R2", company_id, ratio, candidates), issuer, idx)
+        return guarded(_decision("R2", company_id, ratio, candidates))
 
     strong = [c for c in candidates if c.ratio >= REVIEW_RATIO]
 
@@ -684,14 +817,12 @@ def _name_rules(
         if c.ratio >= GEO_RATIO and idx.geography_matches(c.company_id, state, city)
     ]
     if len({c.company_id for c in geo}) == 1 and geo[0].guarded:
-        return _guarded(_decision("R3", geo[0].company_id, geo[0].ratio, candidates), issuer, idx)
+        return guarded(_decision("R3", geo[0].company_id, geo[0].ratio, candidates))
 
     # R4: name only, unique in the whole table (``strong`` holds every company >= 85).
     companies = {c.company_id for c in strong}
     if strong and strong[0].ratio >= UNIQUE_RATIO and len(companies) == 1 and strong[0].guarded:
-        return _guarded(
-            _decision("R4", strong[0].company_id, strong[0].ratio, candidates), issuer, idx
-        )
+        return guarded(_decision("R4", strong[0].company_id, strong[0].ratio, candidates))
 
     # R5 needs a candidate that shares a distinctive token with the name (ADR 0034): a
     # shared descriptor ("technologies", "therapeutics") is no evidence of identity.
@@ -711,19 +842,31 @@ def match_name(
     on_domain_company_id: int | None = None,
     index: AliasIndex | None = None,
     issuer: IssuerFacts | None = None,
+    cik: str | None = None,
+    edgar: bool = False,
 ) -> MatchDecision:
-    """Apply R1-R6 to ``name`` and return the first rule that fires.
+    """Apply R0-R6 to ``name`` and return the first rule that fires.
 
     ``index`` (an :class:`AliasIndex`) avoids reloading the alias table on every call;
     without one the table is read from ``session``. ``issuer`` (a Form D's
     :class:`~tell.resolve.guards.IssuerFacts`) turns on the Form D guards (ADR 0034): a
     pooled fund is R6, and an auto-link failing a guard is R5 with ``guard_failed``.
+    ``cik`` (an EDGAR event's CIK) turns on R0: it links to the company holding that CIK
+    when the CIK's ``cik_source`` is trusted (ADR 0035). ``edgar`` says the name comes from
+    an EDGAR filing (implied by ``issuer`` or ``cik``): an auto-link of a filing without
+    issuer facts to a company with no YC status then needs guard (f) too.
     """
+    edgar = edgar or issuer is not None or cik is not None
     idx = index if index is not None else AliasIndex.from_session(session)
     norm = normalize_name(name)
     alt = normalize_name_alt(name)
     candidates = idx.candidates(norm, alt)
     best = candidates[0].ratio if candidates else None
+
+    if cik is not None:
+        owner = idx.cik_company(cik)
+        if owner is not None:
+            return _decision("R0", owner, best, candidates)
 
     if on_domain_company_id is not None:
         return _decision("R1", on_domain_company_id, best, candidates)
@@ -735,7 +878,9 @@ def match_name(
             excluded.fund_signals = signals
             return excluded
 
-    return _name_rules(idx, norm, alt, candidates, state=state, city=city, issuer=issuer)
+    return _name_rules(
+        idx, norm, alt, candidates, state=state, city=city, issuer=issuer, edgar=edgar, cik=cik
+    )
 
 
 # --- resolving events ------------------------------------------------------------------------
@@ -891,12 +1036,15 @@ def link_event(
     *,
     index: AliasIndex | None = None,
     trusted: bool = True,
+    cik_source: str | None = None,
 ) -> int:
     """Link ``event`` to ``company_id`` with the enrichment a trusted link gets; return aliases added.
 
-    Sets ``event.company_id``. For a trusted link (``trusted``: R1, R2 after its guards, a
+    Sets ``event.company_id``. For a trusted link (``trusted``: R0, R1, R2 after its guards, a
     review verdict; ADR 0034) of an EDGAR event it also fills ``companies.cik`` (when empty
-    and not held by another company) and ``companies.legal_name`` (when empty) and adds
+    and not held by another company) with ``companies.cik_source = cik_source`` (ADR 0035;
+    when the CIK is already the company's and its source is unknown, the source is
+    recorded), ``companies.legal_name`` (when empty) and adds
     the event's name and every ``previous_names`` entry as ``edgar`` aliases, so a later
     filing under a former name resolves through R2 (spec section 6: "each previous name
     becomes an alias when a filing is linked"). An untrusted EDGAR link (R3, R4) writes
@@ -911,8 +1059,21 @@ def link_event(
         return 0
     company = session.get(Company, company_id)
     if company is not None and event.source == "edgar":
+        cik = cik10(subject.cik)
         if company.cik is None and subject.cik and not _cik_taken(session, subject.cik, company_id):
             company.cik = subject.cik
+            company.cik_source = cik_source
+            if index is not None:
+                index.set_cik(company_id, subject.cik, cik_source)
+        elif (
+            cik is not None
+            and cik10(company.cik) == cik
+            and company.cik_source is None
+            and cik_source is not None
+        ):
+            company.cik_source = cik_source
+            if index is not None:
+                index.set_cik(company_id, cik, cik_source)
         if company.legal_name is None and subject.legal_name:
             company.legal_name = subject.legal_name
     names = subject.names
@@ -1006,13 +1167,15 @@ def resolve_events(
 
     Form D events are matched on ``issuer_name`` with ``issuer_state`` / ``issuer_city``
     and the Form D guards (ADR 0034); other EDGAR events on ``company_name``; news events
-    on the company name in their Google News query. On a trusted auto-link (R1, R2) the
-    company gets its ``cik`` and ``legal_name`` when those were empty, and the issuer name
+    on the company name in their Google News query. Every EDGAR event is first tried by
+    its CIK (R0, ADR 0035). On a trusted auto-link (R0, R1, R2) the
+    company gets its ``cik`` (with ``cik_source``) and ``legal_name`` when those were
+    empty, and the issuer name
     plus every previous name become aliases; an R4 link writes only ``company_id``. R5
     opens one ``review_queue`` item per event (never twice); a pair a human already
     rejected is left unlinked instead. R6 leaves the event unlinked and kept.
 
-    Events whose payload already carries an R1-R6 decision are skipped unless ``retry``
+    Events whose payload already carries an R0-R6 decision are skipped unless ``retry``
     is set, so a second run changes nothing; ``retry`` re-evaluates unlinked events
     after aliases or companies were added.
     """
@@ -1032,6 +1195,8 @@ def resolve_events(
             city=subject.city,
             index=index,
             issuer=subject.facts,
+            cik=subject.cik if event.source == "edgar" else None,
+            edgar=event.source == "edgar",
         )
         audit = decision.audit(now=now)
         previous = event.payload.get("match")
@@ -1051,6 +1216,7 @@ def resolve_events(
                 decision.company_id,
                 index=index,
                 trusted=decision.rule in TRUSTED_RULES,
+                cik_source=decision.cik_source,
             )
         elif decision.action == "review":
             norm = normalize_name(subject.name)

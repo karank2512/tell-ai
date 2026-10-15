@@ -20,8 +20,15 @@ def midnight(day: date) -> datetime:
     return datetime.combine(day, time(0, 0), tzinfo=UTC)
 
 
-def company(session: Session, domain: str, *, cik: str | None = None) -> Company:
-    row = Company(domain=domain, name=domain.split(".", maxsplit=1)[0].title(), cik=cik)
+def company(
+    session: Session, domain: str, *, cik: str | None = None, cik_source: str | None = None
+) -> Company:
+    row = Company(
+        domain=domain,
+        name=domain.split(".", maxsplit=1)[0].title(),
+        cik=cik,
+        cik_source=cik_source,
+    )
     session.add(row)
     session.flush()
     return row

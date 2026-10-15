@@ -5,14 +5,20 @@ differs from the spec text only where the spec's version cannot run as a dated,
 reproducible report; each change is listed in :data:`SQL_CHANGES` and printed beside it.
 
 * **Cohort.** ``form_d_filed`` events with ``is_amendment = false`` filed in the 90 days
-  before the evaluation instant whose link is trusted: rules R1-R4 whose
-  ``payload.match.guard_failed`` is absent or empty, or a reviewer's link
-  (``payload.match.rule = 'manual'``, which wins over a guard failure left from the R5
-  candidate it resolved). A filing the EDGAR collector linked by CIK (no match record, the
-  issuer CIK is the company's ``cik``) is in only when that CIK was set by a trusted link:
-  another ``edgar`` event of the company with the same CIK and a trusted match. Rules R5 and
-  R6, guard failures and a CIK written by such a link are out (2026-10-14 production audit:
+  before the evaluation instant whose link is trusted: rules R0-R4 whose
+  ``payload.match.guard_failed`` is absent or empty (R0, the exact CIK rule of ADR 0035,
+  never has one), or a reviewer's link (``payload.match.rule = 'manual'``, which wins over a
+  guard failure left from the R5 candidate it resolved). A filing the EDGAR collector
+  linked by CIK (no match record, the issuer CIK is the company's ``cik``) is in only when
+  that CIK has a trusted ``companies.cik_source`` or was set by a trusted link: another
+  ``edgar`` event of the company with the same CIK and a trusted match. Rules R5 and R6,
+  guard failures and a CIK written by such a link are out (2026-10-14 production audit:
   20 of 41 automatic Form D links were the wrong company).
+* **Cohort split (ADR 0035).** Every number is reported for two cohorts and pooled, each with
+  its N: *monitored before the filing* (a YC directory company, ``source = 'yc'``, which the
+  study treats as monitored all along, or any company created before the filing date) and
+  *found from the filing* (created on or after the filing date and not from the YC
+  directory: issuer-first discovery created it from this filing).
 * **Press.** ``news_funding`` events of the same company dated
   ``filing_date - 14d`` to ``filing_date + 60d``; ``first_press_on`` is the earliest. The
   cohort's press is collected beforehand by ``tell ingest --source news --cohort formd
@@ -28,7 +34,13 @@ reproducible report; each change is listed in :data:`SQL_CHANGES` and printed be
   estimate filing date + 1 day 02:00 UTC + the ingest cadence (``cadence_hours``, default
   6; 24 when ``TELL_RUNS_PER_DAY`` is not 4, see :func:`ingest_cadence_hours`). The report
   counts observed and estimated values and labels the alert median "estimated" when most
-  values are estimates.
+  values are estimates. A *found* filing cannot alert before tell linked it: its
+  ``alert_at`` is the later of that schedule and the link time (``payload.match.resolved_at``,
+  else ``companies.created_at``), so the time discovery took counts.
+* **Press-ambiguous brands.** A company whose brand is one word (after dropping a trailing
+  legal form, ``PBC`` included) is flagged and counted. For a company not from the YC
+  directory whose legal name is longer, a funding headline counts as press only when it
+  contains that full name ("Mangrove Therapeutics", not a headline about any Mangrove).
 * **Numbers.** Share with any press in the window; median and p75 of
   ``first_press_on - filing_date`` in days; filing-first share (press strictly after the
   filing date) among filings with press and over all filings (no press counts as filing
@@ -45,10 +57,12 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from tell.backtest.common import Metric, Query, Report, Section, share
+from tell.backtest.common import Metric, Query, Report, Section, Table, share
 
 __all__ = [
     "ALERT_CADENCE_HOURS",
+    "COHORTS",
+    "COHORT_LABELS",
     "INDEX_LAG_HOURS",
     "MIN_COHORT",
     "NAME",
@@ -59,6 +73,7 @@ __all__ = [
     "SpeedVsPress",
     "build_report",
     "compute",
+    "compute_cohorts",
     "ingest_cadence_hours",
     "observed_window_hours",
     "small_cohort_hint",
@@ -81,7 +96,7 @@ INDEX_LAG_HOURS = 26
 OBSERVED_SLACK_HOURS = 4
 """Slack after the first run that can see the index (one late or failed run)."""
 
-TRUSTED_RULES: tuple[str, ...] = ("R1", "R2", "R3", "R4")
+TRUSTED_RULES: tuple[str, ...] = ("R0", "R1", "R2", "R3", "R4")
 """Automatic rules whose links enter the cohort when no guard failed; ``manual`` also does."""
 
 
@@ -127,11 +142,14 @@ with links as (
   where e.source = 'edgar' and e.company_id is not null and e.payload->'match' is not null),
 trusted as (
   select event_id, company_id, cik from links
-  where rule = 'manual' or (rule in ('R1', 'R2', 'R3', 'R4') and not guard_failed)),
+  where rule = 'manual' or (rule in ('R0', 'R1', 'R2', 'R3', 'R4') and not guard_failed)),
 d as (
   select e.event_id, e.company_id, e.observed_at,
          (e.occurred_at at time zone 'UTC')::date as filed_on,
-         coalesce((e.payload->>'backfill')::bool, false) as backfill
+         coalesce((e.payload->>'backfill')::bool, false) as backfill,
+         case when coalesce(e.payload->'match'->>'resolved_at', '') ~ '^\\d{4}-'
+              then (e.payload->'match'->>'resolved_at')::timestamptz end as linked_at,
+         c.source, c.created_at
   from events e join companies c on c.id = e.company_id
   where e.type = 'form_d_filed' and (e.payload->>'is_amendment')::bool = false
     and e.occurred_at >= cast(:as_of as timestamptz) - interval '90 days'
@@ -139,20 +157,54 @@ d as (
     and e.company_id is not null
     and (e.event_id in (select event_id from trusted)
          or (e.payload->'match' is null and c.cik = e.payload->>'cik'
-             and exists (select 1 from trusted t
-                         where t.company_id = c.id and t.cik = c.cik)))),
+             and (c.cik_source in ('issuer_first_a', 'issuer_first_b', 'r1', 'guarded_r2',
+                                   'manual')
+                  or exists (select 1 from trusted t
+                             where t.company_id = c.id and t.cik = c.cik))))),
+names as (
+  select c.id as company_id, x.kind,
+         trim(regexp_replace(lower(x.value), '\\W+', ' ', 'g')) as norm
+  from companies c
+  cross join lateral (values ('name', c.name), ('legal', c.legal_name)) as x(kind, value)
+  where c.id in (select company_id from d) and x.value is not null),
+keys as (
+  select company_id, kind,
+         regexp_replace(
+           regexp_replace(norm,
+             '^(.*\\S) (inc|incorporated|llc|ltd|limited|corp|corporation|co|plc|gmbh|pbc)$',
+             '\\1'),
+           '^(.*\\S) (inc|incorporated|llc|ltd|limited|corp|corporation|co|plc|gmbh|pbc)$',
+           '\\1') as brand
+  from names),
+amb as (
+  select b.company_id, l.brand as full_brand
+  from keys b left join keys l on l.company_id = b.company_id and l.kind = 'legal'
+  where b.kind = 'name' and b.brand <> '' and position(' ' in b.brand) = 0),
 f as (
-  select d.*, d.filed_on::timestamp at time zone 'UTC' as filed_at from d),
+  select d.*, d.filed_on::timestamp at time zone 'UTC' as filed_at,
+         case when d.source <> 'yc' and d.created_at >= d.filed_on::timestamp at time zone 'UTC'
+              then 'found' else 'monitored' end as cohort,
+         amb.company_id is not null as press_ambiguous,
+         case when amb.company_id is not null and d.source <> 'yc'
+                   and position(' ' in coalesce(amb.full_brand, '')) > 0
+              then amb.full_brand end as full_brand
+  from d left join amb on amb.company_id = d.company_id),
 o as (
   select f.*,
          (not f.backfill and f.observed_at >= f.filed_at
           and f.observed_at <= f.filed_at
                                + cast(:observed_window_hours as integer) * interval '1 hour')
-           as alert_observed
+           as prompt
   from f),
 a as (
   select o.*,
-         case when o.alert_observed then o.observed_at
+         o.cohort = 'monitored' and o.prompt as alert_observed,
+         case when o.cohort = 'found'
+              then greatest(case when o.prompt then o.observed_at
+                                 else o.filed_at + interval '1 day 2 hours'
+                                      + cast(:cadence_hours as integer) * interval '1 hour' end,
+                            coalesce(o.linked_at, o.created_at))
+              when o.prompt then o.observed_at
               else o.filed_at + interval '1 day 2 hours'
                    + cast(:cadence_hours as integer) * interval '1 hour' end as alert_at
   from o),
@@ -161,8 +213,13 @@ p as (
   from a join events n on n.company_id = a.company_id
   where n.type = 'news_funding'
     and (n.occurred_at at time zone 'UTC')::date between a.filed_on - 14 and a.filed_on + 60
+    and (a.full_brand is null
+         or position(' ' || a.full_brand || ' ' in
+                     ' ' || trim(regexp_replace(lower(coalesce(n.payload->>'title', '')),
+                                                '\\W+', ' ', 'g')) || ' ') > 0)
   group by a.event_id)
-select count(*) as n, count(p.event_id) as with_press,
+select coalesce(cohort, 'pooled') as cohort,
+       count(*) as n, count(p.event_id) as with_press,
        percentile_cont(0.5) within group (order by first_press_on - filed_on) as median_lag_days,
        percentile_cont(0.75) within group (order by first_press_on - filed_on) as p75_lag_days,
        sum(case when first_press_on > filed_on then 1 else 0 end) as filing_first,
@@ -173,8 +230,13 @@ select count(*) as n, count(p.event_id) as with_press,
          order by extract(epoch from alert_at - filed_at) / 3600.0
        ) filter (where alert_observed) as median_observed_alert_hours,
        sum(case when alert_observed then 1 else 0 end) as alert_observed,
-       sum(case when alert_observed then 0 else 1 end) as alert_estimated
-from a left join p using (event_id);"""
+       sum(case when cohort = 'monitored' and not alert_observed then 1 else 0 end)
+         as alert_estimated,
+       sum(case when cohort = 'found' then 1 else 0 end) as alert_linked,
+       sum(case when press_ambiguous then 1 else 0 end) as press_ambiguous,
+       sum(case when full_brand is not null then 1 else 0 end) as full_brand_required
+from a left join p using (event_id)
+group by grouping sets ((cohort), ());"""
 
 SQL_CHANGES: tuple[str, ...] = (
     "`now()` is the bound `:as_of` instant, so a dated report can be regenerated.",
@@ -198,12 +260,42 @@ SQL_CHANGES: tuple[str, ...] = (
         "and over observed ones, and the observed and estimated counts. The news type name "
         "`news_funding` is unchanged."
     ),
+    (
+        "Rule R0 (an EDGAR event linked by a CIK with a trusted `companies.cik_source`, ADR "
+        "0035) is a trusted rule, and a CIK match with no match record is in when the "
+        "company's `cik_source` is set."
+    ),
+    (
+        "The cohort is split, every row grouped by `grouping sets ((cohort), ())`: "
+        "'monitored' (the company is from the YC directory, `source = 'yc'`, or existed before "
+        "the filing date) and 'found' (created on or after the filing date and not from the YC "
+        "directory: issuer-first discovery found it from this filing). The pooled row is both."
+    ),
+    (
+        "For a 'found' filing `alert_at` is the link time (`payload.match.resolved_at`, else "
+        "`companies.created_at`) when that is later than the scheduled alert, so the time "
+        "discovery took counts."
+    ),
+    (
+        "Press-ambiguous companies: a brand of one word (after dropping a trailing legal form, "
+        "PBC included) is flagged. For a company not from the YC directory whose legal name is "
+        "longer, a funding headline counts only when it contains that full name."
+    ),
 )
+
+COHORTS: tuple[str, ...] = ("monitored", "found", "pooled")
+"""The query's rows: monitored before the filing, found from the filing, and both."""
+
+COHORT_LABELS: dict[str, str] = {
+    "monitored": "Monitored before the filing",
+    "found": "Found from the filing",
+    "pooled": "Pooled",
+}
 
 
 @dataclass(frozen=True)
 class SpeedVsPress:
-    """The query's one result row, plus the cadence it was computed with."""
+    """One cohort row of the query (``pooled`` unless noted), plus the cadence it used."""
 
     n: int
     with_press: int
@@ -215,6 +307,13 @@ class SpeedVsPress:
     alert_observed: int
     alert_estimated: int
     cadence_hours: int = ALERT_CADENCE_HOURS
+    alert_linked: int = 0
+    """'found' filings, whose ``alert_at`` is the link time (neither observed nor estimated)."""
+    press_ambiguous: int = 0
+    """Filings of a company whose brand is one word."""
+    full_brand_required: int = 0
+    """Filings whose funding headline had to contain the company's full legal name."""
+    cohort: str = "pooled"
 
     @property
     def press_share(self) -> float | None:
@@ -259,26 +358,55 @@ def _binds(now: datetime, cadence_hours: int) -> dict[str, Any]:
     }
 
 
-def compute(
+def _empty(cohort: str, cadence_hours: int) -> SpeedVsPress:
+    return SpeedVsPress(
+        n=0,
+        with_press=0,
+        median_lag_days=None,
+        p75_lag_days=None,
+        filing_first=0,
+        median_alert_hours=None,
+        median_observed_alert_hours=None,
+        alert_observed=0,
+        alert_estimated=0,
+        cadence_hours=cadence_hours,
+        cohort=cohort,
+    )
+
+
+def compute_cohorts(
     session: Session, now: datetime, *, cadence_hours: int = ALERT_CADENCE_HOURS
-) -> SpeedVsPress:
-    """Run :data:`SQL` at ``now`` for an ingest cadence of ``cadence_hours``."""
+) -> dict[str, SpeedVsPress]:
+    """Run :data:`SQL` at ``now``; one :class:`SpeedVsPress` per name in :data:`COHORTS`."""
     if cadence_hours <= 0:
         msg = f"cadence_hours must be positive, got {cadence_hours}"
         raise ValueError(msg)
-    row = session.execute(text(SQL), _binds(now, cadence_hours)).one()
-    return SpeedVsPress(
-        n=int(row.n),
-        with_press=int(row.with_press),
-        median_lag_days=_float(row.median_lag_days),
-        p75_lag_days=_float(row.p75_lag_days),
-        filing_first=int(row.filing_first or 0),
-        median_alert_hours=_float(row.median_alert_hours),
-        median_observed_alert_hours=_float(row.median_observed_alert_hours),
-        alert_observed=int(row.alert_observed or 0),
-        alert_estimated=int(row.alert_estimated or 0),
-        cadence_hours=cadence_hours,
-    )
+    results = {name: _empty(name, cadence_hours) for name in COHORTS}
+    for row in session.execute(text(SQL), _binds(now, cadence_hours)):
+        results[str(row.cohort)] = SpeedVsPress(
+            n=int(row.n),
+            with_press=int(row.with_press),
+            median_lag_days=_float(row.median_lag_days),
+            p75_lag_days=_float(row.p75_lag_days),
+            filing_first=int(row.filing_first or 0),
+            median_alert_hours=_float(row.median_alert_hours),
+            median_observed_alert_hours=_float(row.median_observed_alert_hours),
+            alert_observed=int(row.alert_observed or 0),
+            alert_estimated=int(row.alert_estimated or 0),
+            cadence_hours=cadence_hours,
+            alert_linked=int(row.alert_linked or 0),
+            press_ambiguous=int(row.press_ambiguous or 0),
+            full_brand_required=int(row.full_brand_required or 0),
+            cohort=str(row.cohort),
+        )
+    return results
+
+
+def compute(
+    session: Session, now: datetime, *, cadence_hours: int = ALERT_CADENCE_HOURS
+) -> SpeedVsPress:
+    """The pooled row of :data:`SQL` at ``now`` for an ingest cadence of ``cadence_hours``."""
+    return compute_cohorts(session, now, cadence_hours=cadence_hours)["pooled"]
 
 
 def _alert_label(result: SpeedVsPress) -> str:
@@ -295,7 +423,8 @@ def build_report(
     session: Session, now: datetime, *, cadence_hours: int = ALERT_CADENCE_HOURS
 ) -> Report:
     """The 13.1 report at ``now`` (see the module docstring)."""
-    result = compute(session, now, cadence_hours=cadence_hours)
+    cohorts = compute_cohorts(session, now, cadence_hours=cadence_hours)
+    result = cohorts["pooled"]
     window = result.observed_window_hours
     estimate = (
         f"filing date + 1 day 02:00 UTC + the {cadence_hours}-hour cadence, "
@@ -310,12 +439,17 @@ def build_report(
         ),
         cohort=(
             "Every Form D (isAmendment = false) filed in the 90 days before the evaluation "
-            "instant by an issuer linked to a monitored company by a trusted link: rules R1-R4 "
+            "instant by an issuer linked to a monitored company by a trusted link: rules R0-R4 "
             "with no guard failure recorded, a reviewer's link, or the issuer's CIK when that "
-            "CIK was set by such a link. Review (R5), unlinked (R6) and guard-failed matches "
-            "are excluded. Press: news_funding events of that company dated from 14 days "
-            "before to 60 days after the filing date (collected first with Google News "
-            "when:120d by `tell ingest --source news --cohort formd --when-days 120`)."
+            "CIK was set by such a link or has a trusted source. Review (R5), unlinked (R6) and "
+            "guard-failed matches are excluded. Split in two and reported pooled: monitored "
+            "before the filing (a YC directory company, or one that existed before the filing "
+            "date) and found from the filing (created on or after the filing date by "
+            "issuer-first discovery, whose alert time is the link time). Press: news_funding "
+            "events of that company dated from 14 days before to 60 days after the filing date "
+            "(collected first with Google News when:120d by `tell ingest --source news "
+            "--cohort formd --when-days 120`); for a one-word brand not from the YC directory "
+            "the headline must carry the full legal name."
         ),
         n=result.n,
         as_of=now.date(),
@@ -419,6 +553,7 @@ def build_report(
             ],
         ),
     ]
+    report.sections.append(_cohort_section(cohorts))
     binds = _binds(now, cadence_hours)
     report.queries = [
         Query(
@@ -466,7 +601,70 @@ def build_report(
             "the wrong company, so only links that are trusted after the guards are counted; "
             "a wrong link that passed every guard is still in the cohort."
         ),
+        (
+            "Found-from-the-filing companies (issuer-first discovery, ADR 0035) are monitored "
+            "because they filed: their alert time includes how long discovery took to link the "
+            "filing, and they have no hiring history before it. Report them apart; the pooled "
+            "row mixes two different questions."
+        ),
+        (
+            "Press-ambiguous brands: tell has no dictionary to tell a common word from a coined "
+            "one, so every one-word brand is flagged ("
+            f"{result.press_ambiguous} of {result.n} filings). Only for companies not from the "
+            "YC directory with a longer legal name does the headline have to carry that name ("
+            f"{result.full_brand_required} filings); a YC one-word brand still counts any "
+            "headline naming it."
+        ),
         "Changes from the spec's SQL, all needed to run it as a dated report: "
         + " ".join(SQL_CHANGES),
     ]
     return report
+
+
+def _cohort_rows(r: SpeedVsPress) -> list[Metric]:
+    return [
+        Metric("Filings", r.n, kind="count", headline=False),
+        Metric("Share with any press", r.press_share, r.n, "share", headline=False),
+        Metric("Share with no press within 60 days", share(r.no_press, r.n), r.n, "share", False),
+        Metric("Median lag, days", r.median_lag_days, r.with_press, "days", headline=False),
+        Metric("p75 lag, days", r.p75_lag_days, r.with_press, "days", headline=False),
+        Metric(
+            "Filing first, among filings with press",
+            r.filing_first_share_with_press,
+            r.with_press,
+            "share",
+            headline=False,
+        ),
+        Metric(
+            "Filing first, over all filings",
+            r.filing_first_share_all,
+            r.n,
+            "share",
+            headline=False,
+        ),
+        Metric("Median alert_at - filing_date, hours", r.median_alert_hours, r.n, "hours", False),
+        Metric("Alert times observed", r.alert_observed, kind="count", headline=False),
+        Metric("Alert times estimated", r.alert_estimated, kind="count", headline=False),
+        Metric("Alert times at the link", r.alert_linked, kind="count", headline=False),
+        Metric("Press-ambiguous filings (one-word brand)", r.press_ambiguous, r.n, "count", False),
+    ]
+
+
+def _cohort_section(cohorts: dict[str, SpeedVsPress]) -> Section:
+    """Every number per cohort, with its N (the pooled column repeats the sections above)."""
+    columns = [_cohort_rows(cohorts[name]) for name in COHORTS]
+    rows: list[list[Metric | str]] = []
+    for i, first in enumerate(columns[0]):
+        rows.append([first.label, *(column[i] for column in columns)])
+    return Section(
+        title="By cohort",
+        text=(
+            "Monitored before the filing: a YC directory company, or one tell had before the "
+            "filing date. Found from the filing: created on or after the filing date by "
+            "issuer-first discovery; its alert time is the link time. Pooled: both."
+        ),
+        table=Table(
+            headers=["Number", *(COHORT_LABELS[name] for name in COHORTS)],
+            rows=rows,
+        ),
+    )

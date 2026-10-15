@@ -15,7 +15,11 @@ Both operations are dry runs unless ``apply`` is set, and both are idempotent.
   ``technologies`` with the name, or the issuer is a pooled investment fund) is closed as
   ``rejected`` with ``payload.resolved_by = "alias_hygiene"``; nothing is deleted and no
   event is linked. Items that still have a real candidate stay open for a human, even
-  when the new rules would now auto-link them.
+  when the new rules would now auto-link them. Issuer-discovery items (ADR 0035: a
+  ``payload.issuer_discovery`` key, opened by ``tell discover issuers`` for tier C, a
+  domain some company holds, or several qualifying domains) are never closed: their
+  proposal is a domain, not an alias candidate, so the matcher's R6 says nothing about
+  them. They are counted as ``kept_issuer_discovery``.
 """
 
 from __future__ import annotations
@@ -42,6 +46,7 @@ from tell.resolve.match import (
     stored_alias_problem,
 )
 from tell.resolve.normalize import normalize_name, normalize_name_alt
+from tell.resolve.review import DISCOVERY_KEY
 
 __all__ = [
     "EXAMPLES",
@@ -205,9 +210,11 @@ def close_junk_reviews(session: Session, *, now: datetime, apply: bool = False) 
     geography with the current rules (and its event's Form D facts, ADR 0034), decides R6:
     no candidate at or above ``REVIEW_RATIO``, none that shares a distinctive token with the
     name, or a pooled-fund issuer. ``by_reason`` counts the junk items by
-    ``pooled_fund`` / ``descriptor_only`` / ``no_candidate``. With ``apply`` the item becomes ``rejected`` with ``verdict = "reject"``
-    and ``resolved_by = "alias_hygiene"``, so the resolver never reopens the pair. Flushes;
-    the caller owns the transaction.
+    ``pooled_fund`` / ``descriptor_only`` / ``no_candidate``. With ``apply`` the item
+    becomes ``rejected`` with ``verdict = "reject"`` and ``resolved_by = "alias_hygiene"``,
+    so the resolver never reopens the pair. An issuer-discovery item (its payload has an
+    ``issuer_discovery`` key) is never junk: it stays open and is counted in
+    ``kept_issuer_discovery``. Flushes; the caller owns the transaction.
     """
     index = AliasIndex.from_session(session)
     stmt = (
@@ -221,9 +228,13 @@ def close_junk_reviews(session: Session, *, now: datetime, apply: bool = False) 
     aliases: Counter[str] = Counter()
     reasons: Counter[str] = Counter()
     by_reason: Counter[str] = Counter()
+    discovery = 0
     for item in session.scalars(stmt):
         scanned += 1
         payload = item.payload
+        if DISCOVERY_KEY in payload:
+            discovery += 1
+            continue
         name = payload.get("name")
         if not isinstance(name, str) or not name.strip():
             kept["no_name"] += 1
@@ -258,6 +269,7 @@ def close_junk_reviews(session: Session, *, now: datetime, apply: bool = False) 
         "junk": len(junk),
         "closed": len(junk) if apply else 0,
         "kept_open_by_rule": dict(sorted(kept.items())),
+        "kept_issuer_discovery": discovery,
         "junk_aliases": dict(aliases.most_common(EXAMPLES)),
         "junk_alias_reasons": dict(sorted(reasons.items())),
         "by_reason": dict(sorted(by_reason.items())),

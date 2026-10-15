@@ -44,8 +44,12 @@ def bound(engine: Engine, monkeypatch: pytest.MonkeyPatch) -> Engine:
 
 def _seed(engine: Engine) -> None:
     with SessionLocal(bind=engine) as session:
-        session.add(Company(domain="acme.com", name="Acme", hq_state="CA"))
-        session.add(Company(domain="acmerobotics.com", name="Acme Robotics", hq_state="NY"))
+        session.add(Company(domain="acme.com", name="Acme", hq_state="CA", yc_status="Active"))
+        session.add(
+            Company(
+                domain="acmerobotics.com", name="Acme Robotics", hq_state="NY", yc_status="Active"
+            )
+        )
         session.flush()
         for event_id, name in (("ev-1", "Acme, Inc."), ("ev-2", "Acme Robotics Group")):
             session.add(

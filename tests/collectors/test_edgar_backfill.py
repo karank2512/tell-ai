@@ -262,9 +262,14 @@ def test_backfill_writes_links_by_cik_and_is_idempotent(
     db_session: Session, tmp_path: Path
 ) -> None:
     owner = Company(
-        domain="quarterly-labs.example", name="Example Quarterly Labs", cik="0009990101"
+        domain="quarterly-labs.example",
+        name="Example Quarterly Labs",
+        cik="0009990101",
+        cik_source="guarded_r2",
     )
-    db_session.add(owner)
+    # A CIK of unknown origin (cik_source NULL) links nothing at ingest (ADR 0035).
+    untrusted = Company(domain="fintech.example", name="Sample Fintech", cik="0009990102")
+    db_session.add_all([owner, untrusted])
     db_session.flush()
     archive = build_zip(tmp_path / "2026q1_d.zip")
 

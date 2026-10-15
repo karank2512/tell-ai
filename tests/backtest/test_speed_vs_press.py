@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from tell.backtest import speed_vs_press as svp
 from tell.backtest.common import render_report
 from tell.models import Company, EventRow
-from tests.backtest.helpers import DAY, HOUR, NOW, company, formd, midnight, news
+from tests.backtest.helpers import DAY, HOUR, NOW, company, event, formd, midnight, news
 
 MINUTE = HOUR / 60
 
@@ -246,3 +246,155 @@ def test_cik_vouched_by_manual_link(db_session: Session) -> None:
     )
     formd(db_session, owner, date(2026, 9, 1), rule=None, cik="0000000009")
     assert svp.compute(db_session, NOW).n == 1
+
+
+# --- ADR 0035: rule R0, the cohort split, discovery latency, press-ambiguous brands ----------
+
+
+def _issuer_first(
+    session: Session, domain: str, *, created: datetime, legal_name: str | None = None
+) -> Company:
+    owner = company(session, domain)
+    owner.source = "issuer_first"
+    owner.created_at = created
+    owner.legal_name = legal_name
+    session.flush()
+    return owner
+
+
+def _headline(session: Session, owner: Company, at: datetime, title: str) -> EventRow:
+    return event(session, "news_funding", at, owner=owner, payload={"title": title}, source="news")
+
+
+def test_r0_and_a_trusted_cik_source_enter_the_cohort(db_session: Session) -> None:
+    r0 = company(db_session, "rzero.example", cik="0000000011")
+    _match(db_session, formd(db_session, r0, date(2026, 9, 1), cik="0000000011"), rule="R0")
+    # collector CIK link of a company whose CIK came from issuer-first evidence: no earlier
+    # trusted event, but the source vouches for it
+    sourced = company(db_session, "sourced.example", cik="0000000012")
+    sourced.cik_source = "issuer_first_a"
+    formd(db_session, sourced, date(2026, 9, 2), rule=None, cik="0000000012")
+    # an unknown source vouches for nothing
+    unknown = company(db_session, "unknown.example", cik="0000000013")
+    formd(db_session, unknown, date(2026, 9, 3), rule=None, cik="0000000013")
+    assert svp.compute(db_session, NOW).n == 2
+    assert "R0" in svp.TRUSTED_RULES
+
+
+def test_cohort_split_and_discovery_latency(db_session: Session) -> None:
+    # Monitored: a YC directory company seeded after its filing (tell's seed date does not
+    # matter for the directory), observed promptly at 08:00.
+    yc = company(db_session, "yc.example")
+    yc.created_at = NOW
+    formd(db_session, yc, date(2026, 9, 1), observed=midnight(date(2026, 9, 1)) + 8 * HOUR)
+    # Found: issuer-first created from its filing; the event was seen promptly, but tell
+    # linked it (R0) 3 days and 4 hours after the filing date.
+    found = _issuer_first(db_session, "found.example", created=midnight(date(2026, 9, 4)))
+    linked_at = midnight(date(2026, 9, 4)) + 4 * HOUR
+    _match(
+        db_session,
+        formd(db_session, found, date(2026, 9, 1), observed=midnight(date(2026, 9, 2)) + 3 * HOUR),
+        rule="R0",
+        resolved_at=linked_at.isoformat(),
+    )
+    _headline(
+        db_session, found, datetime.fromisoformat("2026-09-10T09:00:00+00:00"), "Found raises"
+    )
+    # The same issuer-first company's next round: monitored by then, alert observed.
+    _match(
+        db_session,
+        formd(db_session, found, date(2026, 9, 20), observed=midnight(date(2026, 9, 21)) + HOUR),
+        rule="R0",
+        resolved_at=(midnight(date(2026, 9, 21)) + HOUR).isoformat(),
+    )
+    # Found, no resolved_at (a reviewer's link without one): the company's creation counts.
+    late = _issuer_first(db_session, "late.example", created=midnight(date(2026, 9, 12)))
+    _match(db_session, formd(db_session, late, date(2026, 9, 10), backfill=True), rule="manual")
+
+    cohorts = svp.compute_cohorts(db_session, NOW)
+    assert set(cohorts) == {"monitored", "found", "pooled"}
+    monitored, found_row, pooled = cohorts["monitored"], cohorts["found"], cohorts["pooled"]
+    assert (monitored.n, found_row.n, pooled.n) == (2, 2, 4)
+    assert (monitored.alert_observed, monitored.alert_estimated, monitored.alert_linked) == (
+        2,
+        0,
+        0,
+    )
+    assert (found_row.alert_observed, found_row.alert_estimated, found_row.alert_linked) == (
+        0,
+        0,
+        2,
+    )
+    # found alert lags: 76 h (the link) and 48 h (created 2 days after; the 32 h estimate is
+    # earlier) -> median 62 h
+    assert found_row.median_alert_hours == pytest.approx(62.0)
+    assert monitored.median_alert_hours == pytest.approx((8 + 25) / 2)
+    assert pooled.median_alert_hours == pytest.approx((25 + 48) / 2)
+    assert (found_row.with_press, found_row.median_lag_days) == (1, 9.0)
+    # the same headline is 10 days before the next round (monitored by then)
+    assert (monitored.with_press, monitored.median_lag_days) == (1, -10.0)
+    assert svp.compute(db_session, NOW) == pooled
+
+
+def test_empty_cohorts_are_reported_as_zero(db_session: Session) -> None:
+    cohorts = svp.compute_cohorts(db_session, NOW)
+    assert all(row.n == 0 and row.median_alert_hours is None for row in cohorts.values())
+    assert cohorts["found"].cohort == "found"
+
+
+def test_press_ambiguous_brands_need_the_full_name(db_session: Session) -> None:
+    filed = date(2026, 9, 1)
+    press_at = midnight(filed) + 5 * DAY
+    # issuer-first, one-word brand, longer legal name: only a full-name headline counts
+    mangrove = _issuer_first(
+        db_session,
+        "mangrove.example",
+        created=NOW - 30 * DAY,
+        legal_name="Mangrove Therapeutics, Inc.",
+    )
+    mangrove.name = "Mangrove"
+    _match(db_session, formd(db_session, mangrove, filed), rule="R0")
+    _headline(db_session, mangrove, press_at, "Mangrove raises $40M for its trading app")
+    # a second one whose full-name headline exists (punctuation and case do not matter)
+    kaleido = _issuer_first(
+        db_session, "kaleido.example", created=NOW - 30 * DAY, legal_name="Kaleidoscope Bio PBC"
+    )
+    kaleido.name = "Kaleidoscope"
+    _match(db_session, formd(db_session, kaleido, filed), rule="R0")
+    _headline(db_session, kaleido, press_at, "KALEIDOSCOPE-BIO lands a $9M seed - Endpoints")
+    # PBC and "Co" are legal forms: the brand is one word and so is the legal name
+    edacious = _issuer_first(
+        db_session, "edacious.example", created=NOW - 30 * DAY, legal_name="Edacious, Co. PBC"
+    )
+    edacious.name = "Edacious, PBC"
+    _match(db_session, formd(db_session, edacious, filed), rule="R0")
+    _headline(db_session, edacious, press_at, "Edacious raises a seed round")
+    # a YC one-word brand: flagged, but any headline naming it counts
+    echo = company(db_session, "echo.example")
+    echo.legal_name = "Echo Labs Inc"
+    formd(db_session, echo, filed)
+    news(db_session, echo, press_at)
+    db_session.flush()
+
+    cohorts = svp.compute_cohorts(db_session, NOW)
+    found_row, monitored = cohorts["found"], cohorts["monitored"]
+    assert (found_row.n, found_row.with_press) == (3, 2)  # Mangrove's headline is not press
+    assert (found_row.press_ambiguous, found_row.full_brand_required) == (3, 2)
+    assert (monitored.n, monitored.with_press, monitored.press_ambiguous) == (1, 1, 1)
+    assert monitored.full_brand_required == 0
+
+
+def test_report_shows_every_cohort_with_its_n(db_session: Session) -> None:
+    _cohort(db_session)
+    found = _issuer_first(db_session, "found.example", created=NOW - 20 * DAY)
+    _match(db_session, formd(db_session, found, NOW.date() - 25 * DAY), rule="R0")
+    report = svp.build_report(db_session, NOW)
+    assert report.n == 7
+    text = render_report(report)
+    assert "### By cohort" in text
+    assert "| Number | Monitored before the filing | Found from the filing | Pooled |" in text
+    assert "| Filings | 6 | 1 | 7 |" in text
+    assert "| Alert times at the link | 0 | 1 | 1 |" in text
+    assert "| Share with any press | 66.7% (N=6; too small to quote) | 0.0% (N=1; too small" in text
+    assert "Press-ambiguous brands: tell has no dictionary" in text
+    assert "found from the filing (created on or after the filing date" in text

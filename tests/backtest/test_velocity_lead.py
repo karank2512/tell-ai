@@ -253,8 +253,8 @@ def test_prospective_with_controls(db_session: Session, tmp_path: Path) -> None:
 @pytest.mark.db
 def test_retrospective_posted_at_and_quarterly(db_session: Session, tmp_path: Path) -> None:
     # Quarterly fixture: CIK 9990101 filed 2026-01-12, CIK 9990102 filed 2026-02-03.
-    labs = company(db_session, "quarterlylabs.example", cik="0009990101")
-    fintech = company(db_session, "samplefintech.example", cik="0009990102")
+    labs = company(db_session, "quarterlylabs.example", cik="0009990101", cik_source="manual")
+    fintech = company(db_session, "samplefintech.example", cik="0009990102", cik_source="r1")
     control = company(db_session, "control.example")
     labs_board = board(db_session, labs, "quarterlylabs")
     board(db_session, fintech, "samplefintech", vendor="ashby")
@@ -301,3 +301,12 @@ def test_retrospective_posted_at_and_quarterly(db_session: Session, tmp_path: Pa
         in text
     )
     assert "Not yet runnable: 0 days of collection < 60." in text
+
+
+@pytest.mark.db
+def test_quarterly_filings_link_only_a_trusted_cik(db_session: Session) -> None:
+    """ADR 0035: a CIK of unknown origin (``cik_source`` NULL) maps no filing to a company."""
+    labs = company(db_session, "quarterlylabs.example", cik="0009990101", cik_source="manual")
+    company(db_session, "samplefintech.example", cik="0009990102")
+    filings = vl.quarterly_filings(db_session, [QUARTERLY], date(2025, 10, 1), NOW)
+    assert [f.company_id for f in filings] == [labs.id]

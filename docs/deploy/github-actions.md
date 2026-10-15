@@ -42,6 +42,7 @@ grants more only where one job needs it (`actions: write` for the weekly keepali
 | `TELL_BASE_URL` | no | Defaults to `https://karank2512.github.io/tell-data` (tell/config.py) |
 | `TELL_FEEDBACK_FORM_URL` | no | Prefilled Google Form link for thumbs and `rate_this_row` |
 | `TELL_INTAKE_FORM_URL` | no | "Watch these domains" form linked from the digest |
+| `TELL_ISSUER_DISCOVERY` | no | `on` runs `tell discover issuers --apply` after the EDGAR ingest (ADR 0035). Anything else, or unset, leaves the step off. Turn it on only after accepting ADR 0035 and running migration 0009 on production |
 
 `TELL_RUN_MANUAL` is neither a secret nor a variable: the workflow derives it from the
 event name (see "Re-running one source" below).
@@ -68,7 +69,7 @@ what keeps the schedules enabled until cutover.
 
 ```
 discover (30 min) ──► ats x4 (90 min each, fail-fast: false) ──┐
-filings: edgar, then news (45 min) ────────────────────────────┴─► resolve_score_publish (45 min, if: always())
+filings: edgar, [issuers], news (60 min) ──────────────────────┴─► resolve_score_publish (45 min, if: always())
 ```
 
 1. **discover**: `tell discover batch --limit 250 --rps 4` with
@@ -86,9 +87,16 @@ filings: edgar, then news (45 min) ───────────────
 2. **ats**: one matrix leg per vendor (`greenhouse`, `lever`, `ashby`, `smartrecruiters`),
    `tell ingest --source <vendor>`, then the run line in the step summary.
 3. **filings**: `tell ingest --source edgar` (8-K, S-1 and Form D from the daily index),
-   then `tell ingest --source news`; news runs even when EDGAR failed. The job timeout is
-   45 minutes (the second production run used 29.9 of the earlier 30); news still stops
-   itself after its own 25-minute run budget, so the extra room goes to EDGAR.
+   then, only when the `TELL_ISSUER_DISCOVERY` variable is `on` and EDGAR succeeded,
+   `tell discover issuers --apply` (issuer-first discovery, ADR 0035,
+   [issuer_sites.md](../sources/issuer_sites.md): about 12 new Form D issuers a day, each
+   host at 1 request per second, no new issuer after 12 minutes, step timeout 15 minutes),
+   then `tell ingest --source news`; news runs even when EDGAR or the issuer step failed.
+   The job timeout is 60 minutes: 45 for EDGAR and news (the second production run used
+   29.9 of the earlier 30; news stops itself after its own 25-minute run budget) plus 15
+   for the issuer step, unused while it is off. With the step on, its run line
+   (`source = issuer_discovery`) joins the step summary. It is not a dead-man source: the
+   step is optional.
 4. **resolve_score_publish**: checks out `tell-data` with `TELL_DATA_PUSH_TOKEN`, then
    `tell resolve`, `tell score --all-profiles`, `tell publish --out tell-data`,
    `tell prune --out tell-data`, a commit as
@@ -107,6 +115,7 @@ The commit step retries once with `git pull --rebase` if `weekly.yml` pushed in 
 | --- | --- |
 | Each ATS vendor | 6,000 boards at 8 concurrent, ~250 ms each: under 4 minutes; 25,000 boards stays well under the 90-minute timeout |
 | EDGAR | One daily index file plus one XML per new filing: a minute or two, under 500 requests a day |
+| Issuer-first discovery (when on) | About 12 new issuers a day at about 30 requests each, 8 in flight, 1 request per second per host: an estimated 5-10 minutes; the 12-minute budget defers the rest to the next day |
 | EDGAR + news (measured) | The second production run (2026-10-13) used 29.9 of the then 30-minute timeout; now 45 minutes |
 | News | The slow one at 1 request per second: companies with activity in the last 30 days plus every watchlist member, the long tail rotated over a week; stops itself after its 25-minute run budget |
 | Discovery (measured) | 80 real YC domains, 4 rps: serial 6.06 s a domain (5.8 s on the 2026-10-13 snapshot runs), six workers 4.47 s a domain before the deeper scan (ADR 0030) and **4.74 s a domain** with it (379.4 s for 80, re-measured 2026-10-14). 250 domains is about 20 minutes; the 22-minute budget defers anything past it; job timeout 30 minutes |

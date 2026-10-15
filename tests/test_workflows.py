@@ -291,10 +291,36 @@ def test_ingest_discovery_job_feeds_ats() -> None:
 def test_ingest_filings_edgar_then_news() -> None:
     filings = _load("ingest.yml")["jobs"]["filings"]
     # EDGAR + news took 29.9 of 30 minutes on the second production run; news keeps its
-    # own 25-minute run budget inside the 45.
-    assert filings["timeout-minutes"] == 45
+    # own 25-minute run budget inside the 45, and the optional issuer-first step (ADR 0035)
+    # has 15 more.
+    assert filings["timeout-minutes"] == 60
     steps = filings["steps"]
     assert _index(steps, "tell ingest --source edgar") < _index(steps, "tell ingest --source news")
+
+
+def test_ingest_issuer_discovery_step_is_off_by_default() -> None:
+    """ADR 0035: `tell discover issuers --apply` runs right after a successful EDGAR ingest,
+    only when the Actions variable TELL_ISSUER_DISCOVERY is "on" (unset means off)."""
+    steps = _load("ingest.yml")["jobs"]["filings"]["steps"]
+    edgar = _index(steps, "tell ingest --source edgar")
+    step_index = _index(steps, "tell discover issuers")
+    assert step_index == edgar + 1
+    assert step_index < _index(steps, "tell ingest --source news")
+    step = steps[step_index]
+    assert str(step["run"]).strip() == "uv run tell discover issuers --apply"
+    condition = " ".join(str(step["if"]).split())
+    assert "success()" in condition
+    assert "vars.TELL_ISSUER_DISCOVERY == 'on'" in condition
+    assert "inputs.source == 'edgar'" in condition
+    assert step["timeout-minutes"] == 15
+    # News never depends on the discovery step.
+    news = steps[_index(steps, "tell ingest --source news")]
+    assert "!cancelled()" in news["if"]
+    summary = steps[_index(steps, "tell runlog --source issuer_discovery")]
+    assert summary["env"]["ISSUER_DISCOVERY"] == "${{ vars.TELL_ISSUER_DISCOVERY }}"
+    # The deploy guide documents the switch.
+    guide = (REPO_ROOT / "docs" / "deploy" / "github-actions.md").read_text(encoding="utf-8")
+    assert "TELL_ISSUER_DISCOVERY" in guide
 
 
 def test_ingest_scheduled_sources_match_deadman() -> None:

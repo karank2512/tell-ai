@@ -317,7 +317,19 @@ def news_key(url: str) -> str:
 
 _NON_WORD = re.compile(r"[\W_]+", re.UNICODE)
 _LEGAL_SUFFIXES: Final = frozenset(
-    {"inc", "incorporated", "llc", "ltd", "limited", "corp", "corporation", "co", "plc", "gmbh"}
+    {
+        "inc",
+        "incorporated",
+        "llc",
+        "ltd",
+        "limited",
+        "corp",
+        "corporation",
+        "co",
+        "plc",
+        "gmbh",
+        "pbc",  # public benefit corporation ("Edacious, PBC"; ADR 0035)
+    }
 )
 
 
@@ -330,8 +342,9 @@ def _normalize(text: str) -> str:
 def company_key(name: str) -> str:
     """The company name as the name guard looks for it: normalized, legal suffix dropped.
 
-    ``"Acme Robotics, Inc."`` becomes ``"acme robotics"``; a one-word name keeps its
-    word even when it looks like a suffix.
+    ``"Acme Robotics, Inc."`` becomes ``"acme robotics"`` and ``"Saltbox Tinned Fish Co.,
+    PBC"`` ``"saltbox tinned fish"`` (every trailing legal form goes); a one-word name keeps
+    its word even when it looks like a suffix.
     """
     words = _normalize(name).split()
     while len(words) > 1 and words[-1] in _LEGAL_SUFFIXES:

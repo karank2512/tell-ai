@@ -11,6 +11,11 @@ types ``D``, ``D/A``, ``8-K`` and ``S-1``, and turns them into events keyed
   items from ``data.sec.gov/submissions`` and items 5.02 / 1.01 / 2.01 flagged;
 * ``S-1`` -> ``form_s1_filed``.
 
+An event is linked at ingest by its CIK only to a company whose ``cik_source`` is trusted
+(ADR 0035, the rule R0 set: :func:`tell.collectors.edgar_formd.company_ids_by_cik`); any
+other event, including an 8-K of a company whose CIK has an unknown origin, is written
+unlinked and left for ``tell resolve run``.
+
 Dates (New York calendar): by default every day after the latest index an earlier
 successful run read (``runs.notes.last_index_date``) up to today, at most 14 days back
 (today and the 3 days before it on a first run); ``tell ingest --source edgar --since``
@@ -49,7 +54,7 @@ from tell.collectors.edgar_formd import (
     FormDFiling,
     FormDFilings,
     cik10,
-    company_ids_by_cik,
+    cik_holders,
     filing_folder_url,
     ingest_formd_filings,
     load_formd_quarterly,
@@ -646,7 +651,11 @@ def _collect_day(
     index fetch per day. A ``D/A`` is always fetched: it amends an existing event.
     """
     known = known_accessions(session, [e.accession_number for e in entries if e.form_type != "D/A"])
-    monitored = company_ids_by_cik(session, [e.cik for e in entries])
+    holders = cik_holders(session, [e.cik for e in entries])
+    # Linked at ingest only by a trusted CIK (ADR 0035, the rule R0 set); a company whose
+    # CIK has an unknown origin still marks its 8-Ks as monitored, but those events (and
+    # its S-1s) are written unlinked and left for ``tell resolve run``.
+    linked = {cik: h.company_id for cik, h in holders.items() if h.trusted}
     _release(session, own)
 
     filings: list[FormDFiling] = []
@@ -664,8 +673,7 @@ def _collect_day(
                 else:
                     filings.append(filing)
             elif entry.form_type == "8-K":
-                company_id = monitored.get(cik10(entry.cik))
-                if company_id is None:
+                if cik10(entry.cik) not in holders:
                     continue
                 submissions = sec.submissions(entry.cik)
                 file_number, items = (
@@ -678,7 +686,7 @@ def _collect_day(
                         payload=form_8k_payload(entry, items, file_number),
                         run_id=run_id,
                         now=now,
-                        company_id=company_id,
+                        company_id=linked.get(cik10(entry.cik)),
                     )
                 )
             elif entry.form_type == "S-1":
@@ -689,7 +697,7 @@ def _collect_day(
                         payload=_base_payload(entry),
                         run_id=run_id,
                         now=now,
-                        company_id=monitored.get(cik10(entry.cik)),
+                        company_id=linked.get(cik10(entry.cik)),
                     )
                 )
         except (httpx.HTTPError, pydantic.ValidationError, ValueError) as exc:

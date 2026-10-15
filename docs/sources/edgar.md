@@ -111,6 +111,12 @@ used only as a fallback link when a D/A's file number is unknown.
 | `8-K` | `form_8k_filed` | Monitored companies only (`companies.cik` match); `items` plus `item_5_02`, `item_1_01`, `item_2_01` booleans |
 | `S-1` | `form_s1_filed` | All filers; `company_id` when known |
 
+"When known" means a company holds the filer's CIK with a trusted `companies.cik_source`
+(ADR 0035: `issuer_first_a`, `issuer_first_b`, `r1`, `guarded_r2`, `manual`; the rule R0
+set). A CIK of unknown origin (`cik_source` NULL) links nothing at ingest: the event is
+written unlinked and `tell resolve run` decides it by name and the guards. Such a company
+still counts as monitored for 8-Ks, whose events it then leaves unlinked the same way.
+
 Key: `edgar:{accession_number}` (`external_id` = `version` = accession number). `occurred_at`
 is the index "Date Filed" at 00:00 UTC. Form D payloads carry the fields above in snake case
 plus `is_amendment`, `file_number`, `issuer_name`, `issuer_city`, `issuer_state`, `issuer_zip`,
@@ -169,8 +175,8 @@ uv run tell resolve                                              # link the new 
 - **Write.** Events keep `source = 'edgar'`, `payload.backfill = true` and the daily key, inside
   one `edgar_backfill` run (`runs.notes`: `datasets`, `since_days`, `cutoff`, `outside_window`,
   `linked_by_cik`, `by_type`). A rerun, or a filing the daily index already delivered, inserts
-  nothing (`skipped`). An issuer whose CIK is already a company's `cik` is linked at write
-  time, as the daily path does; every other filing waits for `tell resolve`. A D/A whose
+  nothing (`skipped`). An issuer whose CIK is already a company's `cik` with a trusted
+  `cik_source` is linked at write time, as the daily path does; every other filing waits for `tell resolve`. A D/A whose
   original is in an earlier quarter stays a `form_d_amendment` event (never scored as funding).
 - **Health.** Backfilled events are left out of the freshness p95 (`health.json`, the ops
   report), like first-poll baselines: they measure the archive's age, not tell's lag.

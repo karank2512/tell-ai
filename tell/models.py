@@ -29,6 +29,11 @@ looks like a ghost job" votes spec section 7 counts; they stay inert until 500 v
 The ``api_keys`` and ``api_usage`` tables (migration ``0007``,
 ``docs/decisions/0024-api-keys-tables.md``) hold the FastAPI v1 service's bearer keys
 (SHA-256 at rest, never the raw key) and per-key daily call counts (spec section 10).
+``companies.yc_status`` / ``companies.yc_batch`` (migration ``0008``, ADR 0034) carry the
+YC directory facts the Form D guards read. ``companies.source`` / ``companies.cik_source``
+and the ``issuer_discovery`` table (migration ``0009``,
+``docs/decisions/0035-issuer-first-discovery.md``) record where a company and its CIK came
+from and what issuer-first discovery found per Form D issuer.
 """
 
 from __future__ import annotations
@@ -174,6 +179,40 @@ ReviewQueueStatus = Literal["open", "resolved", "rejected"]
 REVIEW_QUEUE_STATUSES: tuple[str, ...] = ("open", "resolved", "rejected")
 """``review_queue.status``."""
 
+CompanySource = Literal["yc", "issuer_first", "board_first", "manual"]
+COMPANY_SOURCES: tuple[str, ...] = ("yc", "issuer_first", "board_first", "manual")
+"""``companies.source`` (ADR 0035, migration 0009): where the company came from. ``yc`` is
+the YC directory seed (and the column default, so every row before 0009 is ``yc``);
+``issuer_first`` a company created from a Form D issuer on site evidence; ``board_first``
+one found through a public job board; ``manual`` one added by hand (a review verdict,
+``tell discover`` on a domain, an intake list)."""
+
+CikSource = Literal["issuer_first_a", "issuer_first_b", "r1", "guarded_r2", "manual"]
+CIK_SOURCES: tuple[str, ...] = ("issuer_first_a", "issuer_first_b", "r1", "guarded_r2", "manual")
+"""``companies.cik_source`` (ADR 0035, migration 0009): the trusted path that set
+``companies.cik``. Issuer-first discovery on tier A or B site evidence, an R1 link, an R2
+link that passed the Form D guards, or a review verdict. Only a CIK with one of these
+values feeds rule R0 (``tell.resolve.match``); ``NULL`` means the CIK's origin is unknown
+and it is not trusted."""
+
+IssuerDiscoveryStatus = Literal["linked", "tier_c", "no_domain", "conflict", "rejected"]
+ISSUER_DISCOVERY_STATUSES: tuple[str, ...] = (
+    "linked",
+    "tier_c",
+    "no_domain",
+    "conflict",
+    "rejected",
+)
+"""``issuer_discovery.status`` (ADR 0035)."""
+
+IssuerEvidenceTier = Literal["A", "B", "C"]
+ISSUER_EVIDENCE_TIERS: tuple[str, ...] = ("A", "B", "C")
+"""``issuer_discovery.tier`` (ADR 0035): A is the full legal name on the site, B the full
+brand plus the Form D city or state, C weaker (review or log only)."""
+
+TRUSTED_EVIDENCE_TIERS: frozenset[str] = frozenset({"A", "B"})
+"""Tiers whose ``linked`` record counts as site evidence for guard (f) (ADR 0035)."""
+
 
 # --- base -----------------------------------------------------------------------
 
@@ -231,6 +270,13 @@ class Company(Base):
     ``NULL`` for companies not from the directory (migration 0008, ADR 0034)."""
     yc_batch: Mapped[str | None] = mapped_column(Text)
     """YC batch as listed, e.g. ``Summer 2021`` (migration 0008, ADR 0034)."""
+    source: Mapped[str] = mapped_column(
+        Text, nullable=False, default="yc", server_default=text("'yc'")
+    )
+    """Where the company came from (:data:`COMPANY_SOURCES`; migration 0009, ADR 0035)."""
+    cik_source: Mapped[str | None] = mapped_column(Text)
+    """The trusted path that set ``cik`` (:data:`CIK_SOURCES`), or ``NULL`` when unknown
+    (migration 0009, ADR 0035). Only a CIK with a ``cik_source`` feeds rule R0."""
 
 
 class CompanyAlias(Base):
@@ -522,6 +568,38 @@ class ApiUsage(Base):
     calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
 
 
+class IssuerDiscovery(Base):
+    """One Form D issuer that issuer-first discovery has tried (ADR 0035, migration 0009).
+
+    Keyed by the issuer's CIK (10 digits). ``status`` is one of
+    :data:`ISSUER_DISCOVERY_STATUSES`, ``tier`` one of :data:`ISSUER_EVIDENCE_TIERS` (or
+    ``NULL`` when nothing qualified), ``domain`` the company domain the evidence was found
+    on. ``evidence`` holds only ``{"path": ..., "span": ...}``: the page path and the
+    matched legal-name string, never surrounding page text (it can hold a phone number or a
+    street address). ``attempts`` / ``last_tried_at`` / ``next_retry_at`` schedule the
+    retries of a ``no_domain`` issuer. A ``linked`` record at tier A or B is the stored
+    site evidence that lets guard (f) pass a Form D auto-link to a company without YC
+    facts (``tell.resolve.guards``).
+    """
+
+    __tablename__ = "issuer_discovery"
+    __table_args__ = (Index(None, "status", "next_retry_at"),)
+
+    cik: Mapped[str] = mapped_column(Text, primary_key=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    tier: Mapped[str | None] = mapped_column(Text)
+    domain: Mapped[str | None] = mapped_column(Text)
+    evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    last_tried_at: Mapped[datetime | None] = mapped_column(_timestamptz())
+    next_retry_at: Mapped[datetime | None] = mapped_column(_timestamptz())
+    created_at: Mapped[datetime] = mapped_column(
+        _timestamptz(), nullable=False, server_default=text("now()")
+    )
+
+
 ALL_MODELS: tuple[type[Base], ...] = (
     Company,
     CompanyAlias,
@@ -540,5 +618,6 @@ ALL_MODELS: tuple[type[Base], ...] = (
     PostingGhostVote,
     ApiKey,
     ApiUsage,
+    IssuerDiscovery,
 )
 """Every mapped class, in DDL order then the recorded additions (tests, TRUNCATE lists)."""

@@ -1220,9 +1220,20 @@ def _get_json(
 
 
 def _get_html(
-    client: httpx.Client, url: str, *, budget: RateBudget | None, sleep: Sleeper
+    client: httpx.Client,
+    url: str,
+    *,
+    budget: RateBudget | None,
+    sleep: Sleeper,
+    allowed: Callable[[str], bool] | None = None,
 ) -> bytes | None:
-    """A vendor-hosted page (retried per ``tell.http``); ``None`` unless 200."""
+    """A vendor-hosted page (retried per ``tell.http``); ``None`` unless 200.
+
+    ``allowed`` (a robots check, e.g. :meth:`RobotsCache.allowed`) is asked first when
+    given; a disallowed page is not fetched and reads as ``None``.
+    """
+    if allowed is not None and not allowed(url):
+        return None
     try:
         response = fetch(url, client=client, budget=budget, sleep=sleep)
     except httpx.HTTPError:
@@ -1580,6 +1591,7 @@ def ownership_evidence(
     probe: Any = None,
     budget: RateBudget | None = None,
     sleep: Sleeper = time.sleep,
+    allowed: Callable[[str], bool] | None = None,
 ) -> BoardProfile:
     """The board's own name and whether its public data points at ``domain`` (ADR 0031).
 
@@ -1600,6 +1612,9 @@ def ownership_evidence(
       the careers page ``careers.smartrecruiters.com/{id}`` ("Home Page" link): 1 extra.
 
     ``probe`` is the guess's decoded job-list response, so a guess pays nothing twice.
+    ``allowed`` (a robots check) gates the vendor-hosted pages, not the documented APIs: a
+    page it disallows is not fetched and reads as unavailable. Issuer-first discovery
+    passes its :class:`RobotsCache` (ADR 0035); without it the pages are read as before.
     """
     log = _EvidenceLog(domain)
     quoted = _quoted(identifier)
@@ -1623,11 +1638,11 @@ def ownership_evidence(
             )
         if not log.found:
             url = hosted_board_url(vendor, identifier)
-            page = _get_html(client, url, budget=budget, sleep=sleep)
+            page = _get_html(client, url, budget=budget, sleep=sleep, allowed=allowed)
             log.read("greenhouse:hosted_page", page is not None, _links(page, url))
     elif vendor in ("lever", "ashby"):
         url = hosted_board_url(vendor, identifier)
-        page = _get_html(client, url, budget=budget, sleep=sleep)
+        page = _get_html(client, url, budget=budget, sleep=sleep, allowed=allowed)
         name = _title_of(page)
         urls = _links(page, url)
         if vendor == "ashby" and page:
@@ -1655,7 +1670,7 @@ def ownership_evidence(
             log.read("smartrecruiters:postings", isinstance(postings, dict), ())
         name = _smartrecruiters_name(postings)
         url = hosted_board_url(vendor, identifier)
-        page = _get_html(client, url, budget=budget, sleep=sleep)
+        page = _get_html(client, url, budget=budget, sleep=sleep, allowed=allowed)
         log.read("smartrecruiters:careers_page", page is not None, _links(page, url))
     else:
         msg = f"ownership evidence is only defined for supported vendors, not {vendor!r}"
@@ -1718,7 +1733,7 @@ def _log(result: DiscoveryResult) -> DiscoveryResult:
 def _ensure_company(session: Session, domain: str, company_name: str | None) -> Company:
     company = session.scalars(select(Company).where(Company.domain == domain)).first()
     if company is None:
-        company = Company(domain=domain, name=company_name or domain)
+        company = Company(domain=domain, name=company_name or domain, source="manual")
         session.add(company)
         session.flush()
     return company
