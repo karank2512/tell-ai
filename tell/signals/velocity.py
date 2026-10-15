@@ -54,7 +54,7 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -99,8 +99,10 @@ __all__ = [
     "ghost_votes_active",
     "ghost_votes_total",
     "long_open_roles",
+    "long_open_roles_many",
     "new7",
     "open_postings",
+    "open_postings_many",
     "record_ghost_vote",
     "velocity",
 ]
@@ -384,28 +386,50 @@ def base(session: Session, company_id: int, family: str, t: datetime) -> float:
     return velocity(session, company_id, family, t).base
 
 
+_IN_CHUNK = 500
+"""Company ids per ``IN (...)`` list of the batch helpers below."""
+
+
+def _postings_by_company(
+    session: Session, company_ids: Iterable[int], *criteria: Any
+) -> tuple[list[int], dict[int, list[Posting]]]:
+    """``(sorted ids, {company_id: [Posting]})`` for every board of ``company_ids``.
+
+    One query per :data:`_IN_CHUNK` companies instead of one per company.
+    """
+    ids = sorted(set(company_ids))
+    found: dict[int, list[Posting]] = {}
+    for start in range(0, len(ids), _IN_CHUNK):
+        stmt = (
+            select(Posting, AtsBoard.company_id)
+            .join(AtsBoard, AtsBoard.id == Posting.board_id)
+            .where(AtsBoard.company_id.in_(ids[start : start + _IN_CHUNK]), *criteria)
+            .order_by(Posting.id)
+        )
+        for posting, company_id in session.execute(stmt):
+            # Never NULL here: the IN filter only matches boards that have a company.
+            found.setdefault(cast("int", company_id), []).append(posting)
+    return ids, found
+
+
+def open_postings_many(
+    session: Session, company_ids: Iterable[int], t: datetime
+) -> dict[int, float]:
+    """:func:`open_postings` of every company in ``company_ids``, batched."""
+    ids, found = _postings_by_company(
+        session, company_ids, (Posting.closed_at.is_(None)) | (Posting.closed_at > t)
+    )
+    return {cid: _open_weight(found.get(cid, ()), t) for cid in ids}
+
+
 def open_postings(session: Session, company_id: int, t: datetime) -> float:
     """Stale-weighted count of the company's postings open at ``t`` (all families)."""
-    stmt = (
-        select(Posting)
-        .join(AtsBoard, AtsBoard.id == Posting.board_id)
-        .where(
-            AtsBoard.company_id == company_id,
-            (Posting.closed_at.is_(None)) | (Posting.closed_at > t),
-        )
-    )
-    return _open_weight(session.scalars(stmt), t)
+    return open_postings_many(session, [company_id], t)[company_id]
 
 
-def long_open_roles(session: Session, company_id: int, now: datetime) -> list[LongOpenRole]:
-    """Open postings older than 90 days, oldest first (weight 0.25, or 0.0 past 180 days)."""
-    stmt = (
-        select(Posting)
-        .join(AtsBoard, AtsBoard.id == Posting.board_id)
-        .where(AtsBoard.company_id == company_id, Posting.closed_at.is_(None))
-    )
+def _long_open(postings: Iterable[Posting], now: datetime) -> list[LongOpenRole]:
     roles = []
-    for posting in session.scalars(stmt):
+    for posting in postings:
         age = now - (posting.posted_at or posting.first_seen_at)
         if age <= STALE_AFTER:
             continue
@@ -420,6 +444,19 @@ def long_open_roles(session: Session, company_id: int, now: datetime) -> list[Lo
             )
         )
     return sorted(roles, key=lambda r: (-r.days_open, r.title, r.external_id))
+
+
+def long_open_roles_many(
+    session: Session, company_ids: Iterable[int], now: datetime
+) -> dict[int, list[LongOpenRole]]:
+    """:func:`long_open_roles` of every company in ``company_ids``, batched."""
+    ids, found = _postings_by_company(session, company_ids, Posting.closed_at.is_(None))
+    return {cid: _long_open(found.get(cid, ()), now) for cid in ids}
+
+
+def long_open_roles(session: Session, company_id: int, now: datetime) -> list[LongOpenRole]:
+    """Open postings older than 90 days, oldest first (weight 0.25, or 0.0 past 180 days)."""
+    return long_open_roles_many(session, [company_id], now)[company_id]
 
 
 def _candidates(session: Session, now: datetime) -> list[tuple[int, str]]:

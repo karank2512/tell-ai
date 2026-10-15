@@ -67,9 +67,9 @@ from tell.publish.json_api import (
     build_watchlist_json,
     build_weekly_json,
     code_commit_sha,
-    company_facts,
     feedback_link,
     generated_by,
+    prepare_companies,
     validate_company_json,
     validate_health_json,
     validate_site_tree,
@@ -366,13 +366,21 @@ def render_site(
         session, api, as_of=as_of, profile=prof, profiles=profiles, sha=commit
     )
 
-    t = score_instant(as_of)
     company_tpl = env.get_template("company.html")
+    ordered = sorted(companies.values(), key=lambda c: c.domain)
+    batch = prepare_companies(session, ordered, prof, as_of, results)
     published: list[str] = []
-    for company in sorted(companies.values(), key=lambda c: c.domain):
-        facts = company_facts(session, company, t)
+    for company in ordered:
+        facts = batch.facts[company.id]
         obj = build_company_json(
-            session, company, prof, as_of, result=results[company.id], sha=commit, facts=facts
+            session,
+            company,
+            prof,
+            as_of,
+            result=results[company.id],
+            sha=commit,
+            facts=facts,
+            batch=batch,
         )
         validate_company_json(obj)
         write_json(api / "companies" / f"{company.domain}.json", obj)

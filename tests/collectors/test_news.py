@@ -30,6 +30,7 @@ from tell.collectors.base import Event, sha256_hex, start_run, utcnow
 from tell.collectors.news import (
     FALLBACK_PATHS,
     MAX_COMPANIES,
+    MAX_GOOGLE_REQUESTS,
     RUN_BUDGET,
     CompanyRef,
     NewsFeed,
@@ -41,6 +42,7 @@ from tell.collectors.news import (
     google_news_url,
     headline,
     ingest,
+    is_block_only_failure,
     last_polled,
     name_in_title,
     news_key,
@@ -448,7 +450,10 @@ def test_block_stops_the_run_without_retry(
     assert run.notes["polled_count"] == 0
     assert run.notes["deferred"] == 1
     assert run.notes["budget_exhausted"] is False
+    assert run.notes["google_requests"] == 1
     assert _count(db_session, EventRow) == 0
+    # The only failure is the block: `tell ingest --source news` exits 0 for it.
+    assert is_block_only_failure(run)
 
 
 @pytest.mark.db
@@ -530,6 +535,7 @@ def test_contract_drift_fails_the_run(db_session: Session, client: httpx.Client)
     assert run.notes is not None
     assert run.notes["drift"].startswith("google_news:")
     assert _count(db_session, EventRow) == 0
+    assert not is_block_only_failure(run)  # a contract failure is a real error
 
 
 @pytest.mark.db
@@ -1108,6 +1114,26 @@ def test_budget_defaults() -> None:
     assert google_news_minutes <= budget_minutes < 30
 
 
+def test_request_cap_keeps_four_runs_a_day_under_the_spec_guidance() -> None:
+    assert MAX_GOOGLE_REQUESTS == 600
+    assert 4 * MAX_GOOGLE_REQUESTS < 3000  # SPEC section 14: under 3,000 requests a day
+    assert MAX_GOOGLE_REQUESTS <= MAX_COMPANIES
+
+
+def test_is_block_only_failure_reads_status_and_notes() -> None:
+    def run(status: str, **notes: Any) -> Run:
+        return Run(run_id="r", source="news", status=status, notes=notes, started_at=NOW)
+
+    assert is_block_only_failure(run("failed", blocked=True))
+    assert not is_block_only_failure(run("ok", blocked=False))
+    assert not is_block_only_failure(run("failed", blocked=False, drift="google_news: 1"))
+    assert not is_block_only_failure(run("failed", blocked=True, drift="google_news: 1"))
+    assert not is_block_only_failure(run("failed", blocked=True, error="RuntimeError: x"))
+    assert not is_block_only_failure(run("failed", error="RuntimeError: x"))
+    other = Run(run_id="r", source="edgar", status="failed", notes={"blocked": True})
+    assert not is_block_only_failure(other)
+
+
 def _three_companies(session: Session) -> list[Company]:
     return [
         _company(session, name=f"Budget {letter}", domain=f"budget-{letter}.example")
@@ -1120,6 +1146,32 @@ def _mock_empty(mock: respx.MockRouter) -> None:
         return_value=httpx.Response(200, content=_bytes("empty.xml"))
     )
     mock.get(url__regex=r"https://budget-[abc]\.example/.*").mock(return_value=httpx.Response(404))
+
+
+@pytest.mark.db
+def test_request_cap_stops_the_run_cleanly_and_defers_the_rest(
+    db_session: Session, client: httpx.Client
+) -> None:
+    companies = _three_companies(db_session)
+    with respx.mock(assert_all_called=False) as mock:
+        _mock_empty(mock)
+        run = ingest(
+            db_session,
+            now=NOW,
+            client=client,
+            company_ids=[c.id for c in companies],
+            budgets=_budgets(),
+            max_requests=2,
+        )
+        queried = [u for u in _urls(mock) if u.startswith("https://news.google.com/")]
+        assert queried == [google_news_url(c.name) for c in companies[:2]]
+    assert run.status == "ok"
+    assert run.notes is not None
+    assert run.notes["google_requests"] == 2
+    assert run.notes["request_cap_reached"] is True
+    assert run.notes["deferred"] == 1
+    assert run.notes["polled_count"] == 2
+    assert run.notes["budget_exhausted"] is False
 
 
 @pytest.mark.db

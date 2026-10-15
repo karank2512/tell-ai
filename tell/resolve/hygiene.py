@@ -122,7 +122,8 @@ def prune_aliases(session: Session, *, apply: bool = False) -> dict[str, Any]:
         for start in range(0, len(doomed), _DELETE_BATCH):
             chunk = doomed[start : start + _DELETE_BATCH]
             session.execute(
-                delete(CompanyAlias).where(
+                delete(CompanyAlias)
+                .where(
                     CompanyAlias.source == "manual",
                     or_(
                         *(
@@ -134,6 +135,8 @@ def prune_aliases(session: Session, *, apply: bool = False) -> dict[str, Any]:
                         )
                     ),
                 )
+                # RETURNING-based sync: no 500-term OR evaluated against every loaded alias.
+                .execution_options(synchronize_session="fetch")
             )
         session.flush()
     actions = Counter(v.action for v in found)

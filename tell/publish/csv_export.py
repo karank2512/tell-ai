@@ -40,7 +40,7 @@ from sqlalchemy.orm import Session
 
 from tell.config import get_settings
 from tell.models import Company, EventRow
-from tell.publish.json_api import company_facts, feedback_link, round_half_up
+from tell.publish.json_api import company_facts_many, feedback_link, round_half_up
 from tell.signals.profiles import Profile
 from tell.signals.scoring import FORM_D_FILED, heat, score_companies, score_instant
 from tell.signals.taxonomy import FAMILIES
@@ -122,13 +122,14 @@ def csv_rows(
     results = {r.company_id: r for r in score_companies(session, profile, as_of, ids, write=False)}
     heats = heat({cid: r.score for cid, r in results.items()})
     companies = {c.id: c for c in session.scalars(select(Company).where(Company.id.in_(ids)))}
+    facts_by_id = company_facts_many(session, list(companies.values()), t)
     rows: list[dict[str, str]] = []
     for cid in ids:
         company = companies.get(cid)
         if company is None:
             continue
         result = results[cid]
-        facts = company_facts(session, company, t)
+        facts = facts_by_id[cid]
         new7 = {family: velocity(session, cid, family, t).new7 for family in FAMILIES}
         funding_total, funding_url = _funding(session, cid, as_of)
         tops = result.contributions[:2]

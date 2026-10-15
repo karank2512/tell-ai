@@ -229,10 +229,10 @@ def _finish_line(run: Run, *, with_notes: bool) -> dict[str, Any]:
     return line
 
 
-def _emit_run(line: dict[str, Any]) -> None:
-    """Print a run line; exit 1 unless the run finished ``ok``."""
+def _emit_run(line: dict[str, Any], *, tolerated: bool = False) -> None:
+    """Print a run line; exit 1 unless the run finished ``ok`` (or its failure is ``tolerated``)."""
     _echo(line)
-    if line.get("status") != "ok":
+    if line.get("status") != "ok" and not tolerated:
         raise typer.Exit(code=1)
 
 
@@ -489,7 +489,8 @@ def _ingest_news(
     when_days: int | None = None,
     cohort: Cohort | None = None,
     cohort_days: int | None = None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], bool]:
+    """The news run line, and whether its only failure was a Google News block."""
     now = utcnow()
     if when_days is None:
         when_days = news.COHORT_WHEN_DAYS if cohort is not None else news.DEFAULT_WHEN_DAYS
@@ -505,11 +506,18 @@ def _ingest_news(
                 cohort=cohort.value if cohort is not None else None,
                 cohort_days=cohort_days if cohort_days is not None else news.COHORT_DAYS,
             )
-            return runlog_ops.run_line(run)
+            blocked_only = news.is_block_only_failure(run)
+            if blocked_only:
+                _log.warning(
+                    "news run %s was blocked by Google News; the run stays failed for "
+                    "health and the dead-man, but the command exits 0",
+                    run.run_id,
+                )
+            return runlog_ops.run_line(run), blocked_only
     except typer.BadParameter:
         raise
     except Exception as exc:
-        return _record_failure(news.SOURCE, now, exc)
+        return _record_failure(news.SOURCE, now, exc), False
 
 
 def _ingest_github() -> dict[str, Any]:
@@ -594,7 +602,11 @@ def ingest(
         ),
     ] = None,
 ) -> None:
-    """Run one collector and print its JSON run line (exit 1 when the run failed)."""
+    """Run one collector and print its JSON run line (exit 1 when the run failed).
+
+    A news run whose only failure is a Google News block (429/503) stays ``failed`` in
+    ``runs`` (health and the dead-man see it) but exits 0, keeping the work done before it.
+    """
     name = source.value
     if source is not Source.NEWS and (when_days is not None or cohort is not None):
         raise typer.BadParameter("--when-days and --cohort apply to news only")
@@ -603,6 +615,7 @@ def ingest(
     if cohort_days is not None and cohort is None:
         raise typer.BadParameter("--cohort-days applies with --cohort only")
     since_day = _edgar_since(source, since)
+    tolerated = False
     if name in ATS_INGEST:
         line = _ingest_ats(name, board=board, domain=domain, limit=limit, force=force)
     else:
@@ -618,12 +631,12 @@ def ingest(
                 with_notes=False,
             )
         elif source is Source.NEWS:
-            line = _ingest_news(
+            line, tolerated = _ingest_news(
                 domain, limit, when_days=when_days, cohort=cohort, cohort_days=cohort_days
             )
         else:
             line = _ingest_github()
-    _emit_run(line)
+    _emit_run(line, tolerated=tolerated)
 
 
 # --- backfill ---------------------------------------------------------------------------------

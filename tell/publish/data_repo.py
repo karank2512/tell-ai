@@ -43,10 +43,11 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import select, update
+from sqlalchemy import Table, bindparam, select, update
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from tell.collectors.base import iso_utc, utcnow
 from tell.models import AtsBoard, Company, EventRow, Posting
@@ -84,6 +85,9 @@ SNAPSHOT_RETENTION_DAYS = 90
 """Snapshot day directories older than this are removed (spec section 9)."""
 
 _DAY = timedelta(days=1)
+_EVENTS = cast("Table", EventRow.__table__)  # declarative; mapped to the one events table
+_SNAPSHOT_CHUNK = 500
+"""Board ids per ``IN (...)`` list when loading open postings for snapshots."""
 _SNAPSHOT_DIR = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -178,7 +182,7 @@ def read_event_ids(path: Path) -> list[str]:
 
 def _append(
     out_dir: Path, day: date, rows: Sequence[EventRow]
-) -> tuple[JsonlWrite, list[dict[str, str]]]:
+) -> tuple[JsonlWrite, list[tuple[EventRow, str]]]:
     """Append the rows missing from the day's file; return the outcome and raw_ref updates."""
     path = events_path(out_dir, day)
     existing = read_event_ids(path)
@@ -194,7 +198,7 @@ def _append(
             continue
         known.add(row.event_id)
         unique.append(row)
-    refs: list[dict[str, str]] = []
+    refs: list[tuple[EventRow, str]] = []
     if unique:
         path.parent.mkdir(parents=True, exist_ok=True)
         lines: list[str] = []
@@ -202,7 +206,7 @@ def _append(
             ref = f"{rel}#L{offset}"
             lines.append(_dumps(event_record(row, raw_ref=ref)) + "\n")
             if not row.raw_ref:
-                refs.append({"event_id": row.event_id, "raw_ref": ref})
+                refs.append((row, ref))
         with path.open("a", encoding="utf-8") as handle:
             handle.write("".join(lines))
             handle.flush()
@@ -211,13 +215,32 @@ def _append(
     return JsonlWrite(path=path, written=[r.event_id for r in unique], present=present), refs
 
 
-def _stamp_raw_refs(session: Session, refs: Iterable[dict[str, str]]) -> None:
-    for ref in refs:
-        session.execute(
-            update(EventRow)
-            .where(EventRow.event_id == ref["event_id"], EventRow.raw_ref.is_(None))
-            .values(raw_ref=ref["raw_ref"])
-        )
+_STAMP_RAW_REF = (
+    update(_EVENTS)
+    .where(_EVENTS.c.event_id == bindparam("b_event_id"), _EVENTS.c.raw_ref.is_(None))
+    .values(raw_ref=bindparam("b_raw_ref"))
+)
+"""Fill one empty ``events.raw_ref``; run as a single executemany (Core, no ORM sync)."""
+
+
+def _stamp_raw_refs(session: Session, refs: Sequence[tuple[EventRow, str]]) -> None:
+    """Copy each new line's address into ``events.raw_ref`` where it is still empty.
+
+    One Core executemany on the ``events`` table: no per-row statement and no ORM
+    ``synchronize_session`` pass over the identity map (which holds every event the
+    caller loaded; with ~22k events the per-statement ORM evaluation cost 56 ms, i.e.
+    16 minutes for one day of Form D events). The loaded objects are brought in line
+    with :func:`~sqlalchemy.orm.attributes.set_committed_value`, so they read the new
+    value and the next flush issues no second UPDATE.
+    """
+    if not refs:
+        return
+    session.connection().execute(
+        _STAMP_RAW_REF,
+        [{"b_event_id": row.event_id, "b_raw_ref": ref} for row, ref in refs],
+    )
+    for row, ref in refs:
+        set_committed_value(row, "raw_ref", ref)
 
 
 def _day_bounds(day: date) -> tuple[datetime, datetime]:
@@ -278,7 +301,7 @@ def archive_events(session: Session, out_dir: Path, older_than: datetime) -> lis
         .execution_options(yield_per=2000)
     )
     archived: list[str] = []
-    stamps: list[dict[str, str]] = []
+    stamps: list[tuple[EventRow, str]] = []
     for day, rows in _by_observed_day(session.scalars(stmt)):
         result, refs = _append(out_dir, day, rows)
         stamps.extend(refs)
@@ -309,13 +332,21 @@ def write_snapshots(session: Session, out_dir: Path, day: date) -> list[Path]:
         .where(AtsBoard.status == "active", AtsBoard.last_polled_at.is_not(None))
         .order_by(AtsBoard.vendor, AtsBoard.identifier)
     ).all()
+    open_by_board: dict[int, list[Posting]] = {}
+    board_ids = [board.id for board, _ in boards]
+    for start in range(0, len(board_ids), _SNAPSHOT_CHUNK):  # not one query per board
+        for posting in session.scalars(
+            select(Posting)
+            .where(
+                Posting.board_id.in_(board_ids[start : start + _SNAPSHOT_CHUNK]),
+                Posting.closed_at.is_(None),
+            )
+            .order_by(Posting.board_id, Posting.external_id)
+        ):
+            open_by_board.setdefault(posting.board_id, []).append(posting)
     written: list[Path] = []
     for board, domain in boards:
-        postings = session.scalars(
-            select(Posting)
-            .where(Posting.board_id == board.id, Posting.closed_at.is_(None))
-            .order_by(Posting.external_id)
-        ).all()
+        postings = open_by_board.get(board.id, [])
         doc = {
             "vendor": board.vendor,
             "identifier": board.identifier,

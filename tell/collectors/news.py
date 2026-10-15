@@ -32,7 +32,9 @@ Politeness, two separate budgets, no retries anywhere. Google News is queried on
 company at a time at ``TELL_RATE_NEWS_RPS`` (1 request/second). A 429 or 503 from
 Google News is a block: the run stops at once and finishes ``failed`` with
 ``runs.notes["blocked"] = true``, so the SPEC section 11 dead-man notices a block that
-persists (a block is a signal to slow down, not to retry). Company sites (discovery,
+persists (a block is a signal to slow down, not to retry). ``tell ingest --source news``
+still exits 0 when the block is the run's only failure (:func:`is_block_only_failure`),
+so one block does not turn the scheduled ingest job red. Company sites (discovery,
 feed polls) are worked on by :data:`SITE_WORKERS` threads at :data:`SITE_RPS` per host
 with a :data:`SITE_TIMEOUT_S` timeout, redirects charged hop by hop to each host's
 budget; the first transport error or 429/503 ends a
@@ -55,9 +57,10 @@ replace the rotation and only respect the 6-hour cache.
 
 Budget per run: at most :data:`MAX_COMPANIES` companies (watchlist members first,
 then the active companies, then the long tail; least recently polled first within
-each group) and :data:`RUN_BUDGET` of wall-clock time. A run that hits either stops
-cleanly, keeps what it wrote, finishes ``ok`` and says so in ``runs.notes``
-(``deferred``, ``budget_exhausted``).
+each group), :data:`MAX_GOOGLE_REQUESTS` (600) Google News requests and
+:data:`RUN_BUDGET` of wall-clock time. A run that hits any of them stops cleanly, keeps
+what it wrote, finishes ``ok`` and says so in ``runs.notes`` (``deferred``,
+``request_cap_reached``, ``budget_exhausted``).
 
 Cohort runs (SPEC 13.1): ``when_days`` widens the Google News window (``when:120d``)
 and ``cohort="formd"`` polls the companies linked to a ``form_d_filed`` event in the
@@ -120,6 +123,7 @@ __all__ = [
     "DEFAULT_WHEN_DAYS",
     "FALLBACK_PATHS",
     "MAX_COMPANIES",
+    "MAX_GOOGLE_REQUESTS",
     "MAX_WHEN_DAYS",
     "RUN_BUDGET",
     "SITE_BACKLOG",
@@ -143,6 +147,7 @@ __all__ = [
     "google_news_url",
     "headline",
     "ingest",
+    "is_block_only_failure",
     "last_polled",
     "name_in_title",
     "news_key",
@@ -173,8 +178,14 @@ SCHEDULE_SLACK: Final = timedelta(hours=1)
 POLL_LOOKBACK: Final = timedelta(days=ROTATION_DAYS)
 """How far back the ``runs.notes["polled"]`` history is read."""
 MAX_COMPANIES: Final = 1200
-"""Companies per run: 1,200 Google News queries at 1 rps is 20 minutes, inside the
-45-minute ``filings`` job (EDGAR first, then news) with margin."""
+"""Companies per run. Each costs one Google News query, so :data:`MAX_GOOGLE_REQUESTS`
+(600) is the tighter bound on a scheduled run; this cap still applies when a caller
+raises the request cap (a manual cohort rerun)."""
+MAX_GOOGLE_REQUESTS: Final = 600
+"""Google News requests per run (one per company polled; no retries). Four scheduled runs
+a day stay at or under 2,400 requests, inside the SPEC section 14 guidance of under
+3,000 a day. A run that reaches it stops cleanly like :data:`MAX_COMPANIES` and says so in
+``runs.notes`` (``google_requests``, ``request_cap_reached``)."""
 RUN_BUDGET: Final = timedelta(minutes=25)
 """Wall-clock budget per run; the run stops cleanly before the next company after it."""
 DISCOVERY_RETRY: Final = timedelta(days=30)
@@ -491,6 +502,8 @@ class NewsRunResult:
     selected: int = 0
     deferred: int = 0
     budget_exhausted: bool = False
+    google_requests: int = 0
+    request_cap_reached: bool = False
     when_days: int = DEFAULT_WHEN_DAYS
     cohort: str | None = None
     cohort_size: int | None = None
@@ -514,6 +527,8 @@ class NewsRunResult:
             "selected": self.selected,
             "deferred": self.deferred,
             "budget_exhausted": self.budget_exhausted,
+            "google_requests": self.google_requests,
+            "request_cap_reached": self.request_cap_reached,
             "blocked": self.blocked is not None,
             "when_days": self.when_days,
             "site": dict(self.site),
@@ -956,6 +971,7 @@ def _poll_google_news(run: _Run, company: Company) -> bool:
     when the response no longer fits :class:`NewsFeed`.
     """
     url = google_news_url(company.name, run.when_days)
+    run.result.google_requests += 1
     try:
         response = _google_get(run.client, url, run.google)
     except RetryExhausted as exc:
@@ -1187,16 +1203,21 @@ def _poll_companies(
     *,
     backlog: int,
     out_of_time: Callable[[], bool],
+    max_requests: int = MAX_GOOGLE_REQUESTS,
 ) -> int:
     """The Google News loop: one company at a time, site work handed to ``pool``.
 
     Returns how many companies were started. Stops before the next company once
-    ``out_of_time()`` (``budget_exhausted``), and at a block or a contract failure.
+    ``out_of_time()`` (``budget_exhausted``) or once ``max_requests`` Google News
+    requests were sent (``request_cap_reached``), and at a block or a contract failure.
     """
     attempted = 0
     for company in queue:
         if out_of_time():
             run.result.budget_exhausted = True
+            break
+        if run.result.google_requests >= max_requests:
+            run.result.request_cap_reached = True
             break
         attempted += 1
         try:
@@ -1250,6 +1271,7 @@ def collect(
     cohort: str | None = None,
     cohort_days: int = COHORT_DAYS,
     commit: Commit | None = None,
+    max_requests: int = MAX_GOOGLE_REQUESTS,
 ) -> NewsRunResult:
     """Poll Google News and company feeds for this run's companies and write events.
 
@@ -1262,9 +1284,10 @@ def collect(
     most ``site_workers * SITE_BACKLOG`` companies' site work is outstanding; beyond
     that the Google News loop waits.
 
-    Polls at most ``max_companies`` companies in :func:`select_companies` order and
-    starts no company once ``budget`` of ``clock`` time has passed
-    (``budget_exhausted``); the companies left out are counted in ``deferred``.
+    Polls at most ``max_companies`` companies in :func:`select_companies` order, sends
+    at most ``max_requests`` Google News requests (``request_cap_reached``) and starts no
+    company once ``budget`` of ``clock`` time has passed (``budget_exhausted``); the
+    companies left out are counted in ``deferred``.
     Stops at the first Google News block (429/503) or contract failure; everything
     written before that stays. Site work already started finishes and is recorded.
 
@@ -1326,9 +1349,15 @@ def collect(
             pending,
             backlog=site_workers * SITE_BACKLOG,
             out_of_time=lambda: clock() - started >= budget.total_seconds(),
+            max_requests=max_requests,
         )
         if run.result.budget_exhausted:
             _logger.warning("news: run budget of %s used up; stopping cleanly", budget)
+        if run.result.request_cap_reached:
+            _logger.warning(
+                "news: %s Google News requests sent (the per-run cap); stopping cleanly",
+                run.result.google_requests,
+            )
         run.result.deferred = len(companies) - attempted
         _settle(run, pending, keep=0)
         _checkpoint(run, notes=True)
@@ -1355,6 +1384,7 @@ def ingest(
     cohort: str | None = None,
     cohort_days: int = COHORT_DAYS,
     commit: Commit | None = _commit,
+    max_requests: int = MAX_GOOGLE_REQUESTS,
 ) -> Run:
     """One news run: ``start_run``, :func:`collect`, ``finish_run`` with the notes.
 
@@ -1391,6 +1421,7 @@ def ingest(
             cohort=cohort,
             cohort_days=cohort_days,
             commit=commit,
+            max_requests=max_requests,
         )
     except Exception as exc:
         if commit is None:
@@ -1412,6 +1443,25 @@ def ingest(
     if commit is not None:
         commit(session)
     return run
+
+
+def is_block_only_failure(run: Run) -> bool:
+    """Whether ``run`` failed only because Google News blocked it (429/503).
+
+    Such a run stays ``failed`` with ``notes.blocked = true`` (health and the dead-man
+    see it), but ``tell ingest --source news`` exits 0 for it: a block is Google asking
+    us to slow down, the work done before it is kept, and the next scheduled run tries
+    again. A contract failure (``notes.drift``) or a crash (``notes.error``) is a real
+    error and is not covered.
+    """
+    notes = run.notes or {}
+    return (
+        run.source == SOURCE
+        and run.status == "failed"
+        and notes.get("blocked") is True
+        and "drift" not in notes
+        and "error" not in notes
+    )
 
 
 def _elapsed(started: datetime, began: float) -> datetime:

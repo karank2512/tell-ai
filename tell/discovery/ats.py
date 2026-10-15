@@ -1802,7 +1802,11 @@ def _human_confirmed(session: Session, board: AtsBoard | None, company: Company)
 
 def _drop_no_board_marker(session: Session, domain: str) -> None:
     session.execute(
-        delete(AtsBoard).where(AtsBoard.vendor == NO_BOARD_VENDOR, AtsBoard.identifier == domain)
+        delete(AtsBoard)
+        .where(AtsBoard.vendor == NO_BOARD_VENDOR, AtsBoard.identifier == domain)
+        # Called once per domain in a discovery run; "fetch" drops only the matched object
+        # from the session instead of evaluating every loaded AtsBoard each time.
+        .execution_options(synchronize_session="fetch")
     )
 
 

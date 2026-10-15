@@ -113,7 +113,7 @@ from tell.signals.profiles import (
     default_profile,
     load_profiles,
 )
-from tell.signals.velocity import HIRING_VELOCITY, open_postings
+from tell.signals.velocity import HIRING_VELOCITY, open_postings, open_postings_many
 
 __all__ = [
     "CROSSING_COOLDOWN_DAYS",
@@ -150,6 +150,7 @@ __all__ = [
     "summarize",
     "watchlist_companies",
     "why_not_higher",
+    "why_not_higher_many",
 ]
 
 # --- constants ----------------------------------------------------------------------------
@@ -441,7 +442,12 @@ def build_signals(session: Session, *, now: datetime, profile: Profile | None = 
         )
     for change in amended:  # rare (one per amended filing); ORM update keeps loaded rows in sync
         session.execute(
-            update(Signal).where(Signal.id == change["id"]).values(magnitude=change["magnitude"])
+            update(Signal)
+            .where(Signal.id == change["id"])
+            .values(magnitude=change["magnitude"])
+            # RETURNING-based sync: O(matched rows), not a scan of the identity map, which
+            # holds every event build_signals loaded.
+            .execution_options(synchronize_session="fetch")
         )
     session.flush()
     return inserted
@@ -637,13 +643,14 @@ def score_companies(
     since = t - _DAY * (EXPIRY_HALF_LIVES * profile.half_life_days.longest)
     views = _load_views(session, ids, since=since, until=t)
     sized = _companies_with_boards(session, ids)
+    open_weight = open_postings_many(session, sized, t)
     results: list[ScoreResult] = []
     for company_id in ids:
         total, parts = _score_views(views.get(company_id, []), profile, t)
         parts.sort(key=lambda sc: (-sc[1], sc[0].id))
         in_band = True
         if company_id in sized:
-            in_band = profile.size_band.contains(open_postings(session, company_id, t))
+            in_band = profile.size_band.contains(open_weight[company_id])
         results.append(
             ScoreResult(
                 company_id=company_id,
@@ -949,31 +956,40 @@ def why_not_higher(
     for its type). Those expiring in ``(t - 30d, t]`` are listed newest-expiry first as
     ``{signal_id, signal_type, role_family, url, occurred_at, expired_at, summary}``.
     """
+    return why_not_higher_many(session, [company_id], profile, as_of)[company_id]
+
+
+def why_not_higher_many(
+    session: Session, company_ids: Iterable[int], profile: Profile, as_of: date
+) -> dict[int, list[dict[str, Any]]]:
+    """:func:`why_not_higher` of every company in ``company_ids`` (one query per 500)."""
     t = score_instant(as_of)
     window_start = t - _DAY * WHY_NOT_HIGHER_DAYS
     longest = EXPIRY_HALF_LIVES * profile.half_life_days.longest
-    views = _load_views(session, [company_id], since=window_start - _DAY * longest, until=t).get(
-        company_id, []
-    )
-    rows: list[tuple[datetime, dict[str, Any]]] = []
-    for view in views:
-        expired_at = view.starts_at + _DAY * (
-            EXPIRY_HALF_LIVES * profile.half_life_days[view.signal_type]
-        )
-        if window_start < expired_at <= t:
-            rows.append(
-                (
-                    expired_at,
-                    {
-                        "signal_id": view.id,
-                        "signal_type": view.signal_type,
-                        "role_family": view.role_family,
-                        "url": view.url,
-                        "occurred_at": iso_utc(view.occurred_at),
-                        "expired_at": iso_utc(expired_at),
-                        "summary": summarize(view),
-                    },
-                )
+    ids = sorted(set(company_ids))
+    views = _load_views(session, ids, since=window_start - _DAY * longest, until=t)
+    out: dict[int, list[dict[str, Any]]] = {}
+    for company_id in ids:
+        rows: list[tuple[datetime, dict[str, Any]]] = []
+        for view in views.get(company_id, []):
+            expired_at = view.starts_at + _DAY * (
+                EXPIRY_HALF_LIVES * profile.half_life_days[view.signal_type]
             )
-    rows.sort(key=lambda r: (r[0], r[1]["signal_id"]), reverse=True)
-    return [row for _, row in rows]
+            if window_start < expired_at <= t:
+                rows.append(
+                    (
+                        expired_at,
+                        {
+                            "signal_id": view.id,
+                            "signal_type": view.signal_type,
+                            "role_family": view.role_family,
+                            "url": view.url,
+                            "occurred_at": iso_utc(view.occurred_at),
+                            "expired_at": iso_utc(expired_at),
+                            "summary": summarize(view),
+                        },
+                    )
+                )
+        rows.sort(key=lambda r: (r[0], r[1]["signal_id"]), reverse=True)
+        out[company_id] = [row for _, row in rows]
+    return out

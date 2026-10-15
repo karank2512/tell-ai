@@ -353,10 +353,13 @@ def prune_platform_companies(session: Session, *, apply: bool = False) -> dict[s
     found = platform_companies(session)
     deletable = [c.company_id for c in found if c.deletable]
     if apply and deletable:
-        session.execute(delete(CompanyAlias).where(CompanyAlias.company_id.in_(deletable)))
-        session.execute(delete(CompanyFeed).where(CompanyFeed.company_id.in_(deletable)))
-        session.execute(delete(Score).where(Score.company_id.in_(deletable)))
-        session.execute(delete(Company).where(Company.id.in_(deletable)))
+        for stmt in (
+            delete(CompanyAlias).where(CompanyAlias.company_id.in_(deletable)),
+            delete(CompanyFeed).where(CompanyFeed.company_id.in_(deletable)),
+            delete(Score).where(Score.company_id.in_(deletable)),
+            delete(Company).where(Company.id.in_(deletable)),
+        ):  # RETURNING-based sync: drops the matched objects, no identity-map scan
+            session.execute(stmt.execution_options(synchronize_session="fetch"))
         session.flush()
     return {
         "dry_run": not apply,

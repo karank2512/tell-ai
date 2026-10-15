@@ -23,16 +23,19 @@ from tell.publish.json_api import (
     build_company_json,
     code_commit_sha,
     company_facts,
+    company_facts_many,
     feedback_link,
     generated_by,
     intake_link,
+    prepare_companies,
     round_half_up,
     validate_company_json,
     validate_health_json,
     validate_watchlist_json,
     validate_weekly_json,
 )
-from tell.signals.scoring import build_signals, score_instant
+from tell.publish.site import environment, page_context
+from tell.signals.scoring import build_signals, score_companies, score_instant
 from tests.publish import scenario as sc
 
 
@@ -294,3 +297,38 @@ def test_company_json_through_a_watchlist_with_a_decayed_signal(db_session: Sess
         }
     ]
     assert [c["type"] for c in obj["contributions"]] == ["expansion"]
+    # The account page renders a decayed signal without a role family (StrictUndefined:
+    # this crashed `tell publish` on the production copy, 2026-10-14).
+    html = (
+        environment()
+        .get_template("company.html")
+        .render(
+            **page_context(sc.AS_OF, None, "2026-W40", "../"),
+            c=obj,
+            heats=[],
+            bars=[],
+            long_open=[],
+            feedback="https://forms.example/feedback",
+        )
+    )
+    assert "launch decayed to zero on 2026-09-26" in html
+    # Batched facts and inputs match the one-company path exactly.
+    batch = prepare_companies(
+        db_session,
+        [company, other],
+        profile,
+        sc.AS_OF,
+        {
+            r.company_id: r
+            for r in score_companies(
+                db_session, profile, sc.AS_OF, [company.id, other.id], write=False
+            )
+        },
+    )
+    t = score_instant(sc.AS_OF)
+    assert batch.facts[company.id] == company_facts(db_session, company, t)
+    assert batch.facts == company_facts_many(db_session, [other, company], t)
+    batched = build_company_json(
+        db_session, company, profile, sc.AS_OF, watchlist, sha=None, batch=batch
+    )
+    assert batched == obj

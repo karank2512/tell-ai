@@ -42,7 +42,7 @@
 <h2>Why not higher</h2>
 {% if c.why_not_higher %}
 <ul class="decayed">
-{% for d in c.why_not_higher %}<li>{{ d.type }}{% if d.role_family %} ({{ d.role_family }}){% endif %} decayed to zero on {{ d.decayed_at }}: <a href="{{ d.url }}">{{ d.summary }}</a></li>{% endfor %}
+{% for d in c.why_not_higher %}<li>{{ d.type }}{% if d.role_family is defined and d.role_family %} ({{ d.role_family }}){% endif %} decayed to zero on {{ d.decayed_at }}: <a href="{{ d.url }}">{{ d.summary }}</a></li>{% endfor %}
 </ul>
 {% else %}
 <p class="muted">No signal decayed to zero in the last 30 days.</p>

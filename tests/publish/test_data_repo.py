@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select, update
 from sqlalchemy.orm import Session
 
 from tell.collectors.base import Event, write_events
@@ -144,6 +146,85 @@ def test_archive_events_writes_old_events_to_their_day_files(
     assert len(read_event_ids(events_path(tmp_path, old_a.date()))) == 2
     with pytest.raises(ValueError, match="timezone-aware"):
         archive_events(db_session, tmp_path, datetime(2026, 4, 1))
+
+
+class _Statements:
+    """Every statement the engine sends while active: ``(sql, executemany)``."""
+
+    def __init__(self, session: Session) -> None:
+        self.engine = session.get_bind()
+        self.seen: list[tuple[str, bool]] = []
+
+    def _record(self, *args: Any) -> None:
+        statement, executemany = args[2], args[5]
+        self.seen.append((str(statement), bool(executemany)))
+
+    def __enter__(self) -> _Statements:
+        event.listen(self.engine, "before_cursor_execute", self._record)
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        event.remove(self.engine, "before_cursor_execute", self._record)
+
+    def updates(self) -> list[tuple[str, bool]]:
+        return [s for s in self.seen if s[0].lstrip().upper().startswith("UPDATE")]
+
+
+def test_stamp_raw_refs_is_one_executemany_with_a_large_identity_map(
+    db_session: Session, tmp_path: Path
+) -> None:
+    """Regression (2026-10-14): one ORM UPDATE per event, each evaluated against every
+    loaded EventRow, made publish run past its 45-minute job limit."""
+    n = 2000
+    other_day = T - timedelta(days=3)
+    write_events(db_session, [_event(i, T + timedelta(seconds=i)) for i in range(n)])
+    write_events(db_session, [_event(n + i, other_day) for i in range(n)])
+    loaded = list(db_session.scalars(select(EventRow)))  # 2n objects in the identity map
+    assert len(loaded) == 2 * n
+    started = time.perf_counter()
+    with _Statements(db_session) as stmts:
+        result = write_events_jsonl(db_session, tmp_path, DAY)
+        db_session.flush()
+    elapsed = time.perf_counter() - started
+    assert len(result.written) == n
+    updates = stmts.updates()
+    assert len(updates) == 1, updates[:3]
+    assert updates[0][1] is True  # executemany, not one round trip per event
+    assert "raw_ref IS NULL" in updates[0][0]
+    assert len(stmts.seen) <= 3  # the day's SELECT and the UPDATE; nothing per event
+    assert elapsed < 10, f"{n} stamps took {elapsed:.1f}s"
+    # The loaded objects carry the new value as committed state: no second UPDATE on flush.
+    rows = {r.event_id: r for r in loaded}
+    first = result.written[0]
+    assert rows[first].raw_ref == "events/2026/10/06.jsonl#L1"
+    assert not any(db_session.is_modified(r) for r in loaded)
+    stored = {
+        str(event_id): raw_ref
+        for event_id, raw_ref in db_session.execute(
+            select(EventRow.event_id, EventRow.raw_ref).where(EventRow.observed_at >= T)
+        )
+    }
+    assert all(stored[e] is not None for e in result.written)
+    with _Statements(db_session) as again:
+        assert write_events_jsonl(db_session, tmp_path, DAY).written == []
+        db_session.flush()
+    assert again.updates() == []  # idempotent: nothing left to stamp
+
+
+def test_stamp_raw_refs_never_overwrites_a_raw_ref_set_meanwhile(
+    db_session: Session, tmp_path: Path
+) -> None:
+    write_events(db_session, [_event(1, T)])
+    assert db_session.scalars(select(EventRow)).one().raw_ref is None  # loaded, empty
+    # Another writer fills raw_ref behind this session's back (no ORM sync).
+    db_session.execute(
+        update(EventRow)
+        .values(raw_ref="events/2026/10/06.jsonl#L7")
+        .execution_options(synchronize_session=False)
+    )
+    write_events_jsonl(db_session, tmp_path, DAY)  # the stale object still reads None
+    stored = db_session.execute(select(EventRow.raw_ref)).scalar_one()
+    assert stored == "events/2026/10/06.jsonl#L7"  # WHERE raw_ref IS NULL kept it
 
 
 # --- snapshots ---------------------------------------------------------------------------------

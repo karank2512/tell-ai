@@ -483,7 +483,15 @@ def update_event_payload(session: Session, event_id: str, patch: Mapping[str, An
     merged = EventRow.payload.op("||", return_type=JSONB())(
         bindparam("payload_patch", patch_dict, type_=JSONB())
     )
-    stmt = update(EventRow).where(EventRow.event_id == event_id).values(payload=merged)
+    # "fetch" (RETURNING) refreshes only the matched object instead of evaluating the
+    # criteria against every EventRow in the identity map ("auto"), which grows with the
+    # session: one statement per amendment must not cost O(loaded events).
+    stmt = (
+        update(EventRow)
+        .where(EventRow.event_id == event_id)
+        .values(payload=merged)
+        .execution_options(synchronize_session="fetch")
+    )
     # Session.execute() is typed as a generic Result; an UPDATE always yields a CursorResult.
     result = cast("CursorResult[Any]", session.execute(stmt))
     return result.rowcount == 1

@@ -370,6 +370,76 @@ def test_ingest_collector_crash_records_a_failed_run(
     assert run.notes == {"error": "ConnectError: unreachable"}
 
 
+def _news_company(engine: Engine) -> None:
+    with SessionLocal(bind=engine) as session:
+        add_company(session, "blockedco.example")
+        session.commit()
+
+
+def _mock_news_sites(mock: respx.MockRouter) -> None:
+    mock.get(url__regex=r"https://blockedco\.example/.*").mock(return_value=httpx.Response(404))
+
+
+@pytest.mark.parametrize("status", [429, 503])
+def test_ingest_news_block_fails_the_run_but_exits_0(
+    bound: Engine, monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    """A Google News block alone no longer turns the ingest job red (2026-10-14)."""
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    _news_company(bound)
+    with respx.mock(assert_all_called=False) as mock:
+        mock.get(url__regex=r"https://news\.google\.com/rss/search.*").mock(
+            return_value=httpx.Response(status)
+        )
+        _mock_news_sites(mock)
+        line = _json(_invoke(["ingest", "--source", "news", "--domain", "blockedco.example"]))
+    assert line["status"] == "failed"  # the run row still says failed ...
+    run = _runs(bound, "news")[-1]
+    assert run.status == "failed"
+    assert run.notes is not None
+    assert run.notes["blocked"] is True
+    assert run.notes["blocked_by"]["status"] == status
+    # ... so the dead-man still alarms: news has no ok run in the last 24 hours.
+    report = _json(_invoke(["deadman", "--source", "news"], code=1))
+    assert report["silent"] == ["news"]
+    assert report["sources"][0]["status"] == "stale"
+
+
+def test_ingest_news_block_after_an_old_ok_run_still_alarms_the_deadman(
+    bound: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    _news_company(bound)
+    with SessionLocal(bind=bound) as session:
+        add_run(session, "news", datetime.now(UTC) - 30 * HOUR)
+        session.commit()
+    with respx.mock(assert_all_called=False) as mock:
+        mock.get(url__regex=r"https://news\.google\.com/rss/search.*").mock(
+            return_value=httpx.Response(503)
+        )
+        _mock_news_sites(mock)
+        _invoke(["ingest", "--source", "news", "--domain", "blockedco.example"])
+    assert _json(_invoke(["deadman", "--source", "news"], code=1))["silent"] == ["news"]
+
+
+def test_ingest_news_contract_failure_still_exits_1(bound: Engine) -> None:
+    _news_company(bound)
+    broken = b"<rss><channel><item><title>BlockedCo raises</title></item></channel></rss>"
+    with respx.mock(assert_all_called=False) as mock:
+        mock.get(url__regex=r"https://news\.google\.com/rss/search.*").mock(
+            return_value=httpx.Response(200, content=broken)
+        )
+        _mock_news_sites(mock)
+        line = _json(
+            _invoke(["ingest", "--source", "news", "--domain", "blockedco.example"], code=1)
+        )
+    assert line["status"] == "failed"
+    run = _runs(bound, "news")[-1]
+    assert run.notes is not None
+    assert run.notes["blocked"] is False
+    assert "drift" in run.notes
+
+
 def test_ingest_github_passes_the_token(bound: Engine, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "test-token-value")
     get_settings.cache_clear()

@@ -311,7 +311,8 @@ def _apply(session: Session, outcomes: list[_Outcome], cleanup: _Cleanup, *, now
     for start in range(0, len(cleanup.aliases), _DELETE_BATCH):
         chunk = cleanup.aliases[start : start + _DELETE_BATCH]
         session.execute(
-            delete(CompanyAlias).where(
+            delete(CompanyAlias)
+            .where(
                 CompanyAlias.source == "edgar",
                 or_(
                     *(
@@ -320,6 +321,9 @@ def _apply(session: Session, outcomes: list[_Outcome], cleanup: _Cleanup, *, now
                     )
                 ),
             )
+            # The relink session holds every Form D event it re-checked; "fetch" syncs only
+            # the matched aliases instead of walking that identity map per chunk.
+            .execution_options(synchronize_session="fetch")
         )
     for cid, _ in cleanup.legal_names:
         company = session.get(Company, cid)

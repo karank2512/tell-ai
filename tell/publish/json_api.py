@@ -38,13 +38,14 @@ import math
 import os
 import shutil
 import subprocess
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote, urlencode
 
 import jsonschema
@@ -72,8 +73,9 @@ from tell.signals.scoring import (
     score_companies,
     score_instant,
     why_not_higher,
+    why_not_higher_many,
 )
-from tell.signals.velocity import HIRING_VELOCITY, LongOpenRole, long_open_roles
+from tell.signals.velocity import HIRING_VELOCITY, LongOpenRole, long_open_roles_many
 
 __all__ = [
     "COMPANY_SCHEMA_PATH",
@@ -81,6 +83,7 @@ __all__ = [
     "LOCAL",
     "WATCHLIST_SCHEMA",
     "WEEKLY_SCHEMA",
+    "CompanyBatch",
     "CompanyFacts",
     "apportion_tenths",
     "build_company_json",
@@ -89,10 +92,12 @@ __all__ = [
     "build_weekly_json",
     "code_commit_sha",
     "company_facts",
+    "company_facts_many",
     "company_schema",
     "feedback_link",
     "generated_by",
     "intake_link",
+    "prepare_companies",
     "round_half_up",
     "validate_company_json",
     "validate_health_json",
@@ -494,51 +499,123 @@ class CompanyFacts:
     news: bool
 
 
+_IN_CHUNK = 500
+"""Company ids per ``IN (...)`` list of the batch queries."""
+
+
+def _chunks(ids: Sequence[int]) -> list[list[int]]:
+    return [list(ids[start : start + _IN_CHUNK]) for start in range(0, len(ids), _IN_CHUNK)]
+
+
+def company_facts_many(
+    session: Session, companies: Sequence[Company], t: datetime
+) -> dict[int, CompanyFacts]:
+    """:func:`company_facts` of every company in ``companies``: a fixed number of queries
+    per 500 companies (boards, open postings, feed counts, news presence), never one
+    round trip per company."""
+    ids = sorted({c.id for c in companies})
+    boards: dict[int, list[AtsBoard]] = defaultdict(list)
+    open_counts: dict[int, int] = defaultdict(int)
+    feeds: dict[int, int] = {}
+    news: set[int] = set()
+    for chunk in _chunks(ids):
+        for board in session.scalars(
+            select(AtsBoard)
+            .where(AtsBoard.company_id.in_(chunk))
+            .order_by(AtsBoard.vendor, AtsBoard.identifier)
+        ):
+            boards[cast("int", board.company_id)].append(board)  # IN filter: never NULL
+        for cid, count in session.execute(
+            select(AtsBoard.company_id, func.count())
+            .select_from(Posting)
+            .join(AtsBoard, AtsBoard.id == Posting.board_id)
+            .where(AtsBoard.company_id.in_(chunk), Posting.closed_at.is_(None))
+            .group_by(AtsBoard.company_id)
+        ):
+            open_counts[cast("int", cid)] = int(count)  # IN filter: never NULL
+        for cid, count in session.execute(
+            select(CompanyFeed.company_id, func.count())
+            .where(CompanyFeed.company_id.in_(chunk))
+            .group_by(CompanyFeed.company_id)
+        ):
+            feeds[int(cid)] = int(count)
+        news.update(
+            cast("int", cid)  # IN filter: never NULL
+            for (cid,) in session.execute(
+                select(EventRow.company_id)
+                .where(EventRow.company_id.in_(chunk), EventRow.source == "news")
+                .distinct()
+            )
+        )
+    long_open = long_open_roles_many(session, ids, t)
+    out: dict[int, CompanyFacts] = {}
+    for company in companies:
+        own = boards.get(company.id, [])
+        active = [b for b in own if b.status == "active"]
+        unsupported = [b for b in own if b.status == "unsupported"]
+        lapsed = [b for b in own if b.status in ("dead", "paused")]
+        ats = f"{active[0].vendor}:{active[0].identifier}" if active else "no_board"
+        if active:
+            note = ats
+        elif unsupported:
+            note = f"unsupported:{unsupported[0].vendor}"
+        elif lapsed:
+            note = f"{lapsed[0].status}:{lapsed[0].vendor}:{lapsed[0].identifier}"
+        else:
+            note = "no_board"
+        out[company.id] = CompanyFacts(
+            open_postings=open_counts.get(company.id, 0),
+            long_open=long_open.get(company.id, []),
+            ats=ats,
+            coverage_note=note,
+            edgar_cik=company.cik.zfill(10) if company.cik and company.cik.isdigit() else None,
+            news=feeds.get(company.id, 0) > 0 or company.id in news,
+        )
+    return out
+
+
 def company_facts(session: Session, company: Company, t: datetime) -> CompanyFacts:
     """Coverage, open postings and long-open roles of one company at instant ``t``."""
-    boards = list(
-        session.scalars(
-            select(AtsBoard)
-            .where(AtsBoard.company_id == company.id)
-            .order_by(AtsBoard.vendor, AtsBoard.identifier)
-        )
+    return company_facts_many(session, [company], t)[company.id]
+
+
+@dataclass(frozen=True)
+class CompanyBatch:
+    """What :func:`build_company_json` reads beyond the score, prefetched for many companies.
+
+    Built by :func:`prepare_companies` with a fixed number of queries, so rendering
+    hundreds of account pages costs a handful of round trips instead of several per
+    company (the site runs against a remote database).
+    """
+
+    facts: dict[int, CompanyFacts]
+    why_not: dict[int, list[dict[str, Any]]]
+    velocity: dict[int, dict[str, Any]]
+
+
+def prepare_companies(
+    session: Session,
+    companies: Sequence[Company],
+    profile: Profile,
+    as_of: date,
+    results: Mapping[int, ScoreResult],
+) -> CompanyBatch:
+    """Prefetch facts, ``why_not_higher`` rows and velocity receipts for ``companies``."""
+    t = score_instant(as_of)
+    ids = [c.id for c in companies]
+    velocity_ids = sorted(
+        {
+            int(c["signal_id"])
+            for cid in ids
+            if cid in results
+            for c in results[cid].contributions
+            if c["signal_type"] == HIRING_VELOCITY
+        }
     )
-    active = [b for b in boards if b.status == "active"]
-    unsupported = [b for b in boards if b.status == "unsupported"]
-    lapsed = [b for b in boards if b.status in ("dead", "paused")]
-    ats = f"{active[0].vendor}:{active[0].identifier}" if active else "no_board"
-    if active:
-        note = ats
-    elif unsupported:
-        note = f"unsupported:{unsupported[0].vendor}"
-    elif lapsed:
-        note = f"{lapsed[0].status}:{lapsed[0].vendor}:{lapsed[0].identifier}"
-    else:
-        note = "no_board"
-    open_count = session.execute(
-        select(func.count())
-        .select_from(Posting)
-        .join(AtsBoard, AtsBoard.id == Posting.board_id)
-        .where(AtsBoard.company_id == company.id, Posting.closed_at.is_(None))
-    ).scalar_one()
-    feeds = session.execute(
-        select(func.count()).select_from(CompanyFeed).where(CompanyFeed.company_id == company.id)
-    ).scalar_one()
-    news = int(feeds) > 0 or (
-        session.execute(
-            select(EventRow.event_id)
-            .where(EventRow.company_id == company.id, EventRow.source == "news")
-            .limit(1)
-        ).first()
-        is not None
-    )
-    return CompanyFacts(
-        open_postings=int(open_count),
-        long_open=long_open_roles(session, company.id, t),
-        ats=ats,
-        coverage_note=note,
-        edgar_cik=company.cik.zfill(10) if company.cik and company.cik.isdigit() else None,
-        news=news,
+    return CompanyBatch(
+        facts=company_facts_many(session, companies, t),
+        why_not=why_not_higher_many(session, ids, profile, as_of),
+        velocity=_velocity_payloads(session, velocity_ids),
     )
 
 
@@ -551,17 +628,16 @@ def _day(value: Any) -> str:
 
 
 def _velocity_payloads(session: Session, signal_ids: Sequence[int]) -> dict[int, dict[str, Any]]:
-    if not signal_ids:
-        return {}
-    stmt = (
-        select(Signal.id, EventRow.payload, EventRow.occurred_at)
-        .join(EventRow, EventRow.event_id == Signal.event_id)
-        .where(Signal.id.in_(list(signal_ids)))
-    )
-    return {
-        int(sid): {"payload": payload or {}, "occurred_at": occurred_at}
-        for sid, payload, occurred_at in session.execute(stmt)
-    }
+    out: dict[int, dict[str, Any]] = {}
+    for chunk in _chunks(sorted(set(signal_ids))):
+        stmt = (
+            select(Signal.id, EventRow.payload, EventRow.occurred_at)
+            .join(EventRow, EventRow.event_id == Signal.event_id)
+            .where(Signal.id.in_(chunk))
+        )
+        for sid, payload, occurred_at in session.execute(stmt):
+            out[int(sid)] = {"payload": payload or {}, "occurred_at": occurred_at}
+    return out
 
 
 def watchlist_profile(watchlist: Watchlist, profiles: Mapping[str, Profile] | None) -> Profile:
@@ -593,22 +669,30 @@ def build_company_json(
     heat_value: int | None = None,
     sha: str | None = None,
     facts: CompanyFacts | None = None,
+    batch: CompanyBatch | None = None,
 ) -> dict[str, Any]:
     """The section 9 per-domain object for ``company`` under ``profile`` at ``as_of``.
 
-    ``result`` (a precomputed :class:`ScoreResult`), ``facts`` and ``heat_value`` let a
-    batch caller avoid recomputing; by default the score is computed fresh (not written),
+    ``result`` (a precomputed :class:`ScoreResult`), ``facts``, ``batch`` (from
+    :func:`prepare_companies`) and ``heat_value`` let a batch caller avoid recomputing
+    and issue no query per company; by default the score is computed fresh (not written),
     and with a ``watchlist`` heat is the percentile of the fresh scores of its members.
     ``heat`` is present only when ``watchlist`` is given.
     """
     t = score_instant(as_of)
     scored = result or score_companies(session, profile, as_of, [company.id], write=False)[0]
+    if facts is None and batch is not None:
+        facts = batch.facts.get(company.id)
     info = facts or company_facts(session, company, t)
     shown = apportion_tenths([float(c["contribution"]) for c in scored.contributions], scored.score)
     velocity_ids = [
         int(c["signal_id"]) for c in scored.contributions if c["signal_type"] == HIRING_VELOCITY
     ]
-    velocity = _velocity_payloads(session, velocity_ids)
+    velocity = (
+        batch.velocity
+        if batch is not None and all(i in batch.velocity for i in velocity_ids)
+        else _velocity_payloads(session, velocity_ids)
+    )
     contributions: list[dict[str, Any]] = []
     for item, value in zip(scored.contributions, shown, strict=True):
         entry: dict[str, Any] = {"type": item["signal_type"]}
@@ -638,7 +722,10 @@ def build_company_json(
             heat_value = heat({r.company_id: r.score for r in fresh}).get(company.id, 0)
         out["heat"] = int(heat_value)
     decayed: list[dict[str, Any]] = []
-    for row in why_not_higher(session, company.id, profile, as_of):
+    why_not = batch.why_not.get(company.id) if batch is not None else None
+    if why_not is None:
+        why_not = why_not_higher(session, company.id, profile, as_of)
+    for row in why_not:
         entry = {"type": row["signal_type"]}
         if row.get("role_family"):
             entry["role_family"] = row["role_family"]
@@ -683,6 +770,7 @@ def build_watchlist_json(
         for r in score_companies(session, profile, as_of, [m.id for m in members], write=False)
     }
     heats = heat({cid: r.score for cid, r in results.items()})
+    batch = prepare_companies(session, members, profile, as_of, results)
     companies = [
         build_company_json(
             session,
@@ -693,6 +781,7 @@ def build_watchlist_json(
             result=results[member.id],
             heat_value=heats.get(member.id, 0),
             sha=sha,
+            batch=batch,
         )
         for member in members
     ]

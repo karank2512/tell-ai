@@ -87,10 +87,17 @@ def _delete_archived(session: Session, ids: list[str], cutoff: datetime) -> int:
     for start in range(0, len(ids), DELETE_BATCH):
         chunk = ids[start : start + DELETE_BATCH]
         referenced = select(Signal.event_id).where(Signal.event_id.in_(chunk))
-        stmt = delete(EventRow).where(
-            EventRow.event_id.in_(chunk),
-            EventRow.observed_at < cutoff,
-            EventRow.event_id.not_in(referenced),
+        # archive_events just loaded every old event into the session; the deleted rows
+        # are never read again, so skip ORM synchronization (no identity-map pass, no
+        # RETURNING of up to DELETE_BATCH ids).
+        stmt = (
+            delete(EventRow)
+            .where(
+                EventRow.event_id.in_(chunk),
+                EventRow.observed_at < cutoff,
+                EventRow.event_id.not_in(referenced),
+            )
+            .execution_options(synchronize_session=False)
         )
         deleted += _rowcount(session, stmt)
     return deleted
@@ -117,7 +124,9 @@ def prune(
     events_deleted = _delete_archived(session, archived, event_cutoff)
     observations_deleted = _rowcount(
         session,
-        delete(PostingObservation).where(PostingObservation.observed_at < observation_cutoff),
+        delete(PostingObservation)
+        .where(PostingObservation.observed_at < observation_cutoff)
+        .execution_options(synchronize_session=False),
     )
     session.flush()
     return PruneResult(

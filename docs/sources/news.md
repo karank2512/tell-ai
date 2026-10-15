@@ -187,7 +187,11 @@ cases with placeholder names.
   lets the SPEC section 11 dead-man (`tell deadman`, no successful run in 24 hours) notice a
   block that persists; a single block is followed by the next scheduled run as usual. The
   companies polled before the block keep their `polled` timestamps, so the next run does not
-  query them again. Other Google News failures (other 4xx/5xx, transport errors) count as
+  query them again. `tell ingest --source news` nevertheless **exits 0** when the block is
+  the run's only failure (`news.is_block_only_failure`: status `failed`, `notes.blocked`
+  true, no `notes.drift`, no `notes.error`), so one 429/503 no longer turns the scheduled
+  ingest job red; the run row stays `failed`, and `tell deadman` still alarms when news has
+  no `ok` run in 24 hours. A contract failure (`drift`) or a crash (`error`) still exits 1. Other Google News failures (other 4xx/5xx, transport errors) count as
   an error for that company, which is not marked polled, and the run continues.
 - Rotation (PLAN Phase 4, SPEC section 11), read from `runs.notes["polled"]`
   (`{company_id: timestamp}`) of the news runs started in the last 7 days, whatever their
@@ -206,15 +210,19 @@ cases with placeholder names.
   any other non-200 answer sets `last_polled_at` (slow down) and counts an error; no
   answer at all counts an error and leaves `last_polled_at` alone. Feed-poll failures are
   real errors: the feed was there before.
-- Per-run budget: at most `MAX_COMPANIES = 1200` companies (1,200 Google News queries at
-  1 rps is 20 minutes, inside the 45-minute `filings` job, which runs EDGAR first, with
-  margin) and `RUN_BUDGET = 25 minutes` of wall-clock time, checked before each company. Order:
+- Per-run budget: at most `MAX_GOOGLE_REQUESTS = 600` Google News requests (one per company
+  polled, no retries), `MAX_COMPANIES = 1200` companies and `RUN_BUDGET = 25 minutes` of
+  wall-clock time, all checked before each company. The request cap keeps the four scheduled
+  runs a day at or under 2,400 Google News requests, inside the SPEC section 14 guidance of
+  under 3,000 a day (600 requests at 1 rps is 10 minutes, well inside the 45-minute
+  `filings` job, which runs EDGAR first). Order:
   watchlist members, then companies active in the last 30 days, then the long-tail bucket;
   least recently polled first within each group, so a capped run resumes where it stopped.
   A run that hits either limit stops cleanly, keeps everything it wrote and finishes `ok`;
   `runs.notes` has `selected` (companies due), `deferred` (due but not reached),
-  `budget_exhausted` (the wall clock ran out) and `polled_count`. Both limits are
-  `collect()` / `ingest()` arguments (`max_companies`, `budget`), not settings.
+  `google_requests` (sent this run), `request_cap_reached`, `budget_exhausted` (the wall
+  clock ran out) and `polled_count`. The limits are `collect()` / `ingest()` arguments
+  (`max_requests`, `max_companies`, `budget`), not settings.
 - Every request sends `User-Agent: tell/0.1 (+https://github.com/karank2512/tell-ai)`.
 
 ### Throughput (2026-10-14, ADR 0032)
@@ -232,7 +240,8 @@ offered, no `MAX_COMPANIES` cap):
 | after, next day (misses remembered) | 1,462 | 0 | 286 feeds polled, 1,149 discoveries not due |
 
 After the change Google News at 1 request per second is the bound, so a scheduled run
-reaches the `MAX_COMPANIES = 1200` cap well inside `RUN_BUDGET`.
+reaches its request cap (`MAX_GOOGLE_REQUESTS = 600`, added 2026-10-14; before it, the
+`MAX_COMPANIES = 1200` cap) well inside `RUN_BUDGET`.
 
 ## Cohort runs (SPEC 13.1 speed vs press)
 
@@ -252,7 +261,7 @@ uv run tell ingest --source news --cohort formd --when-days 120 --cohort-days 90
   event filed in the last `--cohort-days` days (default 90), instead of the rotation.
 - Every other rule is the scheduled one: name guard, classification, leadership redaction,
   the payload keys (`query` is the `when:120d` request URL), 1 rps, the block policy, the
-  1,200-company and 25-minute budgets (rerun to continue a capped run), the company-feed
+  600-request, 1,200-company and 25-minute budgets (rerun to continue a capped run), the company-feed
   cache. Idempotent: one event per article URL, so a rerun inserts nothing new.
 - `runs.notes` adds `when_days` to every news run, and `cohort`, `cohort_size`,
   `cohort_days` to cohort runs. The 6-hour "recently polled" skip only counts runs whose
