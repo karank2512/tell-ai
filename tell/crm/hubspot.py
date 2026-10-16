@@ -34,7 +34,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -50,6 +50,10 @@ from tell.publish.json_api import round_half_up
 from tell.signals.profiles import Profile
 
 __all__ = [
+    "ACTIVITY_PROPERTIES",
+    "CRM_ACTIVITY_WINDOW",
+    "LIST_PAGE_CAP",
+    "LIST_PAGE_SIZE",
     "NOTE_TO_COMPANY",
     "PROPERTIES",
     "PROPERTY_GROUP",
@@ -59,11 +63,13 @@ __all__ = [
     "TASK_TO_COMPANY",
     "HubSpotClient",
     "HubSpotError",
+    "Lookup",
     "PropertySpec",
     "PushOutcome",
     "Receipt",
     "check",
     "company_properties",
+    "crm_status",
     "ensure_properties",
     "load_receipt",
     "note_body",
@@ -81,6 +87,14 @@ TASK_TO_COMPANY = 192
 """HubSpot-defined association type: task to company (associations v4 reference)."""
 
 TASK_DUE_DAYS = 2
+LIST_PAGE_SIZE = 100
+"""Companies per page of ``GET /crm/v3/objects/companies`` (HubSpot's maximum)."""
+
+LIST_PAGE_CAP = 10
+"""Pages the lookup reads from the object store when the search index misses, so a company
+created seconds ago is still found (HubSpot's search index lags creates by seconds).
+1,000 companies covers a seed-stage portal; past the cap a push may create a duplicate."""
+
 RPS = 4.0
 """Requests per second against HubSpot: under the search endpoint's limit and far under the
 private-app limit of 100 per 10 seconds on Free and Starter."""
@@ -197,6 +211,55 @@ def _error_from(response: httpx.Response) -> HubSpotError:
     )
 
 
+ACTIVITY_PROPERTIES: tuple[str, ...] = ("hs_last_sales_activity_timestamp", "notes_last_contacted")
+"""HubSpot's "Last Engagement Date" and "Last Contacted": set by calls, emails, meetings
+and logged sales activity. Read for the gate's rule 3 (ADR 0040). ``notes_last_updated``
+("Last Activity Date") is deliberately not read: tell's own note sets it, so a company tell
+pushed would look worked on by a person (observed on the first live portal, 2026-10-16)."""
+
+CRM_ACTIVITY_WINDOW = timedelta(days=90)
+"""Rule 3: sales activity inside this window means someone is already working the account."""
+
+_LOOKUP_PROPERTIES: list[str] = [
+    "name",
+    "domain",
+    *(p.name for p in PROPERTIES),
+    *ACTIVITY_PROPERTIES,
+]
+
+
+def crm_status(company: Mapping[str, Any] | None, *, now: datetime) -> str:
+    """Rule 3's input from a looked-up company: ``absent``, ``quiet`` or ``active``."""
+    if company is None:
+        return "absent"
+    props = company.get("properties") or {}
+    for name in ACTIVITY_PROPERTIES:
+        raw = props.get(name)
+        if not raw:
+            continue
+        try:
+            stamp = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=UTC)
+        if now - CRM_ACTIVITY_WINDOW <= stamp <= now + timedelta(days=1):
+            return "active"
+    return "quiet"
+
+
+@dataclass(frozen=True)
+class Lookup:
+    """How a company was (or was not) found before an upsert."""
+
+    company: dict[str, Any] | None
+    via: str
+    """``search`` (the index had it), ``list`` (found or exhausted in the object store) or
+    ``list_capped`` (not found within :data:`LIST_PAGE_CAP` pages)."""
+    pages: int
+    """Object-store pages read; 0 when the search index answered."""
+
+
 # --- client ------------------------------------------------------------------------------------
 
 
@@ -274,18 +337,52 @@ class HubSpotClient:
         return self._request("GET", "/crm/v3/objects/companies", params={"limit": 1}) or {}
 
     def find_company(self, domain: str) -> dict[str, Any] | None:
-        """The first company whose ``domain`` equals ``domain``, with the ``tell_*`` values."""
+        """The first company whose ``domain`` equals ``domain`` in the search index."""
         body = {
             "filterGroups": [
                 {"filters": [{"propertyName": "domain", "operator": "EQ", "value": domain}]}
             ],
-            "properties": ["name", "domain", *(p.name for p in PROPERTIES)],
+            "properties": _LOOKUP_PROPERTIES,
             "limit": 1,
         }
         found = self._request("POST", "/crm/v3/objects/companies/search", json=body) or {}
         results = found.get("results") or []
         first = results[0] if results else None
         return first if isinstance(first, dict) else None
+
+    def list_company(self, domain: str, *, page_cap: int = LIST_PAGE_CAP) -> Lookup:
+        """Scan the object store page by page for ``domain`` (the search index lags creates).
+
+        Reads at most ``page_cap`` pages of :data:`LIST_PAGE_SIZE`; stops at the first
+        match or the end of the list.
+        """
+        after: str | None = None
+        pages = 0
+        wanted = domain.strip().lower()
+        while pages < page_cap:
+            params: dict[str, Any] = {
+                "limit": LIST_PAGE_SIZE,
+                "properties": ",".join(_LOOKUP_PROPERTIES),
+            }
+            if after:
+                params["after"] = after
+            page = self._request("GET", "/crm/v3/objects/companies", params=params) or {}
+            pages += 1
+            for item in page.get("results") or []:
+                props = item.get("properties") or {} if isinstance(item, dict) else {}
+                if str(props.get("domain") or "").strip().lower() == wanted:
+                    return Lookup(company=item, via="list", pages=pages)
+            after = ((page.get("paging") or {}).get("next") or {}).get("after")
+            if not after:
+                return Lookup(company=None, via="list", pages=pages)
+        return Lookup(company=None, via="list_capped", pages=pages)
+
+    def lookup_company(self, domain: str) -> Lookup:
+        """Search first; when the index has no match, scan the object store (issue #5)."""
+        found = self.find_company(domain)
+        if found is not None:
+            return Lookup(company=found, via="search", pages=0)
+        return self.list_company(domain)
 
     def create_company(self, properties: Mapping[str, Any]) -> dict[str, Any]:
         created = self._request(
@@ -467,6 +564,8 @@ class PushOutcome:
     task_id: str | None = None
     payloads: dict[str, Any] = field(default_factory=dict)
     """On a dry run: the request bodies that would have been sent."""
+    lookup: Lookup | None = None
+    """How the company was looked up; ``None`` on a dry run."""
 
     def as_record(self) -> dict[str, Any]:
         record: dict[str, Any] = {
@@ -476,6 +575,11 @@ class PushOutcome:
             "note_id": self.note_id,
             "task_id": self.task_id,
         }
+        if self.lookup is not None and self.lookup.pages:
+            record["listed"] = {
+                "pages": self.lookup.pages,
+                "capped": self.lookup.via == "list_capped",
+            }
         if self.payloads:
             record["payloads"] = self.payloads
         return record
@@ -536,12 +640,16 @@ def push_company(
             )
         return PushOutcome(action="dry_run", domain=receipt.domain, payloads=payloads)
 
-    existing = client.find_company(receipt.domain)
+    lookup = client.lookup_company(receipt.domain)
+    existing = lookup.company
     if existing is not None:
         company_id = str(existing["id"])
         if _same_push(existing, receipt) and not force:
             return PushOutcome(
-                action="unchanged", domain=receipt.domain, hubspot_company_id=company_id
+                action="unchanged",
+                domain=receipt.domain,
+                hubspot_company_id=company_id,
+                lookup=lookup,
             )
         client.update_company(company_id, properties)
         action = "updated"
@@ -557,6 +665,7 @@ def push_company(
         domain=receipt.domain,
         hubspot_company_id=company_id,
         note_id=str(note["id"]) if note.get("id") is not None else None,
+        lookup=lookup,
     )
     if task:
         made = client.create_task(

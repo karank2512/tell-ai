@@ -583,26 +583,30 @@ def test_weekly_alias(bound: Engine, tmp_path: Path) -> None:
     assert (tmp_path / "site" / "weekly" / "2026-W40.html").is_file()
 
 
-def test_notify_slack_at_the_digest_hour(bound: Engine, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_notify_slack_at_the_digest_hour(
+    bound: Engine, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     with SessionLocal(bind=bound) as session:
         session.add(Watchlist(owner="team-ops", name="Ops list"))
         session.commit()
     monkeypatch.setenv("SLACK_WEBHOOK_URL", WEBHOOK)
     get_settings.cache_clear()
+    # An empty private dir, never the developer's real ``../tell-private`` checkout.
+    notify = ["notify", "--slack", "--private-dir", str(tmp_path / "private")]
     with respx.mock(assert_all_mocked=True) as mock:
         route = mock.post(WEBHOOK).respond(200, text="ok")
         with freeze_time("2026-10-06T12:17:00Z"):  # 05:17 in Los Angeles: too early
-            early = _json(_invoke(["notify", "--slack"]))
+            early = _json(_invoke(notify))
         assert early["skipped"] == "not the digest run"
         assert route.call_count == 0
         with freeze_time("2026-10-06T14:17:00Z"):  # 07:17 in Los Angeles: the digest run
-            sent = _json(_invoke(["notify", "--slack"]))
+            sent = _json(_invoke(notify))
         assert sent["sent"] == 1
         assert route.call_count == 1
         body = json.loads(route.calls[0].request.content)
         assert body["text"].startswith("tell · Ops list · 2026-10-06")
         with freeze_time("2026-10-06T20:17:00Z"):  # already sent today
-            again = _json(_invoke(["notify", "--slack"]))
+            again = _json(_invoke(notify))
         assert again["skipped"] == "not the digest run"
         assert route.call_count == 1
 

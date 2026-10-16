@@ -14,7 +14,8 @@ in `tests/crm/`. Every id, domain and timestamp here is synthetic; nothing names
 | `property_not_found.json` | the same GET for a property that does not exist (404) |
 | `property_created.json` | `POST /crm/v3/properties/companies` |
 | `companies_probe.json` | `GET /crm/v3/objects/companies?limit=1` |
-| `search_empty.json`, `search_found.json`, `search_found_same_push.json` | `POST /crm/v3/objects/companies/search` by `domain` |
+| `search_empty.json`, `search_found.json`, `search_found_same_push.json`, `search_found_active.json` | `POST /crm/v3/objects/companies/search` by `domain`; the last one carries `hs_last_sales_activity_timestamp` / `notes_last_contacted` inside 90 days (gate rule 3, ADR 0040) |
+| `companies_list_found.json`, `companies_list_more.json`, `companies_list_end.json` | `GET /crm/v3/objects/companies?limit=100&properties=...` pages: one holding the domain (mixed case, as a user may have typed it), one of other companies with a `paging.next.after` cursor, and the empty last page |
 | `company_created.json`, `company_updated.json` | `POST` / `PATCH /crm/v3/objects/companies` |
 | `note_created.json` | `POST /crm/v3/objects/notes` |
 | `task_created.json` | `POST /crm/v3/objects/tasks` |

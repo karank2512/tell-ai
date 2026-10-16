@@ -1,0 +1,40 @@
+{
+  "results": [
+    {
+      "id": "1000",
+      "properties": {
+        "createdate": "2026-08-01T10:00:00.000Z",
+        "domain": "beta.example",
+        "hs_lastmodifieddate": "2026-10-10T10:00:00.000Z",
+        "hs_object_id": "1000",
+        "name": "Beta Example LLC",
+        "tell_score": null,
+        "tell_top_signal": null,
+        "tell_receipt_url": null,
+        "tell_scored_at": null,
+        "tell_profile": null
+      },
+      "createdAt": "2026-08-01T10:00:00.000Z",
+      "updatedAt": "2026-10-10T10:00:00.000Z",
+      "archived": false
+    },
+    {
+      "id": "1001",
+      "properties": {
+        "createdate": "2026-10-15T17:59:58.000Z",
+        "domain": "Alpha.Example",
+        "hs_lastmodifieddate": "2026-10-15T17:59:58.000Z",
+        "hs_object_id": "1001",
+        "name": "Alpha Example Inc.",
+        "tell_score": "12.4",
+        "tell_top_signal": "Form D: $10,000,000 offering",
+        "tell_receipt_url": "https://www.sec.gov/Archives/edgar/data/0000000001/0001.txt",
+        "tell_scored_at": "2026-10-13",
+        "tell_profile": "default"
+      },
+      "createdAt": "2026-10-15T17:59:58.000Z",
+      "updatedAt": "2026-10-15T17:59:58.000Z",
+      "archived": false
+    }
+  ]
+}
