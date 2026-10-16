@@ -8,7 +8,8 @@ Commands (``DIR`` is the ``tell-data`` checkout):
 * ``csv --watchlist NAME --out FILE [--as-of DATE]``: the CSV with receipts for one watchlist.
 * ``weekly [--week current|YYYY-Www] --out DIR``: the weekly page and ``latest.json`` only.
 * ``health --out DIR``: ``health.html`` and ``api/v0/health.json`` only.
-* ``notify --slack [--force]``: the Slack digest (sends only on the digest run unless forced).
+* ``notify --slack [--force] [--private-dir DIR]``: per-event Slack nudges on every call, then
+  the digest (sends only on the digest run unless forced); ADR 0036.
 
 ``tell publish --out DIR`` with no command runs ``data`` then ``site`` (the nightly step
 in ``ingest.yml``). ``data`` and ``site`` are recorded as ``runs`` rows with source
@@ -30,6 +31,7 @@ from sqlalchemy.orm import Session
 from tell.collectors.base import finish_run, start_run, utcnow
 from tell.config import get_settings
 from tell.db import session_scope
+from tell.intake.reader import DEFAULT_PRIVATE_DIR
 from tell.models import Watchlist, WatchlistItem
 from tell.publish.csv_export import export_csv
 from tell.publish.data_repo import prune_snapshots, write_events_jsonl, write_snapshots
@@ -42,6 +44,7 @@ from tell.publish.json_api import (
     validate_weekly_json,
     watchlist_profile,
 )
+from tell.publish.nudge import load_private_webhooks, send_nudges
 from tell.publish.site import environment, page_context, render_site, weekly_view, write_json
 from tell.publish.slack import send_digests
 from tell.publish.weekly import build_weekly, resolve_week
@@ -259,24 +262,52 @@ def notify_command(
     force: Annotated[
         bool, typer.Option("--force", help="Send even when this is not the digest run.")
     ] = False,
+    private_dir: Annotated[
+        Path,
+        typer.Option(
+            "--private-dir",
+            file_okay=False,
+            help="The tell-private checkout (per-watchlist webhooks); missing means none.",
+        ),
+    ] = DEFAULT_PRIVATE_DIR,
 ) -> None:
-    """Send notifications (the Slack digest, on the first run at or after the digest hour)."""
+    """Send Slack nudges for new crossings, then the digest on the digest run (ADR 0036).
+
+    Nudges go out on every call to the watchlists that have their own webhook in
+    ``tell-private``; the digest only on the first run at or after the digest hour (or
+    with ``--force``). The JSON line carries the digest counts at the top level and the
+    nudge counts under ``nudges``. Exit 1 when everything attempted failed.
+    """
     if not slack:
         msg = "nothing to notify: pass --slack"
         raise typer.BadParameter(msg)
     secret = get_settings().slack_webhook_url
     webhook = secret.get_secret_value() if secret is not None else None
+    private = load_private_webhooks(private_dir)
+    now = utcnow()
     with session_scope() as session:
-        outcome = send_digests(session, now=utcnow(), webhook_url=webhook, force=force)
+        nudges = send_nudges(session, now=now, private_webhooks=private)
+        outcome = send_digests(
+            session, now=now, webhook_url=webhook, force=force, private_webhooks=private
+        )
         _echo(
             {
                 "sent": outcome.sent,
                 "errors": outcome.errors,
                 "skipped": outcome.skipped,
                 "run_id": outcome.run_id,
+                "without_webhook": outcome.without_webhook,
+                "nudges": {
+                    "candidates": nudges.candidates,
+                    "sent": nudges.sent,
+                    "errors": nudges.errors,
+                    "skipped": nudges.skipped,
+                    "run_id": nudges.run_id,
+                },
             }
         )
-        if outcome.errors and not outcome.sent:
+        attempted = [o for o in (outcome, nudges) if o.sent or o.errors]
+        if attempted and all(o.sent == 0 for o in attempted):
             raise typer.Exit(code=1)
 
 
