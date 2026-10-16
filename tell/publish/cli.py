@@ -44,7 +44,11 @@ from tell.publish.json_api import (
     validate_weekly_json,
     watchlist_profile,
 )
-from tell.publish.nudge import load_private_budgets, load_private_webhooks, send_nudges
+from tell.publish.nudge import (
+    load_private_budgets,
+    load_private_webhooks,
+    send_nudges,
+)
 from tell.publish.site import environment, page_context, render_site, weekly_view, write_json
 from tell.publish.slack import send_digests
 from tell.publish.weekly import build_weekly, resolve_week
@@ -305,6 +309,7 @@ def notify_command(
                     "skipped": nudges.skipped,
                     "run_id": nudges.run_id,
                     "verdicts": nudges.verdicts,
+                    "crm": nudges.crm,
                 },
             }
         )

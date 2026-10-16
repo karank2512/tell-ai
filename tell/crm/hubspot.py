@@ -34,7 +34,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -50,6 +50,8 @@ from tell.publish.json_api import round_half_up
 from tell.signals.profiles import Profile
 
 __all__ = [
+    "ACTIVITY_PROPERTIES",
+    "CRM_ACTIVITY_WINDOW",
     "LIST_PAGE_CAP",
     "LIST_PAGE_SIZE",
     "NOTE_TO_COMPANY",
@@ -67,6 +69,7 @@ __all__ = [
     "Receipt",
     "check",
     "company_properties",
+    "crm_status",
     "ensure_properties",
     "load_receipt",
     "note_body",
@@ -208,7 +211,41 @@ def _error_from(response: httpx.Response) -> HubSpotError:
     )
 
 
-_LOOKUP_PROPERTIES: list[str] = ["name", "domain", *(p.name for p in PROPERTIES)]
+ACTIVITY_PROPERTIES: tuple[str, ...] = ("hs_last_sales_activity_timestamp", "notes_last_contacted")
+"""HubSpot's "Last Engagement Date" and "Last Contacted": set by calls, emails, meetings
+and logged sales activity. Read for the gate's rule 3 (ADR 0040). ``notes_last_updated``
+("Last Activity Date") is deliberately not read: tell's own note sets it, so a company tell
+pushed would look worked on by a person (observed on the first live portal, 2026-10-16)."""
+
+CRM_ACTIVITY_WINDOW = timedelta(days=90)
+"""Rule 3: sales activity inside this window means someone is already working the account."""
+
+_LOOKUP_PROPERTIES: list[str] = [
+    "name",
+    "domain",
+    *(p.name for p in PROPERTIES),
+    *ACTIVITY_PROPERTIES,
+]
+
+
+def crm_status(company: Mapping[str, Any] | None, *, now: datetime) -> str:
+    """Rule 3's input from a looked-up company: ``absent``, ``quiet`` or ``active``."""
+    if company is None:
+        return "absent"
+    props = company.get("properties") or {}
+    for name in ACTIVITY_PROPERTIES:
+        raw = props.get(name)
+        if not raw:
+            continue
+        try:
+            stamp = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=UTC)
+        if now - CRM_ACTIVITY_WINDOW <= stamp <= now + timedelta(days=1):
+            return "active"
+    return "quiet"
 
 
 @dataclass(frozen=True)

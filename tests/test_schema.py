@@ -31,7 +31,7 @@ from tests.conftest import alembic_config
 
 pytestmark = pytest.mark.db
 
-HEAD_REVISION = "0012"
+HEAD_REVISION = "0013"
 
 # --- the spec, hardcoded -----------------------------------------------------------------
 
@@ -194,6 +194,9 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
         "reasons",
         "families",
         "decided_at",
+        "crm_action",  # ADR 0040, migration 0013
+        "crm_company_id",
+        "crm_pushed_at",
     ],
 }
 
@@ -342,7 +345,7 @@ EXPECTED_NULLABLE: dict[str, set[str]] = {
     "api_usage": set(),
     "issuer_discovery": {"tier", "domain", "evidence", "last_tried_at", "next_retry_at"},
     "nudges": {"http_status"},
-    "enrichment_verdicts": set(),
+    "enrichment_verdicts": {"crm_action", "crm_company_id", "crm_pushed_at"},
 }
 
 # Columns with a server default, with the default's leading token after cast stripping.
@@ -414,6 +417,7 @@ EXPECTED_TYPES: dict[tuple[str, str], str] = {
     ("enrichment_verdicts", "reasons"): "JSONB",
     ("enrichment_verdicts", "families"): "JSONB",
     ("enrichment_verdicts", "decided_at"): "TIMESTAMP WITH TIME ZONE",
+    ("enrichment_verdicts", "crm_pushed_at"): "TIMESTAMP WITH TIME ZONE",
 }
 
 SERIAL_PRIMARY_KEYS = {
