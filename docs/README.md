@@ -7,4 +7,5 @@
 - `decisions/` — architecture decision records (index in `decisions/README.md`).
 - `methods/` — method definitions and dated backtest reports (hiring velocity, tech keywords, noise, ops).
 - `api/` — JSON Schemas for the static API (`company.schema.json`).
+- `crm/` — CRM write-back: `hubspot.md` (setup, scopes, what `tell crm hubspot` writes).
 - `launch/` — launch asset drafts; numbers must trace to a methods report line.
