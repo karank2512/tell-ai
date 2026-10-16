@@ -408,20 +408,27 @@ def generated_by(sha: str | None) -> str:
 
 
 def feedback_link(
-    *, signal_id: int | None, domain: str, verdict: str, form_url: str | None = None
+    *,
+    signal_id: int | None,
+    domain: str,
+    verdict: str,
+    form_url: str | None = None,
+    watchlist: str | None = None,
 ) -> str:
     """Where a thumbs click goes: the prefilled feedback form, else a GitHub issue draft.
 
     ``TELL_FEEDBACK_FORM_URL`` is a Google Form prefilled link; ``{signal_id}``,
-    ``{domain}`` and ``{verdict}`` in it are replaced (URL-encoded). A form URL without
-    placeholders gets them appended as query parameters. Without a form the link opens a
-    new issue on the code repo with a prefilled title, never a ``mailto:``.
+    ``{domain}``, ``{verdict}`` and ``{watchlist}`` (the slug, known to the nudge only) in
+    it are replaced (URL-encoded). A form URL without placeholders gets them appended as
+    query parameters. Without a form the link opens a new issue on the code repo with a
+    prefilled title, never a ``mailto:``.
     """
     form = form_url if form_url is not None else get_settings().tell_feedback_form_url
     values = {
         "signal_id": "" if signal_id is None else str(signal_id),
         "domain": domain,
         "verdict": verdict,
+        "watchlist": watchlist or "",
     }
     if form:
         if any(f"{{{key}}}" in form for key in values):
@@ -430,7 +437,8 @@ def feedback_link(
                 out = out.replace(f"{{{key}}}", quote(value, safe=""))
             return out
         joiner = "&" if "?" in form else "?"
-        return form + joiner + urlencode(values)
+        appended = {k: v for k, v in values.items() if k != "watchlist" or v}
+        return form + joiner + urlencode(appended)
     repo = get_settings().tell_repo_url.rstrip("/")
     subject = f"signal {values['signal_id']} on {domain}" if signal_id is not None else domain
     title = f"Feedback ({verdict}): {subject}"

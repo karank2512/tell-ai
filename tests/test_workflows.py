@@ -766,5 +766,13 @@ def test_tell_private_intake_workflow() -> None:
     assert commit["working-directory"] == "tell-private"
     assert "git add watchlists" in str(commit["run"])
     assert _index(steps, "uv run tell intake sync") < _index(steps, "git push")
+    # ADR 0039: the feedback reader runs in the same job, only when its secret exists.
+    assert wf["env"]["TELL_FEEDBACK_CSV_URL"] == "${{ secrets.TELL_FEEDBACK_CSV_URL }}"
+    feedback = steps[_index(steps, "uv run tell intake feedback-sync")]
+    assert feedback["working-directory"] == "tell"
+    assert feedback["if"] == "env.TELL_FEEDBACK_CSV_URL != ''"
+    assert _index(steps, "uv run tell intake sync") < _index(
+        steps, "uv run tell intake feedback-sync"
+    )
     text = TEMPLATE_WORKFLOWS["tell-private-intake.yml"].read_text(encoding="utf-8")
     assert "tell-data" not in text  # nothing public is written by this job

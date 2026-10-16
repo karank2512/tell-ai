@@ -40,6 +40,7 @@ GLOBAL = "https://hooks.slack.invalid/services/T0/B0/GLOBAL"
 PRIVATE = "https://hooks.slack.invalid/services/T0/B0/PRIVATE"
 BASE = "https://pages.example/tell-data"
 FORM = "https://forms.example/f?s={signal_id}&d={domain}&v={verdict}"
+FORM_WITH_LIST = FORM + "&w={watchlist}"
 SLUG = "private-list"
 TZ = "America/Los_Angeles"
 
@@ -115,6 +116,14 @@ def test_nudge_blocks_feedback_links_only_with_a_form() -> None:
         " · <https://forms.example/f?s=100&d=acme.example&v=not_useful|not useful>"
     )
     assert len(build_nudge_blocks(account, pages_base_url=BASE)[1]["elements"]) == 1
+    # The nudge knows the watchlist, so the form's {watchlist} placeholder gets the slug
+    # (ADR 0039); without a slug the placeholder is emptied, never left in the URL.
+    listed = build_nudge_blocks(
+        account, pages_base_url=BASE, feedback_form_url=FORM_WITH_LIST, watchlist_slug=SLUG
+    )
+    assert f"&v=useful&w={SLUG}|useful>" in listed[1]["elements"][1]["text"]
+    unlisted = build_nudge_blocks(account, pages_base_url=BASE, feedback_form_url=FORM_WITH_LIST)
+    assert "&v=useful&w=|useful>" in unlisted[1]["elements"][1]["text"]
     # No contribution: the links still work, with an empty signal id.
     lone = CrossedAccount(name="Q", domain="q.example", score=6.0, contributions=[])
     blocks = build_nudge_blocks(lone, pages_base_url=BASE, feedback_form_url=FORM)
@@ -509,7 +518,7 @@ def test_notify_cli_reports_nudges_and_digest(
 ) -> None:
     write_private_watchlists(tmp_path, {SLUG: _record(SLUG, PRIVATE)})
     monkeypatch.setenv("SLACK_WEBHOOK_URL", GLOBAL)
-    monkeypatch.setenv("TELL_FEEDBACK_FORM_URL", FORM)
+    monkeypatch.setenv("TELL_FEEDBACK_FORM_URL", FORM_WITH_LIST)
     get_settings.cache_clear()
     args = ["notify", "--slack", "--private-dir", str(tmp_path)]
     with freeze_time("2026-10-06T12:17:00Z"), respx.mock(assert_all_mocked=True) as mock:
@@ -525,6 +534,7 @@ def test_notify_cli_reports_nudges_and_digest(
         assert private_route.call_count == 2
         body = json.loads(private_route.calls[0].request.content)
         assert "Rate it:" in body["blocks"][1]["elements"][1]["text"]
+        assert f"&v=useful&w={SLUG}|useful>" in body["blocks"][1]["elements"][1]["text"]
         # Second call: nothing left to nudge.
         record = json.loads(runner.invoke(cli.app, args).output)
         assert record["nudges"]["skipped"] == "nothing to nudge"

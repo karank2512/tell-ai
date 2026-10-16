@@ -127,7 +127,10 @@ that watchlist becomes one message to that webhook, paced 1.1 s apart:
   resend; the watchlist's budget is `credit_budget_monthly` in its `tell-private` record,
   default 100 a month;
 - a context line with the account page and, when `TELL_FEEDBACK_FORM_URL` is set,
-  prefilled `useful` / `not useful` links for the top contribution's signal.
+  prefilled `useful` / `not useful` links for the top contribution's signal, carrying the
+  watchlist slug in the form's `{watchlist}` placeholder; the nightly
+  `tell intake feedback-sync` turns the responses into `feedback` rows (ADR 0039,
+  `docs/intake/feedback-form.md`).
 
 The `nudges` table (migration 0010) holds one row per (event, watchlist): `ok` once a 2xx
 came back, `failed` with the HTTP status (or `NULL` on a transport error) otherwise; a

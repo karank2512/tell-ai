@@ -74,10 +74,11 @@ RUN_LINE_KEYS: tuple[str, ...] = (
 
 OPS_PERIOD = timedelta(days=7)
 
-NON_PIPELINE_SOURCES: tuple[str, ...] = ("intake", "edgar_backfill")
+NON_PIPELINE_SOURCES: tuple[str, ...] = ("intake", "feedback_sync", "edgar_backfill")
 """``runs.source`` values that are not part of the ingest pipeline and never count toward
-success rates or the unattended period: ``intake`` (``tell intake sync``, SPEC 15.6) and
-``edgar_backfill`` (``tell backfill formd``, a one-off load run by hand for the backtests)."""
+success rates or the unattended period: ``intake`` (``tell intake sync``, SPEC 15.6),
+``feedback_sync`` (``tell intake feedback-sync``, ADR 0039) and ``edgar_backfill``
+(``tell backfill formd``, a one-off load run by hand for the backtests)."""
 
 _WEEK_S = timedelta(days=7).total_seconds()
 
