@@ -27,7 +27,8 @@ the repo; `.env.example` lists every variable with a comment.
 | `DATABASE_URL` | yes | ingest, weekly | Neon connection string, `postgresql+psycopg://...?sslmode=require` |
 | `SEC_USER_AGENT` | yes | ingest, weekly | `tell/0.1 (<contact address>)`; the SEC requires a real contact |
 | `TELL_DATA_PUSH_TOKEN` | yes | ingest, weekly | Fine-grained personal access token: repository access **only** `tell-data`, permission **Contents: Read and write**, nothing else. Set an expiry and a calendar reminder to rotate it |
-| `SLACK_WEBHOOK_URL` | yes for the digest | ingest (`tell notify --slack`) | Incoming webhook of the digest channel |
+| `SLACK_WEBHOOK_URL` | yes for the digest | ingest (`tell notify --slack`) | Incoming webhook of the digest channel; never receives per-event nudges |
+| `TELL_PRIVATE_READ_TOKEN` | yes for per-watchlist webhooks (ADR 0036) | ingest (checkout of `tell-private`) | Fine-grained personal access token: repository access **only** `tell-private`, permission **Contents: Read**, nothing else. Without it no nudge is sent and every digest goes to `SLACK_WEBHOOK_URL`. Run migration 0010 on production before setting it |
 | `SLACK_WEEKLY_WEBHOOK_URL` | optional | weekly | Incoming webhook of the private channel; the step is skipped when unset |
 
 `GITHUB_TOKEN` is provided by Actions; every workflow pins it to `contents: read` and
@@ -97,11 +98,15 @@ filings: edgar, [issuers], news (60 min) ─────────────
    for the issuer step, unused while it is off. With the step on, its run line
    (`source = issuer_discovery`) joins the step summary. It is not a dead-man source: the
    step is optional.
-4. **resolve_score_publish**: checks out `tell-data` with `TELL_DATA_PUSH_TOKEN`, then
+4. **resolve_score_publish**: checks out `tell-data` with `TELL_DATA_PUSH_TOKEN` and,
+   when `TELL_PRIVATE_READ_TOKEN` exists, `tell-private` read-only (ADR 0036), then
    `tell resolve`, `tell score --all-profiles`, `tell publish --out tell-data`,
    `tell prune --out tell-data`, a commit as
    `tell-bot <tell-bot@users.noreply.github.com>` with message `ingest <UTC timestamp>`
-   (or "nothing to commit"), `tell notify --slack`, `tell deadman`.
+   (or "nothing to commit"), `tell notify --slack --private-dir tell-private` (per-event
+   nudges to the watchlists with their own webhook on every run, then the digest on the
+   digest run; needs only the database, so it is not gated on the tell-data configuration),
+   `tell deadman`.
 
 `tell prune` runs every time rather than on a monthly guard: it is idempotent, finds
 nothing to do on most runs, and archives events older than 180 days to
