@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `tell crm hubspot push` no longer creates a duplicate company when it runs within seconds of a previous push (issue #5): HubSpot's search index lags creates, so a search miss now falls through to paging `GET /crm/v3/objects/companies` (100 per page, case-insensitive `domain` match, at most `LIST_PAGE_CAP` = 10 pages) before anything is created; the JSON line reports `listed: {pages, capped}` when the fallback ran. Fixtures `companies_list_found/more/end.json`.
+
 ### Added
 
 - Feedback form reader (ADR 0039, proposed): `tell intake feedback-sync --csv-url URL | --csv-file PATH` (`tell/intake/feedback.py`; `--csv-url` defaults to the new secret `TELL_FEEDBACK_CSV_URL`) reads the feedback Google Form's published sheet (`docs/intake/feedback-form.md`: `Signal id`, `Domain`, `Verdict`, `Watchlist`, `Note`; no name or email) and writes one `feedback` row per new response (the signal must exist, the verdict one of the six, a given domain the signal's company; the row lands on the named watchlist or the lowest-id one holding the company, as `POST /v1/feedback` does; notes cut at 1,000 characters), remembered by `feedback.submission_id` (migration 0012, unique, `NULL` for API rows) so the nightly re-read applies nothing; one JSON line of counts and rejected row numbers; `runs.source = feedback_sync` joins the non-pipeline sources. `TELL_FEEDBACK_FORM_URL` gains a `{watchlist}` placeholder that the nudge fills with the slug. The `tell-private` intake workflow template runs the reader after the intake sync when the secret is set.

@@ -109,18 +109,21 @@ def test_bad_input_is_rejected(bound: Engine, tmp_path: Path) -> None:
     assert "Usage" in result.output
 
 
-def test_notify_slack(bound: Engine, monkeypatch: pytest.MonkeyPatch) -> None:
-    assert _ok(["notify", "--slack"])["skipped"] == "no webhook"
+def test_notify_slack(bound: Engine, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # An explicit empty private dir: the default ``../tell-private`` may be a real checkout
+    # with real webhooks on a developer's machine, and the test must not read it.
+    notify = ["notify", "--slack", "--private-dir", str(tmp_path / "private")]
+    assert _ok(notify)["skipped"] == "no webhook"
     monkeypatch.setenv("SLACK_WEBHOOK_URL", WEBHOOK)
     monkeypatch.setattr("tell.publish.slack.time.sleep", lambda _: None)
     get_settings.cache_clear()
     with respx.mock as mock:
         mock.post(WEBHOOK).respond(200, text="ok")
         # 12:00 UTC is 05:00 in Los Angeles: before the digest hour, so only --force sends.
-        assert _ok(["notify", "--slack"])["skipped"] == "not the digest run"
-        assert _ok(["notify", "--slack", "--force"])["sent"] == 2
+        assert _ok(notify)["skipped"] == "not the digest run"
+        assert _ok([*notify, "--force"])["sent"] == 2
     with respx.mock as mock:
         mock.post(WEBHOOK).respond(500)
-        result = runner.invoke(cli.app, ["notify", "--slack", "--force"])
+        result = runner.invoke(cli.app, [*notify, "--force"])
         assert result.exit_code == 1
         assert json.loads(result.output)["errors"] == 2
