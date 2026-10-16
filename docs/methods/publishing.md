@@ -119,8 +119,13 @@ that watchlist becomes one message to that webhook, paced 1.1 s apart:
 
 - `*{name}* ({domain}) · score {score} · crossed {threshold}`, then one receipt bullet per
   contribution (same 2900-character budget as the digest), `Why now:` from the top two, and
-  `Worth enriching: yes · {family a} + {family b}` when at least two distinct signal
-  families contributed, else `Worth enriching: not yet · one signal family` (the v0 gate);
+  the enrichment gate's verdict (`tell/signals/gate.py`, ADR 0038): `Worth enriching: yes ·
+  {family a} + {family b}`, `skip · one signal family`, `skip · a credit went to this
+  company in the last 90 days`, `hold · board unreadable (dead:lever:acme)` or `hold · this
+  month's credit budget is spent`. The verdict is decided once per (crossing, watchlist),
+  written to `enrichment_verdicts` (migration 0011) before the POST, and read back on a
+  resend; the watchlist's budget is `credit_budget_monthly` in its `tell-private` record,
+  default 100 a month;
 - a context line with the account page and, when `TELL_FEEDBACK_FORM_URL` is set,
   prefilled `useful` / `not useful` links for the top contribution's signal.
 
@@ -128,8 +133,9 @@ The `nudges` table (migration 0010) holds one row per (event, watchlist): `ok` o
 came back, `failed` with the HTTP status (or `NULL` on a transport error) otherwise; a
 failed row is updated and retried on the next run while the event is inside the window, and
 after 24 hours a crossing is never nudged. A run with at least one candidate is recorded as
-`runs.source = slack_nudge` (`fetched` candidates, `inserted` sent, `errors`), not a
-dead-man source. The global webhook never receives nudges.
+`runs.source = slack_nudge` (`fetched` candidates, `inserted` sent, `errors`, and the
+verdict counts in `notes.verdicts`), not a dead-man source. The global webhook never
+receives nudges.
 
 ## 8. CSV with receipts
 

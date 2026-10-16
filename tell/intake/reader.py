@@ -478,6 +478,9 @@ class PrivateWatchlist(_Strict):
     owner: str
     job_seeker: bool = False
     slack_webhook_url: str | None = None
+    credit_budget_monthly: int | None = Field(default=None, ge=0)
+    """Enrichment credits this watchlist may be advised to spend per UTC month (gate rule 5,
+    ADR 0038); ``None`` means the gate's default. Hand-edited, never from the form."""
     contacts: list[Contact] = Field(default_factory=list)
     domains: list[str] = Field(default_factory=list)
     submissions: list[str] = Field(default_factory=list)

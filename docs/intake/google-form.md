@@ -88,7 +88,9 @@ submission not yet applied:
    next `tell discover batch` looks for its job board;
 3. missing `watchlist_items` are added (never removed);
 4. after the commit, `tell-private/watchlists/<slug>.yaml` is written with the contacts,
-   the webhook, the domains and the applied submission ids.
+   the webhook, the domains and the applied submission ids. The record may also carry a
+   hand-edited `credit_budget_monthly` (the enrichment gate's monthly budget, ADR 0038);
+   the form never asks for it and a re-sync keeps it.
 
 Re-running the sync over the same sheet applies nothing and writes nothing.
 

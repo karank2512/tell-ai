@@ -22,11 +22,12 @@ from tell.collectors.base import finish_run, start_run
 from tell.config import get_settings
 from tell.db import SessionLocal
 from tell.intake.reader import PrivateWatchlist, write_private_watchlists
-from tell.models import Nudge, Run
+from tell.models import AtsBoard, EnrichmentVerdict, EventRow, Nudge, Run, Score
 from tell.publish import cli
 from tell.publish.nudge import (
     NUDGE_SOURCE,
     build_nudge_blocks,
+    load_private_budgets,
     load_private_webhooks,
     pending_nudges,
     send_nudges,
@@ -102,7 +103,7 @@ def test_nudge_blocks_gate_not_yet_and_no_threshold() -> None:
     blocks = build_nudge_blocks(_account("funding", threshold=None), pages_base_url=BASE)
     lines = blocks[0]["text"]["text"].splitlines()
     assert lines[0] == "*Acme &amp; Co* (acme.example) · score 7.5"
-    assert lines[-1] == "Worth enriching: not yet · one signal family"
+    assert lines[-1] == "Worth enriching: skip · one signal family"
 
 
 def test_nudge_blocks_feedback_links_only_with_a_form() -> None:
@@ -129,7 +130,7 @@ def test_nudge_section_stays_under_the_slack_limit() -> None:
     text = build_nudge_blocks(account, pages_base_url=BASE)[0]["text"]["text"]
     assert len(text) <= 3000
     assert "• …" in text
-    assert text.endswith("Worth enriching: not yet · one signal family")
+    assert text.endswith("Worth enriching: skip · one signal family")
 
 
 # --- private webhooks ----------------------------------------------------------------------------
@@ -201,7 +202,27 @@ def test_send_nudges_one_message_per_account_to_the_private_webhook_only(
     assert all("Worth enriching:" in b["blocks"][0]["text"]["text"] for b in bodies)
     (run,) = _nudge_runs(db_session)
     assert (run.status, run.fetched, run.inserted, run.errors) == ("ok", 2, 2, 0)
-    assert run.notes == {"watchlists": 1}
+    assert run.notes == {"watchlists": 1, "verdicts": {"enrich": 0, "skip": 2, "hold": 0}}
+    assert outcome.verdicts == {"enrich": 0, "skip": 2, "hold": 0}
+    # Both scenario crossings rest on one family (Form D alone), so the gate says skip and
+    # the ledger holds one row per crossing with every rule recorded (ADR 0038).
+    assert all(
+        b["blocks"][0]["text"]["text"].endswith("Worth enriching: skip · one signal family")
+        for b in bodies
+    )
+    ledger = list(db_session.scalars(select(EnrichmentVerdict).order_by(EnrichmentVerdict.id)))
+    assert [(v.watchlist_id, v.verdict, v.families) for v in ledger] == [
+        (scenario.private.id, "skip", ["funding"]),
+        (scenario.private.id, "skip", ["funding"]),
+    ]
+    assert ledger[0].reasons == [
+        "one_family",
+        "coverage_ok",
+        "crm_unchecked",
+        "no_recent_credit",
+        "budget_ok",
+    ]
+    assert ledger[0].decided_at == sc.NOW
     rows = list(db_session.scalars(select(Nudge).order_by(Nudge.id)))
     assert [(r.watchlist_id, r.status, r.http_status) for r in rows] == [
         (scenario.private.id, "ok", 200),
@@ -266,11 +287,148 @@ def test_failed_nudge_is_recorded_and_retried_until_the_window_closes(
         )
     assert (third.sent, third.errors, route.call_count) == (2, 0, 2)
     assert {r.status for r in db_session.scalars(select(Nudge))} == {"ok"}
+    # The verdict was decided on the first attempt and read back since: one ledger row per
+    # crossing, decided at the first run, never a second one for a resend.
+    ledger = list(db_session.scalars(select(EnrichmentVerdict)))
+    assert len(ledger) == 2
+    assert {v.decided_at for v in ledger} == {sc.NOW}
     # Past 24 hours a crossing is never nudged, even when it was never sent.
     db_session.query(Nudge).delete()
     assert pending_nudges(db_session, scenario.private, sc.NOW + timedelta(days=2)) == []
     late = send_nudges(db_session, now=sc.NOW + timedelta(days=2), private_webhooks={SLUG: PRIVATE})
     assert late.skipped == "nothing to nudge"
+
+
+def _second_family(session: Session, company_id: int) -> None:
+    """Give the company's stored score a second family with a receipt (gate rule 1)."""
+    stored = session.scalars(
+        select(Score).where(Score.company_id == company_id).order_by(Score.as_of.desc())
+    ).first()
+    assert stored is not None
+    stored.contributions = [
+        *stored.contributions,
+        {
+            "signal_id": 999,
+            "signal_type": "hiring_velocity",
+            "role_family": "sales",
+            "contribution": 1.5,
+            "url": "https://boards.example/jobs",
+            "occurred_at": "2026-10-05T00:00:00+00:00",
+            "summary": "3 new sales roles in 7 days",
+        },
+    ]
+    session.flush()
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("frozen")
+def test_gate_enrich_budget_hold_thin_coverage_and_the_resend_verdict(
+    db_session: Session,
+) -> None:
+    scenario = _scenario_with_private_slug(db_session)
+    robotics = scenario.companies[sc.ROBOTICS]
+    bluefin = scenario.companies[sc.BLUEFIN]
+    _second_family(db_session, robotics)
+    _second_family(db_session, bluefin)
+    # Bluefin's board is known but dead: thin coverage (rule 2).
+    db_session.add(
+        AtsBoard(
+            company_id=bluefin, vendor="lever", identifier="bluefin", confidence=1, status="dead"
+        )
+    )
+    db_session.flush()
+    with respx.mock(assert_all_mocked=True) as mock:
+        mock.post(PRIVATE).respond(404)
+        failed = send_nudges(
+            db_session,
+            now=sc.NOW,
+            private_webhooks={SLUG: PRIVATE},
+            credit_budgets={SLUG: 1},
+            sleep=lambda _: None,
+        )
+    assert failed.verdicts == {"enrich": 1, "skip": 0, "hold": 1}
+    ledger = {
+        v.company_id: v
+        for v in db_session.scalars(select(EnrichmentVerdict).order_by(EnrichmentVerdict.id))
+    }
+    assert ledger[robotics].verdict == "enrich"
+    assert ledger[robotics].families == ["funding", "hiring_velocity"]
+    assert ledger[bluefin].verdict == "hold"
+    assert ledger[bluefin].reasons == [
+        "two_families",
+        "thin_coverage:dead:lever:bluefin",
+        "crm_unchecked",
+        "no_recent_credit",
+        "budget_spent",  # robotics took the one credit of the month
+    ]
+    # The retry (6 hours later, budget now 0 and the board back) shows the same two lines
+    # and charges nothing more: the verdicts were read back, not decided again.
+    with respx.mock(assert_all_mocked=True) as mock:
+        route = mock.post(PRIVATE).respond(200)
+        retried = send_nudges(
+            db_session,
+            now=sc.NOW + timedelta(hours=6),
+            private_webhooks={SLUG: PRIVATE},
+            credit_budgets={SLUG: 0},
+            sleep=lambda _: None,
+        )
+    assert (retried.sent, retried.verdicts) == (2, {"enrich": 1, "skip": 0, "hold": 1})
+    texts = [json.loads(c.request.content)["blocks"][0]["text"]["text"] for c in route.calls]
+    assert texts[0].endswith("Worth enriching: yes · funding + hiring_velocity")
+    assert texts[1].endswith("Worth enriching: hold · board unreadable (dead:lever:bluefin)")
+    assert len(list(db_session.scalars(select(EnrichmentVerdict)))) == 2
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("frozen")
+def test_gate_skips_a_company_credited_in_the_last_90_days(db_session: Session) -> None:
+    scenario = _scenario_with_private_slug(db_session)
+    robotics = scenario.companies[sc.ROBOTICS]
+    _second_family(db_session, robotics)
+    first, other = pending_nudges(db_session, scenario.private, sc.NOW)
+    assert first.company_id == robotics
+    # An earlier crossing of the same company was advised ``enrich`` 30 days ago. Any
+    # event that is not one of today's two crossings stands in for it (the ledger's row is
+    # keyed by event and watchlist; rule 4 reads only the company and the watchlist).
+    earlier = db_session.scalar(
+        select(EventRow.event_id)
+        .where(EventRow.event_id.not_in([first.event_id, other.event_id]))
+        .order_by(EventRow.event_id)
+        .limit(1)
+    )
+    assert earlier is not None
+    db_session.add(
+        EnrichmentVerdict(
+            event_id=earlier,
+            watchlist_id=scenario.private.id,
+            company_id=robotics,
+            verdict="enrich",
+            reasons=["two_families"],
+            families=["funding", "launch"],
+            decided_at=sc.NOW - timedelta(days=30),
+        )
+    )
+    db_session.flush()
+    with respx.mock(assert_all_mocked=True) as mock:
+        route = mock.post(PRIVATE).respond(200)
+        outcome = send_nudges(
+            db_session, now=sc.NOW, private_webhooks={SLUG: PRIVATE}, sleep=lambda _: None
+        )
+    assert outcome.verdicts == {"enrich": 0, "skip": 2, "hold": 0}
+    assert outcome.candidates == 2
+    text = json.loads(route.calls[0].request.content)["blocks"][0]["text"]["text"]
+    assert text.endswith(
+        "Worth enriching: skip · a credit went to this company in the last 90 days"
+    )
+
+
+def test_load_private_budgets(tmp_path: Path) -> None:
+    with_budget = _record("budgeted", PRIVATE).model_copy(update={"credit_budget_monthly": 25})
+    write_private_watchlists(tmp_path, {SLUG: _record(SLUG, PRIVATE), "budgeted": with_budget})
+    assert load_private_budgets(tmp_path) == {"budgeted": 25}
+    assert load_private_budgets(tmp_path / "missing") == {}
+    (tmp_path / "watchlists" / "broken.yaml").write_text("slug: [\n")
+    assert load_private_budgets(tmp_path) == {}
 
 
 @pytest.mark.db

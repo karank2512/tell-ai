@@ -44,7 +44,7 @@ from tell.publish.json_api import (
     validate_weekly_json,
     watchlist_profile,
 )
-from tell.publish.nudge import load_private_webhooks, send_nudges
+from tell.publish.nudge import load_private_budgets, load_private_webhooks, send_nudges
 from tell.publish.site import environment, page_context, render_site, weekly_view, write_json
 from tell.publish.slack import send_digests
 from tell.publish.weekly import build_weekly, resolve_week
@@ -284,9 +284,10 @@ def notify_command(
     secret = get_settings().slack_webhook_url
     webhook = secret.get_secret_value() if secret is not None else None
     private = load_private_webhooks(private_dir)
+    budgets = load_private_budgets(private_dir)
     now = utcnow()
     with session_scope() as session:
-        nudges = send_nudges(session, now=now, private_webhooks=private)
+        nudges = send_nudges(session, now=now, private_webhooks=private, credit_budgets=budgets)
         outcome = send_digests(
             session, now=now, webhook_url=webhook, force=force, private_webhooks=private
         )
@@ -303,6 +304,7 @@ def notify_command(
                     "errors": nudges.errors,
                     "skipped": nudges.skipped,
                     "run_id": nudges.run_id,
+                    "verdicts": nudges.verdicts,
                 },
             }
         )
