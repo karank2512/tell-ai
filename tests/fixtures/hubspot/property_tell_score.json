@@ -1,0 +1,18 @@
+{
+  "updatedAt": "2026-10-15T18:00:00.000Z",
+  "createdAt": "2026-10-15T18:00:00.000Z",
+  "name": "tell_score",
+  "label": "tell score",
+  "type": "number",
+  "fieldType": "number",
+  "description": "tell buying-signal score.",
+  "groupName": "companyinformation",
+  "options": [],
+  "displayOrder": -1,
+  "calculated": false,
+  "externalOptions": false,
+  "hasUniqueValue": false,
+  "hidden": false,
+  "formField": false,
+  "hubspotDefined": false
+}

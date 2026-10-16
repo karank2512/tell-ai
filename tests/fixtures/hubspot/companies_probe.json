@@ -1,0 +1,15 @@
+{
+  "results": [
+    {
+      "id": "1001",
+      "properties": {
+        "domain": "alpha.example",
+        "hs_object_id": "1001",
+        "name": "Alpha Example Inc."
+      },
+      "createdAt": "2026-09-01T10:00:00.000Z",
+      "updatedAt": "2026-10-14T10:00:00.000Z",
+      "archived": false
+    }
+  ]
+}

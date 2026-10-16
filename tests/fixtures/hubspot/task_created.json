@@ -1,0 +1,13 @@
+{
+  "id": "4004",
+  "properties": {
+    "hs_createdate": "2026-10-15T18:00:05.000Z",
+    "hs_object_id": "4004",
+    "hs_task_status": "NOT_STARTED",
+    "hs_task_subject": "tell: Alpha Example Inc. crossed 6",
+    "hs_timestamp": "2026-10-17T18:00:00Z"
+  },
+  "createdAt": "2026-10-15T18:00:05.000Z",
+  "updatedAt": "2026-10-15T18:00:05.000Z",
+  "archived": false
+}
