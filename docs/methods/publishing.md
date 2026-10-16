@@ -104,6 +104,33 @@ Crossed accounts are `score_crossed_threshold` events observed in the last 24 ho
 watchlist's profile and companies, at most 10 per message, highest score first, each with
 one bullet per contribution (receipt linked) and a "Why now" sentence from the top two.
 
+**Routing (ADR 0036).** A watchlist whose `tell-private/watchlists/<slug>.yaml` record has a
+`slack_webhook_url` gets its digest on that webhook (`--private-dir`, default
+`../tell-private`; the workflow passes the read-only checkout); every other watchlist goes
+to `SLACK_WEBHOOK_URL`; a watchlist with neither is skipped and counted
+(`runs.skipped`, `without_webhook` in the JSON line).
+
+### 7a. Per-event nudges
+
+`tell notify --slack` also runs the nudges (`tell/publish/nudge.py`) on **every** call,
+before the digest. For each watchlist with a private webhook, every
+`score_crossed_threshold` of the last 24 hours that has no `nudges` row with status `ok` for
+that watchlist becomes one message to that webhook, paced 1.1 s apart:
+
+- `*{name}* ({domain}) · score {score} · crossed {threshold}`, then one receipt bullet per
+  contribution (same 2900-character budget as the digest), `Why now:` from the top two, and
+  `Worth enriching: yes · {family a} + {family b}` when at least two distinct signal
+  families contributed, else `Worth enriching: not yet · one signal family` (the v0 gate);
+- a context line with the account page and, when `TELL_FEEDBACK_FORM_URL` is set,
+  prefilled `useful` / `not useful` links for the top contribution's signal.
+
+The `nudges` table (migration 0010) holds one row per (event, watchlist): `ok` once a 2xx
+came back, `failed` with the HTTP status (or `NULL` on a transport error) otherwise; a
+failed row is updated and retried on the next run while the event is inside the window, and
+after 24 hours a crossing is never nudged. A run with at least one candidate is recorded as
+`runs.source = slack_nudge` (`fetched` candidates, `inserted` sent, `errors`), not a
+dead-man source. The global webhook never receives nudges.
+
 ## 8. CSV with receipts
 
 `tell publish csv --watchlist NAME --out FILE` writes exactly the spec's columns:
