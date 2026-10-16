@@ -19,10 +19,12 @@ contribution, the ``Why now:`` sentence and a ``Worth enriching:`` line, then a 
 line with the account page and, when ``TELL_FEEDBACK_FORM_URL`` is set, prefilled
 ``useful`` / ``not useful`` links for the top contribution's signal.
 
-``Worth enriching`` is v0 of the enrichment gate: ``yes`` when at least two distinct
-signal families (``signal_type``) contributed, else ``not yet · one signal family``. A
-crossing already implies the score is at or above the profile threshold and the company
-is inside the profile's size band (:func:`tell.signals.scoring.emit_crossings`).
+``Worth enriching`` is the enrichment gate's verdict (:mod:`tell.signals.gate`, ADR
+0038): ``yes · {family a} + {family b}``, ``skip · {reason}`` or ``hold · {reason}``,
+decided once per (crossing, watchlist) and written to the ``enrichment_verdicts`` ledger
+before the message is built, so a resend after a failed POST shows the same verdict and
+never charges the watchlist's monthly credit budget twice. The watchlist's budget comes
+from ``credit_budget_monthly`` in its ``tell-private`` record (:func:`load_private_budgets`).
 
 Each run with at least one candidate is recorded as a ``runs`` row with source
 ``slack_nudge`` (``fetched`` = candidates, ``inserted`` = sent, ``errors``); a run whose
@@ -47,8 +49,8 @@ from sqlalchemy.orm import Session
 from tell.collectors.base import finish_run, start_run
 from tell.config import get_settings
 from tell.intake.reader import DEFAULT_PRIVATE_DIR, PrivateRecordError, load_private_watchlists
-from tell.models import Nudge, Watchlist
-from tell.publish.json_api import feedback_link
+from tell.models import Company, Nudge, Watchlist
+from tell.publish.json_api import company_facts_many, feedback_link
 from tell.publish.slack import (
     SEND_INTERVAL_S,
     CrossedAccount,
@@ -59,11 +61,13 @@ from tell.publish.slack import (
     receipt_section,
     why_now,
 )
+from tell.signals.gate import Verdict, decide, families_with_receipts, judge
 
 __all__ = [
     "NUDGE_SOURCE",
     "NudgeOutcome",
     "build_nudge_blocks",
+    "load_private_budgets",
     "load_private_webhooks",
     "pending_nudges",
     "send_nudges",
@@ -74,8 +78,6 @@ log = logging.getLogger(__name__)
 
 NUDGE_SOURCE = "slack_nudge"
 """``runs.source`` of a nudge run."""
-MIN_FAMILIES = 2
-"""Distinct ``signal_type`` values a crossing needs before the gate says ``yes`` (v0)."""
 
 
 @dataclass(frozen=True)
@@ -88,6 +90,8 @@ class NudgeOutcome:
     skipped: str | None = None
     """Why nothing was attempted (``no private webhooks``, ``nothing to nudge``)."""
     run_id: str | None = None
+    verdicts: dict[str, int] | None = None
+    """How many candidates the gate judged ``enrich`` / ``skip`` / ``hold``."""
 
 
 # --- private webhooks ----------------------------------------------------------------------------
@@ -111,24 +115,33 @@ def load_private_webhooks(private_dir: Path = DEFAULT_PRIVATE_DIR) -> dict[str, 
     return {slug: r.slack_webhook_url for slug, r in records.items() if r.slack_webhook_url}
 
 
+def load_private_budgets(private_dir: Path = DEFAULT_PRIVATE_DIR) -> dict[str, int]:
+    """``{watchlist slug: credit_budget_monthly}`` for the records that set one (ADR 0038).
+
+    Same reading and the same silence on a broken file as :func:`load_private_webhooks`;
+    a watchlist without a budget takes the gate's default.
+    """
+    try:
+        records = load_private_watchlists(private_dir)
+    except (PrivateRecordError, yaml.YAMLError):
+        return {}
+    return {
+        slug: r.credit_budget_monthly
+        for slug, r in records.items()
+        if r.credit_budget_monthly is not None
+    }
+
+
 # --- Block Kit -----------------------------------------------------------------------------------
 
 
 def worth_enriching(contributions: Sequence[Mapping[str, Any]]) -> tuple[bool, list[str]]:
-    """The v0 gate: ``(yes, families)`` where families are the distinct signal types seen."""
-    families: list[str] = []
-    for item in contributions:
-        family = str(item.get("signal_type") or "").strip()
-        if family and item.get("url") and family not in families:
-            families.append(family)
-    return len(families) >= MIN_FAMILIES, families
+    """Rule 1 alone, as the first gate shipped it: ``(two families?, families)``.
 
-
-def _gate_line(contributions: Sequence[Mapping[str, Any]]) -> str:
-    yes, families = worth_enriching(contributions)
-    if yes:
-        return "Worth enriching: yes · " + " + ".join(families[:MIN_FAMILIES])
-    return "Worth enriching: not yet · one signal family"
+    Kept for callers that have no session (the full verdict is :func:`tell.signals.gate.judge`).
+    """
+    families = families_with_receipts(contributions)
+    return decide(contributions).verdict == "enrich", families
 
 
 def build_nudge_blocks(
@@ -136,14 +149,20 @@ def build_nudge_blocks(
     *,
     pages_base_url: str,
     feedback_form_url: str | None = None,
+    verdict: Verdict | None = None,
 ) -> list[dict[str, Any]]:
-    """The Block Kit ``blocks`` of one nudge (see the module docstring)."""
+    """The Block Kit ``blocks`` of one nudge (see the module docstring).
+
+    ``verdict`` is the ledger's; without one (no session) the pure gate runs over the
+    contributions alone, as if coverage, history and budget were all fine.
+    """
     base = pages_base_url.rstrip("/")
     crossed = "" if account.threshold is None else f" · crossed {account.threshold:g}"
     head = (
         f"*{escape(account.name)}* ({escape(account.domain)}) · score {account.score:.1f}{crossed}"
     )
-    tail = [escape(why_now(account.contributions)), escape(_gate_line(account.contributions))]
+    gate = verdict if verdict is not None else decide(account.contributions)
+    tail = [escape(why_now(account.contributions)), escape(gate.line)]
     section = receipt_section(head, account.contributions, tail)
     elements = [
         {"type": "mrkdwn", "text": link(f"{base}/companies/{account.domain}.html", "Account page")}
@@ -224,11 +243,14 @@ def send_nudges(
     private_webhooks: Mapping[str, str],
     sleep: Callable[[float], None] | None = None,
     client: httpx.Client | None = None,
+    credit_budgets: Mapping[str, int] | None = None,
 ) -> NudgeOutcome:
     """Send every pending nudge of every watchlist in ``private_webhooks`` (slug -> webhook).
 
-    Flushes the ``nudges`` and ``runs`` rows; never commits. Runs on every ingest run;
-    with no candidate nothing is recorded.
+    ``credit_budgets`` maps a slug to its monthly enrichment budget (gate rule 5); a slug
+    without one takes the default. Flushes the ``nudges``, ``enrichment_verdicts`` and
+    ``runs`` rows; never commits. Runs on every ingest run; with no candidate nothing is
+    recorded.
     """
     pause = sleep if sleep is not None else time.sleep
     if not private_webhooks:
@@ -248,15 +270,31 @@ def send_nudges(
         work.extend((watchlist, webhook, a) for a in pending_nudges(session, watchlist, now))
     if not work:
         return NudgeOutcome(candidates=0, sent=0, errors=0, skipped="nothing to nudge")
+    coverage = _coverage_notes(session, [a.company_id for _, _, a in work], now)
+    budgets = dict(credit_budgets or {})
     run_id = start_run(session, NUDGE_SOURCE, now=now)
     sent = errors = 0
+    verdicts = {"enrich": 0, "skip": 0, "hold": 0}
     for index, (watchlist, webhook, account) in enumerate(work):
         if index:
             pause(SEND_INTERVAL_S)
+        assert watchlist.slug is not None  # selected by slug
+        verdict = judge(
+            session,
+            watchlist,
+            event_id=account.event_id,
+            company_id=account.company_id,
+            contributions=account.contributions,
+            coverage_note=coverage.get(account.company_id),
+            now=now,
+            credit_budget=budgets.get(watchlist.slug),
+        )
+        verdicts[verdict.verdict] = verdicts.get(verdict.verdict, 0) + 1
         blocks = build_nudge_blocks(
             account,
             pages_base_url=settings.tell_base_url,
             feedback_form_url=settings.tell_feedback_form_url,
+            verdict=verdict,
         )
         status = post_blocks(webhook, _text(account), blocks, client=client, sleep=pause)
         if _record(session, watchlist, account, now=now, http_status=status):
@@ -271,7 +309,19 @@ def send_nudges(
         inserted=sent,
         skipped=0,
         errors=errors,
-        notes={"watchlists": len({w.id for w, _, _ in work})},
+        notes={"watchlists": len({w.id for w, _, _ in work}), "verdicts": verdicts},
         now=now,
     )
-    return NudgeOutcome(candidates=len(work), sent=sent, errors=errors, run_id=run_id)
+    return NudgeOutcome(
+        candidates=len(work), sent=sent, errors=errors, run_id=run_id, verdicts=verdicts
+    )
+
+
+def _coverage_notes(session: Session, company_ids: Sequence[int], now: datetime) -> dict[int, str]:
+    """``{company_id: coverage_note}`` for the companies about to be nudged (gate rule 2)."""
+    ids = sorted(set(company_ids))
+    if not ids:
+        return {}
+    companies = list(session.scalars(select(Company).where(Company.id.in_(ids))))
+    facts = company_facts_many(session, companies, now)
+    return {cid: f.coverage_note for cid, f in facts.items()}

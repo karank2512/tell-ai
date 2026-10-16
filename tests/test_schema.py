@@ -31,7 +31,7 @@ from tests.conftest import alembic_config
 
 pytestmark = pytest.mark.db
 
-HEAD_REVISION = "0010"
+HEAD_REVISION = "0011"
 
 # --- the spec, hardcoded -----------------------------------------------------------------
 
@@ -176,6 +176,17 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
     ],
     # ADR 0036, migration 0010
     "nudges": ["id", "event_id", "watchlist_id", "sent_at", "status", "http_status"],
+    # ADR 0038, migration 0011
+    "enrichment_verdicts": [
+        "id",
+        "event_id",
+        "watchlist_id",
+        "company_id",
+        "verdict",
+        "reasons",
+        "families",
+        "decided_at",
+    ],
 }
 
 EXPECTED_PRIMARY_KEYS: dict[str, list[str]] = {
@@ -198,6 +209,7 @@ EXPECTED_PRIMARY_KEYS: dict[str, list[str]] = {
     "api_usage": ["key_id", "day"],
     "issuer_discovery": ["cik"],
     "nudges": ["id"],
+    "enrichment_verdicts": ["id"],
 }
 
 EXPECTED_UNIQUES: dict[str, set[tuple[str, ...]]] = {
@@ -209,6 +221,7 @@ EXPECTED_UNIQUES: dict[str, set[tuple[str, ...]]] = {
     "watchlists": {("slug",)},  # ADR 0022
     "api_keys": {("key_hash",)},  # ADR 0024
     "nudges": {("event_id", "watchlist_id")},  # ADR 0036
+    "enrichment_verdicts": {("event_id", "watchlist_id")},  # ADR 0038
 }
 
 # (constrained columns, referred table, referred columns)
@@ -241,6 +254,11 @@ EXPECTED_FOREIGN_KEYS: dict[str, set[tuple[tuple[str, ...], str, tuple[str, ...]
         (("event_id",), "events", ("event_id",)),
         (("watchlist_id",), "watchlists", ("id",)),
     },
+    "enrichment_verdicts": {
+        (("event_id",), "events", ("event_id",)),
+        (("watchlist_id",), "watchlists", ("id",)),
+        (("company_id",), "companies", ("id",)),
+    },
 }
 
 # name -> (columns, {column: sort})
@@ -261,6 +279,12 @@ EXPECTED_INDEXES: dict[str, dict[str, tuple[list[str], dict[str, str]]]] = {
     },
     "issuer_discovery": {
         "issuer_discovery_status_next_retry_at_idx": (["status", "next_retry_at"], {}),
+    },
+    "enrichment_verdicts": {
+        "enrichment_verdicts_watchlist_id_company_id_decided_at_idx": (
+            ["watchlist_id", "company_id", "decided_at"],
+            {},
+        ),
     },
 }
 
@@ -309,6 +333,7 @@ EXPECTED_NULLABLE: dict[str, set[str]] = {
     "api_usage": set(),
     "issuer_discovery": {"tier", "domain", "evidence", "last_tried_at", "next_retry_at"},
     "nudges": {"http_status"},
+    "enrichment_verdicts": set(),
 }
 
 # Columns with a server default, with the default's leading token after cast stripping.
@@ -376,6 +401,10 @@ EXPECTED_TYPES: dict[tuple[str, str], str] = {
     ("nudges", "event_id"): "TEXT",
     ("nudges", "sent_at"): "TIMESTAMP WITH TIME ZONE",
     ("nudges", "http_status"): "INTEGER",
+    ("enrichment_verdicts", "event_id"): "TEXT",
+    ("enrichment_verdicts", "reasons"): "JSONB",
+    ("enrichment_verdicts", "families"): "JSONB",
+    ("enrichment_verdicts", "decided_at"): "TIMESTAMP WITH TIME ZONE",
 }
 
 SERIAL_PRIMARY_KEYS = {
@@ -390,6 +419,7 @@ SERIAL_PRIMARY_KEYS = {
     "posting_ghost_votes",
     "api_keys",
     "nudges",
+    "enrichment_verdicts",
 }
 
 

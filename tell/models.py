@@ -624,6 +624,40 @@ class Nudge(Base):
     http_status: Mapped[int | None] = mapped_column(Integer)
 
 
+class EnrichmentVerdict(Base):
+    """The enrichment gate's verdict on one crossing for one watchlist (ADR 0038).
+
+    ``verdict`` is ``enrich`` (spend a credit in your own tool), ``skip`` (tell says do
+    not) or ``hold`` (tell cannot tell yet); ``reasons`` lists the rule outcomes that
+    produced it (``["two_families", "coverage_ok", ...]``), ``families`` the distinct
+    signal families with receipts. One row per (event, watchlist), written when the nudge
+    is built and left alone on a resend. tell never enriches and stores no enrichment
+    result; this is a ledger of advice.
+    """
+
+    __tablename__ = "enrichment_verdicts"
+    __table_args__ = (
+        UniqueConstraint("event_id", "watchlist_id"),
+        Index(
+            "enrichment_verdicts_watchlist_id_company_id_decided_at_idx",
+            "watchlist_id",
+            "company_id",
+            "decided_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    event_id: Mapped[str] = mapped_column(Text, ForeignKey("events.event_id"), nullable=False)
+    watchlist_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("watchlists.id"), nullable=False
+    )
+    company_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("companies.id"), nullable=False)
+    verdict: Mapped[str] = mapped_column(Text, nullable=False)
+    reasons: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    families: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(_timestamptz(), nullable=False)
+
+
 ALL_MODELS: tuple[type[Base], ...] = (
     Company,
     CompanyAlias,
@@ -644,5 +678,6 @@ ALL_MODELS: tuple[type[Base], ...] = (
     ApiUsage,
     IssuerDiscovery,
     Nudge,
+    EnrichmentVerdict,
 )
 """Every mapped class, in DDL order then the recorded additions (tests, TRUNCATE lists)."""
