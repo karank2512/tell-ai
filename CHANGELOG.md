@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `tell crm hubspot push` no longer creates a duplicate company when it runs within seconds of a previous push (issue #5): HubSpot's search index lags creates, so a search miss now falls through to paging `GET /crm/v3/objects/companies` (100 per page, case-insensitive `domain` match, at most `LIST_PAGE_CAP` = 10 pages) before anything is created; the JSON line reports `listed: {pages, capped}` when the fallback ran. Fixtures `companies_list_found/more/end.json`.
+
 ### Added
 
 - HubSpot write-back (ADR 0037, proposed): `tell crm hubspot check | setup | push DOMAIN [--profile NAME] [--task] [--owner-id ID] [--dry-run] [--force]` (`tell/crm/hubspot.py`) finds the company by `domain` (`POST /crm/v3/objects/companies/search`), creates it with `name` and `domain` or patches it, writes five `companyinformation` properties (`tell_score`, `tell_top_signal`, `tell_receipt_url`, `tell_scored_at`, `tell_profile`; `setup` creates the missing ones), and adds a plain-text note with the receipt (score line, one `summary · date · url` line per contribution with a URL, the digest's `Why now`, the account page; HubSpot-defined association 190) and, with `--task`, a `NOT_STARTED` task due in 2 days (association 192, optional `hubspot_owner_id`); a push whose `tell_scored_at` and `tell_score` already match is `unchanged` unless `--force`; `--dry-run` prints the payloads without a token; `401` / `403 MISSING_SCOPES` exit 1 with a token or scope hint and the token is never printed; 4 requests per second through one `RateBudget`. New settings `HUBSPOT_PRIVATE_APP_TOKEN` (secret) and `HUBSPOT_API_BASE`; hand-authored fixtures under `tests/fixtures/hubspot/`; `docs/crm/hubspot.md` (portal, private app, scopes, what is and is not written).
