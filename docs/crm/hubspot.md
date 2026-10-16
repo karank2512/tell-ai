@@ -108,6 +108,15 @@ to company): subject `tell: {company} crossed {threshold}`, body the `Why now` s
 writes them anyway. A new day's score is a new note. No tell table records pushes; the
 HubSpot record is the ledger.
 
+**Lookup.** The company is looked up by `domain` in HubSpot's search index first. The
+index lags creates by seconds, so a push that follows another within that window would
+not see the company it just made (the first live test, 2026-10-16, created a duplicate
+that way; issue #5). When the search misses, the push therefore pages through
+`GET /crm/v3/objects/companies` (the object store, never stale) 100 companies at a time,
+case-insensitively, up to 10 pages, and stops at the first match. The JSON line then
+carries `listed: {pages, capped}`. A portal with more than 1,000 companies that misses the
+index can still create a duplicate; raise `LIST_PAGE_CAP` or wait a minute and re-run.
+
 ## What tell never writes
 
 No contact, no deal, no ticket, no person's name, email or phone. The company's existing
@@ -122,7 +131,8 @@ day per account; HubSpot states that a service key follows the same limits as a 
 distributed app. The client paces itself at 4 requests per second through one shared
 budget, retries 429 and 5xx with the project's backoff schedule, and never retries a POST
 or PATCH after a transport error (a timed-out create may have landed). A `push` is at most
-five requests: search, create or update, note, task.
+five requests (search, create or update, note, task) plus up to 10 listing pages when the
+search index has no match.
 
 | Answer | Reported as |
 | --- | --- |
