@@ -41,7 +41,7 @@ grants more only where one job needs it (`actions: write` for the weekly keepali
 | --- | --- | --- |
 | `TELL_DATA_REPO` | yes | `karank2512/tell-data` |
 | `TELL_BASE_URL` | no | Defaults to `https://karank2512.github.io/tell-data` (tell/config.py) |
-| `TELL_FEEDBACK_FORM_URL` | no | Prefilled Google Form link for thumbs and `rate_this_row` |
+| `TELL_FEEDBACK_FORM_URL` | no | Prefilled Google Form link for thumbs, `rate_this_row` and the nudge's rating links (`{signal_id}`, `{domain}`, `{verdict}`, `{watchlist}`; `docs/intake/feedback-form.md`) |
 | `TELL_INTAKE_FORM_URL` | no | "Watch these domains" form linked from the digest |
 | `TELL_ISSUER_DISCOVERY` | no | `on` runs `tell discover issuers --apply` after the EDGAR ingest (ADR 0035). Anything else, or unset, leaves the step off. Turn it on only after accepting ADR 0035 and running migration 0009 on production |
 

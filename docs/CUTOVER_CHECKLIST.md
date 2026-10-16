@@ -214,6 +214,7 @@ three together ([preflight guard](deploy/github-actions.md#secrets-and-variables
 | --- | --- |
 | `DATABASE_URL` | the same Neon string |
 | `TELL_INTAKE_CSV_URL` | the published-as-CSV link of the intake form's response sheet ([docs/intake/google-form.md, "Publishing the responses as CSV"](intake/google-form.md#publishing-the-responses-as-csv)); a secret, anyone with it can read every response |
+| `TELL_FEEDBACK_CSV_URL` | optional: the published-as-CSV link of the feedback form's response sheet ([docs/intake/feedback-form.md](intake/feedback-form.md)); the feedback step is skipped without it |
 
 ### 4e. `tell-data`
 

@@ -117,6 +117,20 @@ case-insensitively, up to 10 pages, and stops at the first match. The JSON line 
 carries `listed: {pages, capped}`. A portal with more than 1,000 companies that misses the
 index can still create a duplicate; raise `LIST_PAGE_CAP` or wait a minute and re-run.
 
+## With the nudge (ADR 0040)
+
+A watchlist whose `tell-private/watchlists/<slug>.yaml` carries
+`hubspot_private_app_token` (and optionally `hubspot_owner_id`) needs no command: on every
+nudge run the enrichment gate (ADR 0038) looks the company up in that portal for rule 3
+(`hs_last_sales_activity_timestamp` or `notes_last_contacted` inside 90 days means a
+person is on it and the verdict is `skip`; `notes_last_updated` is never read because
+tell's own note sets it), and an `enrich` verdict runs this page's push with `--task`
+before the Slack message goes out. The nudge then ends with `HubSpot: added · note +
+task`, `updated · note + task`, `already current` or `push failed (401)`; the
+`enrichment_verdicts` row records `crm_action`, `crm_company_id` and `crm_pushed_at`. A
+resend never pushes twice; a failed push is retried on the next attempt and never stops
+the nudge. Run `setup` once with the partner's token before adding it to the record.
+
 ## What tell never writes
 
 No contact, no deal, no ticket, no person's name, email or phone. The company's existing

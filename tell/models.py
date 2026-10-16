@@ -447,7 +447,12 @@ class WatchlistItem(Base):
 
 
 class Feedback(Base):
-    """A human verdict on one signal from one watchlist."""
+    """A human verdict on one signal from one watchlist.
+
+    ``submission_id`` identifies the feedback-form response a row came from (ADR 0039;
+    unique, so a nightly re-read of the sheet is a no-op); rows from ``POST /v1/feedback``
+    leave it ``NULL``.
+    """
 
     __tablename__ = "feedback"
 
@@ -461,6 +466,7 @@ class Feedback(Base):
     created_at: Mapped[datetime] = mapped_column(
         _timestamptz(), nullable=False, server_default=text("now()")
     )
+    submission_id: Mapped[str | None] = mapped_column(Text, unique=True)
 
 
 class Run(Base):
@@ -656,6 +662,11 @@ class EnrichmentVerdict(Base):
     reasons: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     families: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     decided_at: Mapped[datetime] = mapped_column(_timestamptz(), nullable=False)
+    crm_action: Mapped[str | None] = mapped_column(Text)
+    """ADR 0040: what the HubSpot push on an ``enrich`` verdict did (``created``,
+    ``updated``, ``unchanged``, ``failed``); ``NULL`` when no push was attempted."""
+    crm_company_id: Mapped[str | None] = mapped_column(Text)
+    crm_pushed_at: Mapped[datetime | None] = mapped_column(_timestamptz())
 
 
 ALL_MODELS: tuple[type[Base], ...] = (

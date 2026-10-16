@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -26,6 +26,8 @@ import tell.db
 from tell.cli import app
 from tell.config import get_settings
 from tell.crm.hubspot import (
+    ACTIVITY_PROPERTIES,
+    CRM_ACTIVITY_WINDOW,
     LIST_PAGE_CAP,
     LIST_PAGE_SIZE,
     NOTE_TO_COMPANY,
@@ -37,6 +39,7 @@ from tell.crm.hubspot import (
     Receipt,
     check,
     company_properties,
+    crm_status,
     ensure_properties,
     load_receipt,
     note_body,
@@ -336,6 +339,38 @@ def test_push_is_unchanged_when_this_score_was_pushed_unless_forced(
     assert forced.action == "updated"
     assert update.called
     assert note.called
+
+
+def test_crm_status_reads_sales_activity_never_the_note_date() -> None:
+    """ADR 0040: ``notes_last_updated`` is set by tell's own note, so it is not read."""
+    assert crm_status(None, now=NOW) == "absent"
+    quiet = _fixture("search_found.json")["results"][0]
+    assert crm_status(quiet, now=NOW) == "quiet"
+    active = _fixture("search_found_active.json")["results"][0]
+    assert crm_status(active, now=NOW) == "active"
+    assert crm_status(active, now=NOW + CRM_ACTIVITY_WINDOW + timedelta(days=1)) == "quiet"
+    only_note = {"properties": {"notes_last_updated": "2026-10-15T10:00:00.000Z"}}
+    assert crm_status(only_note, now=NOW) == "quiet"
+    garbage = {"properties": {"hs_last_sales_activity_timestamp": "not a date"}}
+    assert crm_status(garbage, now=NOW) == "quiet"
+    naive = {"properties": {"notes_last_contacted": "2026-10-14T10:00:00"}}
+    assert crm_status(naive, now=NOW) == "active"
+    assert "notes_last_updated" not in ACTIVITY_PROPERTIES
+
+
+def test_lookups_ask_for_the_activity_properties(hubspot: respx.MockRouter) -> None:
+    search = hubspot.post("/crm/v3/objects/companies/search").mock(
+        return_value=httpx.Response(200, json=_fixture("search_empty.json"))
+    )
+    listing = hubspot.get("/crm/v3/objects/companies").mock(
+        return_value=httpx.Response(200, json=_fixture("companies_list_end.json"))
+    )
+    with _client() as client:
+        assert client.lookup_company(DOMAIN).company is None
+    asked = set(json.loads(search.calls[0].request.content)["properties"])
+    assert asked >= set(ACTIVITY_PROPERTIES)
+    listed = set(listing.calls[0].request.url.params["properties"].split(","))
+    assert listed >= set(ACTIVITY_PROPERTIES)
 
 
 def test_push_finds_a_company_the_search_index_does_not_have_yet(

@@ -19,9 +19,14 @@ The five rules of the 2026-10-15 research report, section 5, as implemented in v
    company has a board, so the picture is partial: verdict ``hold``. ``no_board`` passes:
    a seed company without a public job board is normal, and rule 1 already demands a
    second family.
-3. **Not already active in the CRM.** v0 does not check the CRM (the per-watchlist CRM
-   token comes with the write-back, ADR 0037 follow-up); the reason ``crm_unchecked`` is
-   recorded so the ledger says what was not looked at.
+3. **Not already active in the CRM.** When the watchlist's ``tell-private`` record holds a
+   HubSpot token (ADR 0040), the company is looked up by domain: present with a sales
+   activity (``hs_last_sales_activity_timestamp`` or ``notes_last_contacted``) in the last
+   90 days is ``in_crm_active`` and verdict ``skip`` (someone is already working it);
+   present without one is ``in_crm_quiet`` and absent is ``not_in_crm``, both pass. Without
+   a token the reason ``crm_unchecked`` is recorded so the ledger says what was not looked
+   at. tell's own note never counts as activity (it sets ``notes_last_updated``, which is
+   not read).
 4. **No credit on this company in the last 90 days** for this watchlist (an ``enrich``
    verdict in the ledger): verdict ``skip``. Per watchlist, never across customers.
 5. **The watchlist's monthly credit budget has headroom.** ``enrich`` verdicts this UTC
@@ -46,6 +51,7 @@ from sqlalchemy.orm import Session
 from tell.models import EnrichmentVerdict, Watchlist
 
 __all__ = [
+    "CRM_STATUSES",
     "DEFAULT_MONTHLY_CREDITS",
     "LEDGER_WINDOW",
     "MIN_FAMILIES",
@@ -58,6 +64,7 @@ __all__ = [
     "families_with_receipts",
     "judge",
     "record_verdict",
+    "verdict_row",
 ]
 
 VERDICTS: tuple[str, ...] = ("enrich", "skip", "hold")
@@ -75,7 +82,17 @@ DEFAULT_MONTHLY_CREDITS = 100
 """Rule 5 default: the free Clay data-credit allowance the report found (unverified); a
 watchlist overrides it with ``credit_budget_monthly`` in its ``tell-private`` record."""
 
-_SKIP_REASONS = frozenset({"one_family", "enriched_recently"})
+CRM_STATUSES: tuple[str, ...] = ("unchecked", "absent", "quiet", "active")
+"""Rule 3 inputs: not looked up, not in the CRM, in it without recent sales activity, in it
+with sales activity in the last 90 days."""
+
+_CRM_REASON = {
+    "unchecked": "crm_unchecked",
+    "absent": "not_in_crm",
+    "quiet": "in_crm_quiet",
+    "active": "in_crm_active",
+}
+_SKIP_REASONS = frozenset({"one_family", "enriched_recently", "in_crm_active"})
 _HOLD_REASONS = frozenset({"budget_spent"})
 _THIN_PREFIX = "thin_coverage:"
 
@@ -88,8 +105,9 @@ class Verdict:
     """``enrich``, ``skip`` or ``hold``."""
     reasons: list[str] = field(default_factory=list)
     """One token per rule, in rule order: ``two_families`` / ``one_family``,
-    ``coverage_ok`` / ``thin_coverage:<note>``, ``crm_unchecked``, ``no_recent_credit`` /
-    ``enriched_recently``, ``budget_ok`` / ``budget_spent``."""
+    ``coverage_ok`` / ``thin_coverage:<note>``, ``crm_unchecked`` / ``not_in_crm`` /
+    ``in_crm_quiet`` / ``in_crm_active``, ``no_recent_credit`` / ``enriched_recently``,
+    ``budget_ok`` / ``budget_spent``."""
     families: list[str] = field(default_factory=list)
     """Distinct signal families with a receipt, largest contribution first."""
 
@@ -105,6 +123,8 @@ def _explain(reasons: Sequence[str]) -> str:
     for reason in reasons:
         if reason == "one_family":
             return "one signal family"
+        if reason == "in_crm_active":
+            return "already in HubSpot with sales activity in the last 90 days"
         if reason == "enriched_recently":
             return "a credit went to this company in the last 90 days"
     for reason in reasons:
@@ -129,18 +149,22 @@ def decide(
     contributions: Sequence[Mapping[str, Any]],
     *,
     coverage_note: str | None = None,
+    crm_status: str = "unchecked",
     enriched_recently: bool = False,
     credits_used: int = 0,
     credit_budget: int = DEFAULT_MONTHLY_CREDITS,
 ) -> Verdict:
     """The pure gate: the five rules over already-gathered facts (see the module docstring)."""
+    if crm_status not in CRM_STATUSES:
+        msg = f"crm_status must be one of {CRM_STATUSES}, not {crm_status!r}"
+        raise ValueError(msg)
     families = families_with_receipts(contributions)
     reasons: list[str] = []
     reasons.append("two_families" if len(families) >= MIN_FAMILIES else "one_family")
     note = (coverage_note or "").strip()
     thin = any(note.startswith(prefix) for prefix in THIN_COVERAGE_PREFIXES)
     reasons.append(f"{_THIN_PREFIX}{note}" if thin else "coverage_ok")
-    reasons.append("crm_unchecked")
+    reasons.append(_CRM_REASON[crm_status])
     reasons.append("enriched_recently" if enriched_recently else "no_recent_credit")
     reasons.append("budget_spent" if credits_used >= max(credit_budget, 0) else "budget_ok")
     if any(r in _SKIP_REASONS for r in reasons):
@@ -196,6 +220,16 @@ def credits_used_this_month(session: Session, *, watchlist_id: int, now: datetim
     return int(session.scalar(stmt) or 0)
 
 
+def verdict_row(session: Session, *, event_id: str, watchlist_id: int) -> EnrichmentVerdict | None:
+    """The ledger row of (event, watchlist), if decided."""
+    return session.scalars(
+        select(EnrichmentVerdict).where(
+            EnrichmentVerdict.event_id == event_id,
+            EnrichmentVerdict.watchlist_id == watchlist_id,
+        )
+    ).one_or_none()
+
+
 def record_verdict(
     session: Session,
     *,
@@ -238,6 +272,7 @@ def judge(
     coverage_note: str | None,
     now: datetime,
     credit_budget: int | None = None,
+    crm_status: str = "unchecked",
 ) -> Verdict:
     """Decide once per (event, watchlist) and remember it.
 
@@ -259,6 +294,7 @@ def judge(
     verdict = decide(
         contributions,
         coverage_note=coverage_note,
+        crm_status=crm_status,
         enriched_recently=enriched_recently(
             session,
             watchlist_id=watchlist.id,

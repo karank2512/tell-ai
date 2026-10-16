@@ -24,10 +24,12 @@ from tell.db import SessionLocal
 from tell.intake.reader import PrivateWatchlist, write_private_watchlists
 from tell.models import AtsBoard, EnrichmentVerdict, EventRow, Nudge, Run, Score
 from tell.publish import cli
+from tell.publish.crm_push import CrmConfig, crm_line
 from tell.publish.nudge import (
     NUDGE_SOURCE,
     build_nudge_blocks,
     load_private_budgets,
+    load_private_crm,
     load_private_webhooks,
     pending_nudges,
     send_nudges,
@@ -40,6 +42,7 @@ GLOBAL = "https://hooks.slack.invalid/services/T0/B0/GLOBAL"
 PRIVATE = "https://hooks.slack.invalid/services/T0/B0/PRIVATE"
 BASE = "https://pages.example/tell-data"
 FORM = "https://forms.example/f?s={signal_id}&d={domain}&v={verdict}"
+FORM_WITH_LIST = FORM + "&w={watchlist}"
 SLUG = "private-list"
 TZ = "America/Los_Angeles"
 
@@ -115,6 +118,14 @@ def test_nudge_blocks_feedback_links_only_with_a_form() -> None:
         " · <https://forms.example/f?s=100&d=acme.example&v=not_useful|not useful>"
     )
     assert len(build_nudge_blocks(account, pages_base_url=BASE)[1]["elements"]) == 1
+    # The nudge knows the watchlist, so the form's {watchlist} placeholder gets the slug
+    # (ADR 0039); without a slug the placeholder is emptied, never left in the URL.
+    listed = build_nudge_blocks(
+        account, pages_base_url=BASE, feedback_form_url=FORM_WITH_LIST, watchlist_slug=SLUG
+    )
+    assert f"&v=useful&w={SLUG}|useful>" in listed[1]["elements"][1]["text"]
+    unlisted = build_nudge_blocks(account, pages_base_url=BASE, feedback_form_url=FORM_WITH_LIST)
+    assert "&v=useful&w=|useful>" in unlisted[1]["elements"][1]["text"]
     # No contribution: the links still work, with an empty signal id.
     lone = CrossedAccount(name="Q", domain="q.example", score=6.0, contributions=[])
     blocks = build_nudge_blocks(lone, pages_base_url=BASE, feedback_form_url=FORM)
@@ -202,7 +213,11 @@ def test_send_nudges_one_message_per_account_to_the_private_webhook_only(
     assert all("Worth enriching:" in b["blocks"][0]["text"]["text"] for b in bodies)
     (run,) = _nudge_runs(db_session)
     assert (run.status, run.fetched, run.inserted, run.errors) == ("ok", 2, 2, 0)
-    assert run.notes == {"watchlists": 1, "verdicts": {"enrich": 0, "skip": 2, "hold": 0}}
+    assert run.notes == {
+        "watchlists": 1,
+        "verdicts": {"enrich": 0, "skip": 2, "hold": 0},
+        "crm": {"created": 0, "updated": 0, "unchanged": 0, "failed": 0},
+    }
     assert outcome.verdicts == {"enrich": 0, "skip": 2, "hold": 0}
     # Both scenario crossings rest on one family (Form D alone), so the gate says skip and
     # the ledger holds one row per crossing with every rule recorded (ADR 0038).
@@ -422,6 +437,220 @@ def test_gate_skips_a_company_credited_in_the_last_90_days(db_session: Session) 
     )
 
 
+# --- HubSpot with the nudge (ADR 0040) ---------------------------------------------------------
+
+HUBSPOT = "https://hubspot.invalid"
+HUBSPOT_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "hubspot"
+HUBSPOT_TOKEN = "pat-na1-placeholder-token-value"  # a placeholder, not a credential
+
+
+def _hs(name: str) -> Any:
+    return json.loads((HUBSPOT_FIXTURES / name).read_text())
+
+
+@pytest.fixture
+def hubspot_base(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    monkeypatch.setenv("HUBSPOT_API_BASE", HUBSPOT)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("frozen", "hubspot_base")
+def test_enrich_pushes_to_hubspot_once_and_the_nudge_says_so(db_session: Session) -> None:
+    scenario = _scenario_with_private_slug(db_session)
+    robotics = scenario.companies[sc.ROBOTICS]
+    _second_family(db_session, robotics)
+    _second_family(db_session, scenario.companies[sc.BLUEFIN])
+    crm = {SLUG: CrmConfig(token=HUBSPOT_TOKEN, owner_id="555")}
+    with respx.mock(assert_all_mocked=True) as mock:
+        slack = mock.post(PRIVATE).respond(404)  # Slack fails: the push must still stick
+        mock.post(f"{HUBSPOT}/crm/v3/objects/companies/search").respond(
+            200, json=_hs("search_empty.json")
+        )
+        mock.get(f"{HUBSPOT}/crm/v3/objects/companies").respond(
+            200, json=_hs("companies_list_end.json")
+        )
+        create = mock.post(f"{HUBSPOT}/crm/v3/objects/companies").respond(
+            201, json=_hs("company_created.json")
+        )
+        note = mock.post(f"{HUBSPOT}/crm/v3/objects/notes").respond(
+            201, json=_hs("note_created.json")
+        )
+        task = mock.post(f"{HUBSPOT}/crm/v3/objects/tasks").respond(
+            201, json=_hs("task_created.json")
+        )
+        first = send_nudges(
+            db_session,
+            now=sc.NOW,
+            private_webhooks={SLUG: PRIVATE},
+            crm=crm,
+            credit_budgets={SLUG: 1},
+            sleep=lambda _: None,
+        )
+    assert first.verdicts == {"enrich": 1, "skip": 0, "hold": 1}  # bluefin: budget spent
+    assert first.crm == {"created": 1, "updated": 0, "unchanged": 0, "failed": 0}
+    assert (create.call_count, note.call_count, task.call_count) == (1, 1, 1)
+    sent = json.loads(create.calls[0].request.content)["properties"]
+    assert sent["domain"] == sc.ROBOTICS
+    assert json.loads(task.calls[0].request.content)["properties"]["hubspot_owner_id"] == "555"
+    texts = [json.loads(c.request.content)["blocks"][0]["text"]["text"] for c in slack.calls]
+    assert texts[0].endswith(
+        "Worth enriching: yes · funding + hiring_velocity\nHubSpot: added · note + task"
+    )
+    assert "HubSpot:" not in texts[1]  # no push on a hold
+    ledger = {v.company_id: v for v in db_session.scalars(select(EnrichmentVerdict))}
+    assert ledger[robotics].reasons[2] == "not_in_crm"
+    assert (ledger[robotics].crm_action, ledger[robotics].crm_company_id) == ("created", "2002")
+    assert ledger[robotics].crm_pushed_at == sc.NOW
+    assert ledger[scenario.companies[sc.BLUEFIN]].crm_action is None
+    (run,) = _nudge_runs(db_session)
+    assert run.notes["crm"] == {"created": 1, "updated": 0, "unchanged": 0, "failed": 0}
+    # The Slack retry: the stored verdict and the stored line, no HubSpot call at all.
+    with respx.mock(assert_all_mocked=True) as mock:
+        slack = mock.post(PRIVATE).respond(200)
+        again = send_nudges(
+            db_session,
+            now=sc.NOW + timedelta(hours=6),
+            private_webhooks={SLUG: PRIVATE},
+            crm=crm,
+            sleep=lambda _: None,
+        )
+    assert (again.sent, again.crm["created"]) == (2, 1)
+    text = json.loads(slack.calls[0].request.content)["blocks"][0]["text"]["text"]
+    assert text.endswith("HubSpot: added · note + task")
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("frozen", "hubspot_base")
+def test_active_in_hubspot_is_a_skip_and_nothing_is_pushed(db_session: Session) -> None:
+    scenario = _scenario_with_private_slug(db_session)
+    _second_family(db_session, scenario.companies[sc.ROBOTICS])
+    with respx.mock(assert_all_mocked=True, assert_all_called=False) as mock:
+        slack = mock.post(PRIVATE).respond(200)
+        mock.post(f"{HUBSPOT}/crm/v3/objects/companies/search").respond(
+            200, json=_hs("search_found_active.json")
+        )
+        create = mock.post(f"{HUBSPOT}/crm/v3/objects/companies")
+        outcome = send_nudges(
+            db_session,
+            now=sc.NOW,
+            private_webhooks={SLUG: PRIVATE},
+            crm={SLUG: CrmConfig(token=HUBSPOT_TOKEN)},
+            sleep=lambda _: None,
+        )
+    assert outcome.verdicts == {"enrich": 0, "skip": 2, "hold": 0}
+    assert outcome.crm == {"created": 0, "updated": 0, "unchanged": 0, "failed": 0}
+    assert not create.called
+    text = json.loads(slack.calls[0].request.content)["blocks"][0]["text"]["text"]
+    assert text.endswith(
+        "Worth enriching: skip · already in HubSpot with sales activity in the last 90 days"
+    )
+    reasons = {v.company_id: v.reasons[2] for v in db_session.scalars(select(EnrichmentVerdict))}
+    assert set(reasons.values()) == {"in_crm_active"}
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("frozen", "hubspot_base")
+def test_failed_push_is_recorded_shown_and_retried(db_session: Session) -> None:
+    scenario = _scenario_with_private_slug(db_session)
+    robotics = scenario.companies[sc.ROBOTICS]
+    _second_family(db_session, robotics)
+    crm = {SLUG: CrmConfig(token=HUBSPOT_TOKEN)}
+    with respx.mock(assert_all_mocked=True) as mock:
+        slack = mock.post(PRIVATE).respond(200)
+        mock.post(f"{HUBSPOT}/crm/v3/objects/companies/search").respond(
+            200, json=_hs("search_empty.json")
+        )
+        mock.get(f"{HUBSPOT}/crm/v3/objects/companies").respond(
+            200, json=_hs("companies_list_end.json")
+        )
+        mock.post(f"{HUBSPOT}/crm/v3/objects/companies").respond(
+            401, json=_hs("unauthorized_401.json")
+        )
+        first = send_nudges(
+            db_session, now=sc.NOW, private_webhooks={SLUG: PRIVATE}, crm=crm, sleep=lambda _: None
+        )
+    assert (first.sent, first.crm["failed"]) == (2, 1)
+    text = json.loads(slack.calls[0].request.content)["blocks"][0]["text"]["text"]
+    assert text.endswith("HubSpot: push failed (401)")
+    row = next(v for v in db_session.scalars(select(EnrichmentVerdict)) if v.company_id == robotics)
+    assert (row.verdict, row.crm_action, row.crm_company_id) == ("enrich", "failed", "401")
+    # Nudged (ok), so not a candidate again; a hand re-run of the same crossing would retry
+    # the push because ``failed`` is retried: simulate by clearing the nudge rows.
+    db_session.query(Nudge).delete()
+    with respx.mock(assert_all_mocked=True) as mock:
+        mock.post(PRIVATE).respond(200)
+        mock.post(f"{HUBSPOT}/crm/v3/objects/companies/search").respond(
+            200, json=_hs("search_empty.json")
+        )
+        mock.get(f"{HUBSPOT}/crm/v3/objects/companies").respond(
+            200, json=_hs("companies_list_end.json")
+        )
+        mock.post(f"{HUBSPOT}/crm/v3/objects/companies").respond(
+            201, json=_hs("company_created.json")
+        )
+        mock.post(f"{HUBSPOT}/crm/v3/objects/notes").respond(201, json=_hs("note_created.json"))
+        mock.post(f"{HUBSPOT}/crm/v3/objects/tasks").respond(201, json=_hs("task_created.json"))
+        second = send_nudges(
+            db_session,
+            now=sc.NOW + timedelta(hours=1),
+            private_webhooks={SLUG: PRIVATE},
+            crm=crm,
+            sleep=lambda _: None,
+        )
+    assert second.crm["created"] == 1
+    db_session.refresh(row)
+    assert (row.crm_action, row.crm_company_id) == ("created", "2002")
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("frozen", "hubspot_base")
+def test_hubspot_lookup_failure_leaves_the_crm_unchecked(db_session: Session) -> None:
+    scenario = _scenario_with_private_slug(db_session)
+    _second_family(db_session, scenario.companies[sc.ROBOTICS])
+    with respx.mock(assert_all_mocked=True, assert_all_called=False) as mock:
+        mock.post(PRIVATE).respond(200)
+        mock.post(f"{HUBSPOT}/crm/v3/objects/companies/search").mock(
+            side_effect=httpx.ConnectError("down")
+        )
+        mock.get(f"{HUBSPOT}/crm/v3/objects/companies").mock(side_effect=httpx.ConnectError("down"))
+        mock.post(f"{HUBSPOT}/crm/v3/objects/companies").mock(
+            side_effect=httpx.ConnectError("down")
+        )
+        outcome = send_nudges(
+            db_session,
+            now=sc.NOW,
+            private_webhooks={SLUG: PRIVATE},
+            crm={SLUG: CrmConfig(token=HUBSPOT_TOKEN)},
+            sleep=lambda _: None,
+        )
+    assert outcome.sent == 2
+    assert outcome.verdicts["enrich"] == 1
+    assert outcome.crm["failed"] == 1  # the push was attempted and HubSpot was down
+    reasons = {v.company_id: v.reasons[2] for v in db_session.scalars(select(EnrichmentVerdict))}
+    assert set(reasons.values()) == {"crm_unchecked"}
+
+
+def test_crm_line_and_load_private_crm(tmp_path: Path) -> None:
+    assert crm_line(None) is None
+    row = EnrichmentVerdict(event_id="e", watchlist_id=1, company_id=1, verdict="enrich")
+    assert crm_line(row) is None
+    row.crm_action, row.crm_company_id = "updated", "9"
+    assert crm_line(row) == "HubSpot: updated · note + task"
+    row.crm_action, row.crm_company_id = "failed", None
+    assert crm_line(row) == "HubSpot: push failed (error)"
+    with_token = _record("crm", PRIVATE).model_copy(
+        update={"hubspot_private_app_token": HUBSPOT_TOKEN, "hubspot_owner_id": "7"}
+    )
+    write_private_watchlists(tmp_path, {SLUG: _record(SLUG, PRIVATE), "crm": with_token})
+    assert load_private_crm(tmp_path) == {"crm": CrmConfig(token=HUBSPOT_TOKEN, owner_id="7")}
+    assert load_private_crm(tmp_path / "missing") == {}
+    (tmp_path / "watchlists" / "broken.yaml").write_text("slug: [\n")
+    assert load_private_crm(tmp_path) == {}
+
+
 def test_load_private_budgets(tmp_path: Path) -> None:
     with_budget = _record("budgeted", PRIVATE).model_copy(update={"credit_budget_monthly": 25})
     write_private_watchlists(tmp_path, {SLUG: _record(SLUG, PRIVATE), "budgeted": with_budget})
@@ -509,7 +738,7 @@ def test_notify_cli_reports_nudges_and_digest(
 ) -> None:
     write_private_watchlists(tmp_path, {SLUG: _record(SLUG, PRIVATE)})
     monkeypatch.setenv("SLACK_WEBHOOK_URL", GLOBAL)
-    monkeypatch.setenv("TELL_FEEDBACK_FORM_URL", FORM)
+    monkeypatch.setenv("TELL_FEEDBACK_FORM_URL", FORM_WITH_LIST)
     get_settings.cache_clear()
     args = ["notify", "--slack", "--private-dir", str(tmp_path)]
     with freeze_time("2026-10-06T12:17:00Z"), respx.mock(assert_all_mocked=True) as mock:
@@ -525,6 +754,7 @@ def test_notify_cli_reports_nudges_and_digest(
         assert private_route.call_count == 2
         body = json.loads(private_route.calls[0].request.content)
         assert "Rate it:" in body["blocks"][1]["elements"][1]["text"]
+        assert f"&v=useful&w={SLUG}|useful>" in body["blocks"][1]["elements"][1]["text"]
         # Second call: nothing left to nudge.
         record = json.loads(runner.invoke(cli.app, args).output)
         assert record["nudges"]["skipped"] == "nothing to nudge"

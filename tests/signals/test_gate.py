@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from tell.models import EnrichmentVerdict
 from tell.publish.nudge import pending_nudges
 from tell.signals.gate import (
+    CRM_STATUSES,
     DEFAULT_MONTHLY_CREDITS,
     LEDGER_WINDOW,
     Verdict,
@@ -103,6 +104,28 @@ def test_budget_spent_is_a_hold() -> None:
     assert spent.line == "Worth enriching: hold · this month's credit budget is spent"
     assert decide(TWO, credits_used=0, credit_budget=0).verdict == "hold"
     assert decide(TWO, credits_used=2, credit_budget=3).verdict == "enrich"
+
+
+@pytest.mark.parametrize(
+    ("status", "reason", "expected"),
+    [
+        ("unchecked", "crm_unchecked", "enrich"),
+        ("absent", "not_in_crm", "enrich"),
+        ("quiet", "in_crm_quiet", "enrich"),
+        ("active", "in_crm_active", "skip"),
+    ],
+)
+def test_rule_3_reads_the_crm_status(status: str, reason: str, expected: str) -> None:
+    verdict = decide(TWO, crm_status=status)
+    assert verdict.verdict == expected
+    assert verdict.reasons[2] == reason
+    if expected == "skip":
+        assert verdict.line == (
+            "Worth enriching: skip · already in HubSpot with sales activity in the last 90 days"
+        )
+    assert set(CRM_STATUSES) == {"unchecked", "absent", "quiet", "active"}
+    with pytest.raises(ValueError, match="crm_status"):
+        decide(TWO, crm_status="maybe")
 
 
 def test_line_without_a_known_reason_is_still_a_sentence() -> None:

@@ -31,7 +31,7 @@ from tests.conftest import alembic_config
 
 pytestmark = pytest.mark.db
 
-HEAD_REVISION = "0011"
+HEAD_REVISION = "0013"
 
 # --- the spec, hardcoded -----------------------------------------------------------------
 
@@ -122,7 +122,15 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
         "is_public",  # ADR 0022, migration 0006
     ],
     "watchlist_items": ["watchlist_id", "company_id"],
-    "feedback": ["id", "watchlist_id", "signal_id", "verdict", "note", "created_at"],
+    "feedback": [
+        "id",
+        "watchlist_id",
+        "signal_id",
+        "verdict",
+        "note",
+        "created_at",
+        "submission_id",  # ADR 0039, migration 0012
+    ],
     "runs": [
         "run_id",
         "source",
@@ -186,6 +194,9 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
         "reasons",
         "families",
         "decided_at",
+        "crm_action",  # ADR 0040, migration 0013
+        "crm_company_id",
+        "crm_pushed_at",
     ],
 }
 
@@ -220,6 +231,7 @@ EXPECTED_UNIQUES: dict[str, set[tuple[str, ...]]] = {
     "company_feeds": {("feed_url",)},
     "watchlists": {("slug",)},  # ADR 0022
     "api_keys": {("key_hash",)},  # ADR 0024
+    "feedback": {("submission_id",)},  # ADR 0039
     "nudges": {("event_id", "watchlist_id")},  # ADR 0036
     "enrichment_verdicts": {("event_id", "watchlist_id")},  # ADR 0038
 }
@@ -324,7 +336,7 @@ EXPECTED_NULLABLE: dict[str, set[str]] = {
     "scores": set(),
     "watchlists": {"slug"},
     "watchlist_items": set(),
-    "feedback": {"note"},
+    "feedback": {"note", "submission_id"},
     "runs": {"finished_at", "fetched", "inserted", "skipped", "errors", "notes"},
     "review_queue": {"resolved_at"},
     "company_feeds": {"discovered_from", "last_polled_at", "etag", "last_modified"},
@@ -333,7 +345,7 @@ EXPECTED_NULLABLE: dict[str, set[str]] = {
     "api_usage": set(),
     "issuer_discovery": {"tier", "domain", "evidence", "last_tried_at", "next_retry_at"},
     "nudges": {"http_status"},
-    "enrichment_verdicts": set(),
+    "enrichment_verdicts": {"crm_action", "crm_company_id", "crm_pushed_at"},
 }
 
 # Columns with a server default, with the default's leading token after cast stripping.
@@ -405,6 +417,7 @@ EXPECTED_TYPES: dict[tuple[str, str], str] = {
     ("enrichment_verdicts", "reasons"): "JSONB",
     ("enrichment_verdicts", "families"): "JSONB",
     ("enrichment_verdicts", "decided_at"): "TIMESTAMP WITH TIME ZONE",
+    ("enrichment_verdicts", "crm_pushed_at"): "TIMESTAMP WITH TIME ZONE",
 }
 
 SERIAL_PRIMARY_KEYS = {

@@ -125,16 +125,23 @@ that watchlist becomes one message to that webhook, paced 1.1 s apart:
   month's credit budget is spent`. The verdict is decided once per (crossing, watchlist),
   written to `enrichment_verdicts` (migration 0011) before the POST, and read back on a
   resend; the watchlist's budget is `credit_budget_monthly` in its `tell-private` record,
-  default 100 a month;
+  default 100 a month; with `hubspot_private_app_token` in that record the gate's rule 3
+  reads the partner's HubSpot and an `enrich` verdict is pushed there first (company,
+  `tell_*` properties, receipt note, task; ADR 0040), adding a `HubSpot: added · note +
+  task` / `updated · note + task` / `already current` / `push failed (401)` line;
 - a context line with the account page and, when `TELL_FEEDBACK_FORM_URL` is set,
-  prefilled `useful` / `not useful` links for the top contribution's signal.
+  prefilled `useful` / `not useful` links for the top contribution's signal, carrying the
+  watchlist slug in the form's `{watchlist}` placeholder; the nightly
+  `tell intake feedback-sync` turns the responses into `feedback` rows (ADR 0039,
+  `docs/intake/feedback-form.md`).
 
 The `nudges` table (migration 0010) holds one row per (event, watchlist): `ok` once a 2xx
 came back, `failed` with the HTTP status (or `NULL` on a transport error) otherwise; a
 failed row is updated and retried on the next run while the event is inside the window, and
 after 24 hours a crossing is never nudged. A run with at least one candidate is recorded as
-`runs.source = slack_nudge` (`fetched` candidates, `inserted` sent, `errors`, and the
-verdict counts in `notes.verdicts`), not a dead-man source. The global webhook never
+`runs.source = slack_nudge` (`fetched` candidates, `inserted` sent, `errors`, the verdict
+counts in `notes.verdicts` and the HubSpot push counts in `notes.crm`), not a dead-man
+source. The global webhook never
 receives nudges.
 
 ## 8. CSV with receipts

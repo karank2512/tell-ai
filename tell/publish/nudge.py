@@ -50,6 +50,7 @@ from tell.collectors.base import finish_run, start_run
 from tell.config import get_settings
 from tell.intake.reader import DEFAULT_PRIVATE_DIR, PrivateRecordError, load_private_watchlists
 from tell.models import Company, Nudge, Watchlist
+from tell.publish.crm_push import CrmConfig, CrmRun, crm_line, load_private_crm, push_counts
 from tell.publish.json_api import company_facts_many, feedback_link
 from tell.publish.slack import (
     SEND_INTERVAL_S,
@@ -61,13 +62,14 @@ from tell.publish.slack import (
     receipt_section,
     why_now,
 )
-from tell.signals.gate import Verdict, decide, families_with_receipts, judge
+from tell.signals.gate import Verdict, decide, families_with_receipts, judge, verdict_row
 
 __all__ = [
     "NUDGE_SOURCE",
     "NudgeOutcome",
     "build_nudge_blocks",
     "load_private_budgets",
+    "load_private_crm",
     "load_private_webhooks",
     "pending_nudges",
     "send_nudges",
@@ -92,6 +94,9 @@ class NudgeOutcome:
     run_id: str | None = None
     verdicts: dict[str, int] | None = None
     """How many candidates the gate judged ``enrich`` / ``skip`` / ``hold``."""
+    crm: dict[str, int] | None = None
+    """HubSpot pushes of this run's candidates: ``created`` / ``updated`` / ``unchanged`` /
+    ``failed`` (ADR 0040); only watchlists with a token in ``tell-private`` push."""
 
 
 # --- private webhooks ----------------------------------------------------------------------------
@@ -150,11 +155,14 @@ def build_nudge_blocks(
     pages_base_url: str,
     feedback_form_url: str | None = None,
     verdict: Verdict | None = None,
+    watchlist_slug: str | None = None,
+    crm_line: str | None = None,
 ) -> list[dict[str, Any]]:
     """The Block Kit ``blocks`` of one nudge (see the module docstring).
 
     ``verdict`` is the ledger's; without one (no session) the pure gate runs over the
-    contributions alone, as if coverage, history and budget were all fine.
+    contributions alone, as if coverage, history and budget were all fine. ``crm_line`` is
+    the ``HubSpot: ...`` line when a push happened (ADR 0040).
     """
     base = pages_base_url.rstrip("/")
     crossed = "" if account.threshold is None else f" · crossed {account.threshold:g}"
@@ -163,6 +171,8 @@ def build_nudge_blocks(
     )
     gate = verdict if verdict is not None else decide(account.contributions)
     tail = [escape(why_now(account.contributions)), escape(gate.line)]
+    if crm_line:
+        tail.append(escape(crm_line))
     section = receipt_section(head, account.contributions, tail)
     elements = [
         {"type": "mrkdwn", "text": link(f"{base}/companies/{account.domain}.html", "Account page")}
@@ -177,6 +187,7 @@ def build_nudge_blocks(
                     domain=account.domain,
                     verdict=verdict,
                     form_url=feedback_form_url,
+                    watchlist=watchlist_slug,
                 ),
                 label,
             )
@@ -244,13 +255,16 @@ def send_nudges(
     sleep: Callable[[float], None] | None = None,
     client: httpx.Client | None = None,
     credit_budgets: Mapping[str, int] | None = None,
+    crm: Mapping[str, CrmConfig] | None = None,
+    crm_client: httpx.Client | None = None,
 ) -> NudgeOutcome:
     """Send every pending nudge of every watchlist in ``private_webhooks`` (slug -> webhook).
 
     ``credit_budgets`` maps a slug to its monthly enrichment budget (gate rule 5); a slug
-    without one takes the default. Flushes the ``nudges``, ``enrichment_verdicts`` and
-    ``runs`` rows; never commits. Runs on every ingest run; with no candidate nothing is
-    recorded.
+    without one takes the default. ``crm`` maps a slug to its HubSpot access (ADR 0040):
+    the gate's rule 3 reads that portal and an ``enrich`` verdict is pushed there before
+    the message goes out. Flushes the ``nudges``, ``enrichment_verdicts`` and ``runs``
+    rows; never commits. Runs on every ingest run; with no candidate nothing is recorded.
     """
     pause = sleep if sleep is not None else time.sleep
     if not private_webhooks:
@@ -275,32 +289,60 @@ def send_nudges(
     run_id = start_run(session, NUDGE_SOURCE, now=now)
     sent = errors = 0
     verdicts = {"enrich": 0, "skip": 0, "hold": 0}
-    for index, (watchlist, webhook, account) in enumerate(work):
-        if index:
-            pause(SEND_INTERVAL_S)
-        assert watchlist.slug is not None  # selected by slug
-        verdict = judge(
-            session,
-            watchlist,
-            event_id=account.event_id,
-            company_id=account.company_id,
-            contributions=account.contributions,
-            coverage_note=coverage.get(account.company_id),
-            now=now,
-            credit_budget=budgets.get(watchlist.slug),
-        )
-        verdicts[verdict.verdict] = verdicts.get(verdict.verdict, 0) + 1
-        blocks = build_nudge_blocks(
-            account,
-            pages_base_url=settings.tell_base_url,
-            feedback_form_url=settings.tell_feedback_form_url,
-            verdict=verdict,
-        )
-        status = post_blocks(webhook, _text(account), blocks, client=client, sleep=pause)
-        if _record(session, watchlist, account, now=now, http_status=status):
-            sent += 1
-        else:
-            errors += 1
+    rows: list[Any] = []
+    with CrmRun(crm or {}, now=now, sleep=pause, client=crm_client) as hubspot:
+        for index, (watchlist, webhook, account) in enumerate(work):
+            if index:
+                pause(SEND_INTERVAL_S)
+            assert watchlist.slug is not None  # selected by slug
+            slug = watchlist.slug
+            row = verdict_row(session, event_id=account.event_id, watchlist_id=watchlist.id)
+            # A stored verdict (a resend) is read back as is: no HubSpot lookup for it.
+            status_in_crm = "unchecked" if row is not None else hubspot.status(slug, account.domain)
+            verdict = judge(
+                session,
+                watchlist,
+                event_id=account.event_id,
+                company_id=account.company_id,
+                contributions=account.contributions,
+                coverage_note=coverage.get(account.company_id),
+                now=now,
+                credit_budget=budgets.get(slug),
+                crm_status=status_in_crm,
+            )
+            verdicts[verdict.verdict] = verdicts.get(verdict.verdict, 0) + 1
+            if row is None:
+                row = verdict_row(session, event_id=account.event_id, watchlist_id=watchlist.id)
+            rows.append(row)
+            line = crm_line(row)
+            if (
+                row is not None
+                and hubspot.configured(slug)
+                and verdict.verdict == "enrich"
+                and row.crm_action in (None, "failed")
+            ):
+                line = hubspot.push(
+                    session,
+                    slug=slug,
+                    watchlist=watchlist,
+                    domain=account.domain,
+                    threshold=account.threshold,
+                    row=row,
+                )
+            blocks = build_nudge_blocks(
+                account,
+                pages_base_url=settings.tell_base_url,
+                feedback_form_url=settings.tell_feedback_form_url,
+                verdict=verdict,
+                watchlist_slug=slug,
+                crm_line=line,
+            )
+            status = post_blocks(webhook, _text(account), blocks, client=client, sleep=pause)
+            if _record(session, watchlist, account, now=now, http_status=status):
+                sent += 1
+            else:
+                errors += 1
+    pushes = push_counts(rows)
     finish_run(
         session,
         run_id,
@@ -309,11 +351,20 @@ def send_nudges(
         inserted=sent,
         skipped=0,
         errors=errors,
-        notes={"watchlists": len({w.id for w, _, _ in work}), "verdicts": verdicts},
+        notes={
+            "watchlists": len({w.id for w, _, _ in work}),
+            "verdicts": verdicts,
+            "crm": pushes,
+        },
         now=now,
     )
     return NudgeOutcome(
-        candidates=len(work), sent=sent, errors=errors, run_id=run_id, verdicts=verdicts
+        candidates=len(work),
+        sent=sent,
+        errors=errors,
+        run_id=run_id,
+        verdicts=verdicts,
+        crm=pushes,
     )
 
 
