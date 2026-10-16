@@ -1,0 +1,6 @@
+{
+  "status": "error",
+  "message": "Authentication credentials not found. This API supports OAuth 2.0 authentication and you can find more details at https://developers.hubspot.com/docs/methods/auth/oauth-overview",
+  "correlationId": "00000000-0000-4000-8000-000000000002",
+  "category": "INVALID_AUTHENTICATION"
+}

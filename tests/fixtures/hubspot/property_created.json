@@ -1,0 +1,18 @@
+{
+  "updatedAt": "2026-10-15T18:00:01.000Z",
+  "createdAt": "2026-10-15T18:00:01.000Z",
+  "name": "tell_profile",
+  "label": "tell profile",
+  "type": "string",
+  "fieldType": "text",
+  "description": "ICP profile of the score.",
+  "groupName": "companyinformation",
+  "options": [],
+  "displayOrder": -1,
+  "calculated": false,
+  "externalOptions": false,
+  "hasUniqueValue": false,
+  "hidden": false,
+  "formField": false,
+  "hubspotDefined": false
+}

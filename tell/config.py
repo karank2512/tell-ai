@@ -58,6 +58,17 @@ class Settings(BaseSettings):
     tell_data_push_token: SecretStr | None = Field(
         default=None, description="Fine-grained PAT with contents:write on TELL_DATA_REPO."
     )
+    hubspot_private_app_token: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Access token of the customer's HubSpot private app (tell crm hubspot); "
+            "company objects, properties, notes and tasks only, never contacts."
+        ),
+    )
+    hubspot_api_base: str = Field(
+        default="https://api.hubapi.com",
+        description="Base URL of the HubSpot API (tests point it at a fake).",
+    )
 
     # --- politeness budgets --------------------------------------------------
     tell_poll_concurrency: int = Field(default=8, ge=1, description="Parallel board fetches.")

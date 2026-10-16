@@ -1,0 +1,23 @@
+{
+  "total": 1,
+  "results": [
+    {
+      "id": "1001",
+      "properties": {
+        "createdate": "2026-09-01T10:00:00.000Z",
+        "domain": "alpha.example",
+        "hs_lastmodifieddate": "2026-10-14T10:00:00.000Z",
+        "hs_object_id": "1001",
+        "name": "Alpha Example Inc.",
+        "tell_score": "12.4",
+        "tell_top_signal": "Form D: $10,000,000 offering",
+        "tell_receipt_url": "https://www.sec.gov/Archives/edgar/data/0000000001/0001.txt",
+        "tell_scored_at": "2026-10-13",
+        "tell_profile": "default"
+      },
+      "createdAt": "2026-09-01T10:00:00.000Z",
+      "updatedAt": "2026-10-14T10:00:00.000Z",
+      "archived": false
+    }
+  ]
+}

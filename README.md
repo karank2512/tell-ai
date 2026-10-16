@@ -55,7 +55,7 @@ uv run tell ingest --source greenhouse --domain stripe.com
 
 `ingest` polls a board that discovery has already recorded, so run `discover` for the company first; `--domain` picks the board by the company's domain, `--board <token>` by the board token discovery printed. It prints one JSON run line, and running it twice in a row reports `inserted: 0`. (Prefix `uv run` if the environment is not activated.)
 
-Local Postgres: tell needs a PostgreSQL server and reads it from `DATABASE_URL` (point it at your own server and user, for example `postgresql+psycopg://$USER@localhost:5432/tell_dev`; see [CONTRIBUTING.md](CONTRIBUTING.md#database-url)). Without a local server, `make dev` starts Postgres 16 from `docker-compose.yml` on port 5433, then set `DATABASE_URL=postgresql+psycopg://tell:tell@localhost:5433/tell_dev`. Other commands: `tell discover batch`, `tell resolve`, `tell score --all-profiles`, `tell publish --out DIR`, `tell notify`, `tell weekly`, `tell runlog`, `tell deadman`, `tell prune`, `tell backtest`, `tell intake sync`, `tell api`; run `tell --help`.
+Local Postgres: tell needs a PostgreSQL server and reads it from `DATABASE_URL` (point it at your own server and user, for example `postgresql+psycopg://$USER@localhost:5432/tell_dev`; see [CONTRIBUTING.md](CONTRIBUTING.md#database-url)). Without a local server, `make dev` starts Postgres 16 from `docker-compose.yml` on port 5433, then set `DATABASE_URL=postgresql+psycopg://tell:tell@localhost:5433/tell_dev`. Other commands: `tell discover batch`, `tell resolve`, `tell score --all-profiles`, `tell publish --out DIR`, `tell notify`, `tell weekly`, `tell runlog`, `tell deadman`, `tell prune`, `tell backtest`, `tell intake sync`, `tell api`, `tell crm hubspot` (push a score and its receipt onto a HubSpot company; [docs/crm/hubspot.md](docs/crm/hubspot.md)); run `tell --help`.
 
 ## Architecture
 
@@ -188,6 +188,7 @@ PR checklist (also in the PR template): one ticket per PR naming the acceptance 
 - GitHub org signals for developer-tool ICPs (v1.1; the collector exists and is config-gated).
 - LLM-proposed answers for the review queue, with a human still clicking the button (v1.1).
 - Deploy the FastAPI service when a consumer needs keys and quotas.
+- CRM write-back beyond HubSpot (Attio, Salesforce) and a per-event Slack nudge that triggers the push; HubSpot ships first through the customer's private app (`tell crm hubspot`, ADR 0037).
 - Government-contract sources (USAspending, SAM.gov) when a public-sector seller asks (v2).
 
 ## License and contact
