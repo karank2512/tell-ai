@@ -45,7 +45,15 @@ DOTENV = REPO_ROOT / ".env"
 KEPT_ENV_VARS = frozenset({"DATABASE_URL", "TELL_TEST_ADMIN_URL"})
 """Environment variables the hermetic fixture leaves alone: they locate the test server."""
 
-STRIPPED_ENV_VARS = frozenset({"SEC_USER_AGENT", "SLACK_WEBHOOK_URL", "GITHUB_TOKEN"})
+STRIPPED_ENV_VARS = frozenset(
+    {
+        "SEC_USER_AGENT",
+        "SLACK_WEBHOOK_URL",
+        "GITHUB_TOKEN",
+        "HUBSPOT_PRIVATE_APP_TOKEN",
+        "HUBSPOT_API_BASE",
+    }
+)
 """Non-``TELL_`` settings variables the hermetic fixture removes (plus every ``TELL_*``)."""
 
 

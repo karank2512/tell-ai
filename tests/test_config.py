@@ -19,6 +19,8 @@ EXPECTED_ENV_VARS = {
     "GITHUB_TOKEN",
     "TELL_DATA_REPO",
     "TELL_DATA_PUSH_TOKEN",
+    "HUBSPOT_PRIVATE_APP_TOKEN",
+    "HUBSPOT_API_BASE",
     "TELL_POLL_CONCURRENCY",
     "TELL_RATE_EDGAR_RPS",
     "TELL_RATE_NEWS_RPS",
@@ -49,6 +51,7 @@ SECRETS = {
     "slack_webhook_url",
     "github_token",
     "tell_data_push_token",
+    "hubspot_private_app_token",
     "tell_api_key",
     "tell_intake_csv_url",
     "tell_review_password",
@@ -72,6 +75,8 @@ def test_defaults() -> None:
     assert s.github_token is None
     assert s.tell_data_repo == "karank2512/tell-data"
     assert s.tell_data_push_token is None
+    assert s.hubspot_private_app_token is None
+    assert s.hubspot_api_base == "https://api.hubapi.com"
     assert s.tell_poll_concurrency == 8
     assert s.tell_rate_edgar_rps == 5.0
     assert s.tell_rate_news_rps == 1.0
