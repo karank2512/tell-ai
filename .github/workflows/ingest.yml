@@ -63,6 +63,7 @@ jobs:
     outputs:
       enabled: ${{ steps.check.outputs.enabled }}
       publish_enabled: ${{ steps.check.outputs.publish_enabled }}
+      private_enabled: ${{ steps.check.outputs.private_enabled }}
     steps:
       - name: Check required secrets
         id: check
@@ -70,6 +71,7 @@ jobs:
           HAS_DATABASE_URL: ${{ secrets.DATABASE_URL != '' }}
           HAS_TELL_DATA_PUSH_TOKEN: ${{ secrets.TELL_DATA_PUSH_TOKEN != '' }}
           HAS_TELL_DATA_REPO: ${{ vars.TELL_DATA_REPO != '' }}
+          HAS_TELL_PRIVATE_READ_TOKEN: ${{ secrets.TELL_PRIVATE_READ_TOKEN != '' }}
           EVENT_NAME: ${{ github.event_name }}
           FIRED_CRON: ${{ github.event.schedule }}
           RUNS_PER_DAY: ${{ vars.TELL_RUNS_PER_DAY }}
@@ -87,8 +89,15 @@ jobs:
             && [ "$HAS_TELL_DATA_REPO" = true ]; then
             publish_enabled=true
           fi
+          # Per-watchlist Slack webhooks live in tell-private (ADR 0027, ADR 0036); without
+          # the read token the digest still goes to SLACK_WEBHOOK_URL and no nudge is sent.
+          private_enabled=false
+          if [ "$enabled" = true ] && [ "$HAS_TELL_PRIVATE_READ_TOKEN" = true ]; then
+            private_enabled=true
+          fi
           echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
           echo "publish_enabled=$publish_enabled" >> "$GITHUB_OUTPUT"
+          echo "private_enabled=$private_enabled" >> "$GITHUB_OUTPUT"
           msg=""
           if [ "$extra_slot_off" = true ]; then
             msg="ingest skipped: extra slot; set the TELL_RUNS_PER_DAY variable to 4 for four runs a day (ADR 0029)"
@@ -247,6 +256,14 @@ jobs:
           repository: ${{ vars.TELL_DATA_REPO }}
           path: tell-data
           token: ${{ secrets.TELL_DATA_PUSH_TOKEN }}
+      # Read-only: the per-watchlist webhooks for nudges and digest routing (ADR 0036).
+      # Nothing is ever written back to tell-private from here.
+      - uses: actions/checkout@v7
+        if: needs.preflight.outputs.private_enabled == 'true'
+        with:
+          repository: karank2512/tell-private
+          path: tell-private
+          token: ${{ secrets.TELL_PRIVATE_READ_TOKEN }}
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
@@ -273,13 +290,14 @@ jobs:
           git add -A
           git commit -m "ingest $(date -u +%FT%TZ)" || echo "nothing to commit"
           git push || { git pull --rebase origin HEAD && git push; }
-      - name: Slack digest
-        if: needs.preflight.outputs.publish_enabled == 'true'
-        # The digest goes out only on the first run at or after the digest hour; decided
-        # inside the command.
+      - name: Slack nudges and digest
+        # Runs on every ingest (it needs only the database): per-event nudges to the
+        # watchlists with their own webhook in tell-private (absent when the read token is
+        # not set, so none are sent), then the digest, which goes out only on the first run
+        # at or after the digest hour; both decided inside the command (ADR 0036).
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: uv run tell notify --slack
+        run: uv run tell notify --slack --private-dir tell-private
       - name: Dead-man switch
         # Fails the job (red run + GitHub's free failure email) when any scheduled source
         # has had no successful run in 24 hours; writes the report to the step summary.

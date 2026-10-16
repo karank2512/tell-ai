@@ -348,6 +348,10 @@ def test_resolve_score_publish_order_and_policy() -> None:
     assert len(set(order)) == len(order)
     notify = steps[_index(steps, "uv run tell notify --slack")]
     assert notify["env"]["SLACK_WEBHOOK_URL"] == "${{ secrets.SLACK_WEBHOOK_URL }}"
+    # ADR 0036: nudges need only the database, so the step is not gated on tell-data, and
+    # it reads the per-watchlist webhooks from the read-only tell-private checkout.
+    assert "if" not in notify
+    assert str(notify["run"]).strip() == "uv run tell notify --slack --private-dir tell-private"
     # The dead-man must be the last step so it judges the whole run.
     assert _index(steps, "uv run tell deadman") == len(steps) - 1
 
@@ -355,12 +359,20 @@ def test_resolve_score_publish_order_and_policy() -> None:
 def test_resolve_score_publish_tell_data_checkout_and_commit() -> None:
     steps = _load("ingest.yml")["jobs"]["resolve_score_publish"]["steps"]
     checkouts = [s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@")]
-    assert len(checkouts) == 2
+    assert len(checkouts) == 3
     data = checkouts[1]["with"]
     assert data == {
         "repository": "${{ vars.TELL_DATA_REPO }}",
         "path": "tell-data",
         "token": "${{ secrets.TELL_DATA_PUSH_TOKEN }}",
+    }
+    # ADR 0036: tell-private is read with its own token, only when that secret exists.
+    private = checkouts[2]
+    assert private["if"] == "needs.preflight.outputs.private_enabled == 'true'"
+    assert private["with"] == {
+        "repository": "karank2512/tell-private",
+        "path": "tell-private",
+        "token": "${{ secrets.TELL_PRIVATE_READ_TOKEN }}",
     }
     commit = steps[_index(steps, "git push")]
     assert commit["working-directory"] == "tell-data"
@@ -398,6 +410,7 @@ def _run_ingest_preflight(tmp_path: Path, **env: str) -> tuple[dict[str, str], s
         "HAS_DATABASE_URL": "true",
         "HAS_TELL_DATA_PUSH_TOKEN": "true",
         "HAS_TELL_DATA_REPO": "true",
+        "HAS_TELL_PRIVATE_READ_TOKEN": "",
         "EVENT_NAME": "schedule",
         "FIRED_CRON": DAILY_SLOT_CRON,
         "RUNS_PER_DAY": "",
@@ -418,23 +431,49 @@ def _run_ingest_preflight(tmp_path: Path, **env: str) -> tuple[dict[str, str], s
 
 
 @pytest.mark.parametrize(
-    ("env", "enabled", "publish", "summary_part"),
+    ("env", "enabled", "publish", "private", "summary_part"),
     [
-        ({}, "true", "true", ""),  # daily slot always runs
-        ({"FIRED_CRON": EXTRA_SLOTS_CRON}, "false", "false", "extra slot"),  # private default
-        ({"FIRED_CRON": EXTRA_SLOTS_CRON, "RUNS_PER_DAY": "1"}, "false", "false", "extra slot"),
-        ({"FIRED_CRON": EXTRA_SLOTS_CRON, "RUNS_PER_DAY": "4"}, "true", "true", ""),
-        ({"EVENT_NAME": "workflow_dispatch", "FIRED_CRON": ""}, "true", "true", ""),
-        ({"HAS_DATABASE_URL": "false"}, "false", "false", "DATABASE_URL secret not set"),
-        ({"HAS_TELL_DATA_PUSH_TOKEN": "false"}, "true", "false", "tell-data publish skipped"),
+        ({}, "true", "true", "false", ""),  # daily slot always runs
+        ({"FIRED_CRON": EXTRA_SLOTS_CRON}, "false", "false", "false", "extra slot"),
+        (
+            {"FIRED_CRON": EXTRA_SLOTS_CRON, "RUNS_PER_DAY": "1"},
+            "false",
+            "false",
+            "false",
+            "extra slot",
+        ),
+        ({"FIRED_CRON": EXTRA_SLOTS_CRON, "RUNS_PER_DAY": "4"}, "true", "true", "false", ""),
+        ({"EVENT_NAME": "workflow_dispatch", "FIRED_CRON": ""}, "true", "true", "false", ""),
+        ({"HAS_DATABASE_URL": "false"}, "false", "false", "false", "DATABASE_URL secret not set"),
+        (
+            {"HAS_TELL_DATA_PUSH_TOKEN": "false"},
+            "true",
+            "false",
+            "false",
+            "tell-data publish skipped",
+        ),
+        # ADR 0036: the tell-private read token turns on nudges and digest routing.
+        ({"HAS_TELL_PRIVATE_READ_TOKEN": "true"}, "true", "true", "true", ""),
+        (
+            {"HAS_TELL_PRIVATE_READ_TOKEN": "true", "HAS_DATABASE_URL": "false"},
+            "false",
+            "false",
+            "false",
+            "DATABASE_URL secret not set",
+        ),
     ],
 )
 def test_ingest_preflight_slot_gate(
-    tmp_path: Path, env: dict[str, str], enabled: str, publish: str, summary_part: str
+    tmp_path: Path,
+    env: dict[str, str],
+    enabled: str,
+    publish: str,
+    private: str,
+    summary_part: str,
 ) -> None:
     """ADR 0029: extra slots run only with TELL_RUNS_PER_DAY=4; manual runs always run."""
     outputs, summary = _run_ingest_preflight(tmp_path, **env)
-    assert outputs == {"enabled": enabled, "publish_enabled": publish}
+    assert outputs == {"enabled": enabled, "publish_enabled": publish, "private_enabled": private}
     if summary_part:
         assert summary_part in summary
     else:
@@ -459,10 +498,13 @@ def test_preflight_job_turns_secrets_into_outputs(name: str) -> None:
     assert preflight["timeout-minutes"] == 5
     assert "needs" not in preflight
     assert "if" not in preflight
-    assert preflight["outputs"] == {
+    outputs = {
         "enabled": "${{ steps.check.outputs.enabled }}",
         "publish_enabled": "${{ steps.check.outputs.publish_enabled }}",
     }
+    if name == "ingest.yml":  # ADR 0036: the tell-private read token gates nudges
+        outputs["private_enabled"] = "${{ steps.check.outputs.private_enabled }}"
+    assert preflight["outputs"] == outputs
     [step] = preflight["steps"]
     assert step["id"] == "check"
     secret_flags = {
@@ -472,6 +514,7 @@ def test_preflight_job_turns_secrets_into_outputs(name: str) -> None:
     }
     if name == "ingest.yml":  # ADR 0029: the slot gate reads the event and the variable
         secret_flags |= {
+            "HAS_TELL_PRIVATE_READ_TOKEN": "${{ secrets.TELL_PRIVATE_READ_TOKEN != '' }}",
             "EVENT_NAME": "${{ github.event_name }}",
             "FIRED_CRON": "${{ github.event.schedule }}",
             "RUNS_PER_DAY": "${{ vars.TELL_RUNS_PER_DAY }}",
@@ -522,8 +565,9 @@ def test_resolve_score_publish_keeps_always_with_the_guard() -> None:
         (
             "ingest.yml",
             "resolve_score_publish",
-            ["tell publish --out", "tell prune --out", "git push", "tell notify --slack"],
-            ["tell resolve", "tell score", "tell deadman"],
+            ["tell publish --out", "tell prune --out", "git push"],
+            # ADR 0036: notify needs only the database (nudges), so it is no longer gated.
+            ["tell resolve", "tell score", "tell notify --slack", "tell deadman"],
         ),
         (
             "weekly.yml",
