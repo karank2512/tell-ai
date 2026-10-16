@@ -29,10 +29,12 @@
 
 ## Decision
 
-1. **Destination and route.** HubSpot first, through a private app the customer creates
-   in their own portal (`HUBSPOT_PRIVATE_APP_TOKEN`), not a marketplace app, not
-   HubSpot's MCP server, not app events. The token is the customer's; tell holds it only
-   where the command runs.
+1. **Destination and route.** HubSpot first, through a private app or service key the
+   customer creates in their own portal (`HUBSPOT_PRIVATE_APP_TOKEN`; HubSpot replaced
+   private apps with service keys on new accounts in 2026, same bearer token and scope
+   names, see `docs/crm/hubspot.md`), not a marketplace app, not HubSpot's MCP server,
+   not app events. The token is the customer's; tell holds it only where the command
+   runs.
 2. **Objects.** Standard company objects and engagements only:
    - the company is found by `POST /crm/v3/objects/companies/search` on `domain`, then
      created (`name`, `domain`, the properties below) or patched (the properties only);

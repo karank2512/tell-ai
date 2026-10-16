@@ -15,10 +15,23 @@ and app events need HubSpot partner approval.
 
 1. **A HubSpot account.** The Free CRM is enough. Create one at hubspot.com if the design
    partner has none; the super admin of the account does the next step.
-2. **A private app** with the scopes below. In HubSpot: Settings, then Integrations, then
-   Private Apps (HubSpot's current navigation calls the page Development, then Legacy
-   apps, then Create legacy app, then Private). Name it `tell`, add the scopes, create
-   the app, open its Auth tab and copy the access token.
+2. **A service key** (or, on an account that still offers them, a private app) with the
+   scopes below. Both are the same kind of credential: a `pat-...` token sent as
+   `Authorization: Bearer`, with the same scope names, and tell treats them identically.
+
+   - **Service key** (what new accounts get; HubSpot's replacement for private apps,
+     public beta since February 2026): in HubSpot go to Development, then Keys, then
+     Service keys, click Create service key, name it `tell`, click Add new scope, tick
+     the scopes below, Update, then Create. On the key's page click Show, then Copy.
+     Only a super admin or a user with Developer tools access can do this. The key can
+     be shown again later, is rotated with a 7-day grace period for the old value, and
+     HubSpot suggests rotating it every six months. A service key cannot receive
+     webhooks, which tell does not use.
+   - **Private app** (older accounts): Settings, then Integrations, then Private Apps,
+     or Development, then Legacy apps, then Create legacy app, then Private. Name it
+     `tell`, add the scopes, create the app, open its Auth tab and copy the access
+     token. An account that shows "Legacy apps aren't available on this account" uses
+     the service key path above.
 
    | Scope | Why |
    | --- | --- |
@@ -105,7 +118,8 @@ own account page.
 ## Rate limits and failures
 
 A Free or Starter private app allows 100 requests per 10 seconds per app and 250,000 per
-day per account. The client paces itself at 4 requests per second through one shared
+day per account; HubSpot states that a service key follows the same limits as a privately
+distributed app. The client paces itself at 4 requests per second through one shared
 budget, retries 429 and 5xx with the project's backoff schedule, and never retries a POST
 or PATCH after a transport error (a timed-out create may have landed). A `push` is at most
 five requests: search, create or update, note, task.
@@ -113,11 +127,15 @@ five requests: search, create or update, note, task.
 | Answer | Reported as |
 | --- | --- |
 | `401` | `HubSpot rejected the token (401): check HUBSPOT_PRIVATE_APP_TOKEN` |
-| `403 MISSING_SCOPES` | `the private app lacks a scope (403); grant: <the scopes HubSpot names>` |
+| `403 MISSING_SCOPES` | `the private app lacks a scope (403); grant: <the scopes HubSpot names>` (the wording covers a service key too) |
 | other `4xx` / exhausted retries | HubSpot's message, exit 1 |
 
 ## HubSpot pages this was written against (fetched 2026-10-15)
 
+- Service keys (fetched 2026-10-16): creation steps, `Authorization: Bearer pat-na1-...`,
+  same limits as privately distributed apps, no webhooks:
+  <https://developers.hubspot.com/docs/apps/developer-platform/build-apps/authentication/account-service-keys>
+  and the beta announcement <https://developers.hubspot.com/changelog/service-keys>
 - Private apps: creation steps, `Authorization: Bearer`, rate limits per tier:
   <https://developers.hubspot.com/docs/apps/legacy-apps/private-apps/overview>
 - Scopes (`crm.objects.companies.read` / `.write`, `crm.schemas.companies.write`):
