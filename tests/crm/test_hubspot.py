@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -26,6 +26,10 @@ import tell.db
 from tell.cli import app
 from tell.config import get_settings
 from tell.crm.hubspot import (
+    ACTIVITY_PROPERTIES,
+    CRM_ACTIVITY_WINDOW,
+    LIST_PAGE_CAP,
+    LIST_PAGE_SIZE,
     NOTE_TO_COMPANY,
     PROPERTIES,
     SCOPES,
@@ -35,6 +39,7 @@ from tell.crm.hubspot import (
     Receipt,
     check,
     company_properties,
+    crm_status,
     ensure_properties,
     load_receipt,
     note_body,
@@ -218,6 +223,9 @@ def test_push_creates_company_note_and_task_when_search_is_empty(
     search = hubspot.post("/crm/v3/objects/companies/search").mock(
         return_value=httpx.Response(200, json=_fixture("search_empty.json"))
     )
+    listing = hubspot.get("/crm/v3/objects/companies").mock(
+        return_value=httpx.Response(200, json=_fixture("companies_list_end.json"))
+    )
     create = hubspot.post("/crm/v3/objects/companies").mock(
         return_value=httpx.Response(201, json=_fixture("company_created.json"))
     )
@@ -243,7 +251,12 @@ def test_push_creates_company_note_and_task_when_search_is_empty(
         "hubspot_company_id": "2002",
         "note_id": "3003",
         "task_id": "4004",
+        "listed": {"pages": 1, "capped": False},
     }
+    assert listing.call_count == 1
+    listed = listing.calls[0].request.url.params
+    assert listed["limit"] == str(LIST_PAGE_SIZE)
+    assert set(listed["properties"].split(",")) >= {"domain", *(p.name for p in PROPERTIES)}
     query = json.loads(search.calls[0].request.content)
     assert query["filterGroups"] == [
         {"filters": [{"propertyName": "domain", "operator": "EQ", "value": DOMAIN}]}
@@ -278,6 +291,7 @@ def test_push_updates_an_existing_company_and_skips_the_task_by_default(
     hubspot.post("/crm/v3/objects/companies/search").mock(
         return_value=httpx.Response(200, json=_fixture("search_found.json"))
     )
+    listing = hubspot.get("/crm/v3/objects/companies")
     create = hubspot.post("/crm/v3/objects/companies")
     update = hubspot.patch("/crm/v3/objects/companies/1001").mock(
         return_value=httpx.Response(200, json=_fixture("company_updated.json"))
@@ -292,6 +306,8 @@ def test_push_updates_an_existing_company_and_skips_the_task_by_default(
     assert outcome.hubspot_company_id == "1001"
     assert outcome.note_id == "3003"
     assert outcome.task_id is None
+    assert "listed" not in outcome.as_record()
+    assert not listing.called
     assert not create.called
     assert not task.called
     patched = json.loads(update.calls[0].request.content)["properties"]
@@ -323,6 +339,129 @@ def test_push_is_unchanged_when_this_score_was_pushed_unless_forced(
     assert forced.action == "updated"
     assert update.called
     assert note.called
+
+
+def test_crm_status_reads_sales_activity_never_the_note_date() -> None:
+    """ADR 0040: ``notes_last_updated`` is set by tell's own note, so it is not read."""
+    assert crm_status(None, now=NOW) == "absent"
+    quiet = _fixture("search_found.json")["results"][0]
+    assert crm_status(quiet, now=NOW) == "quiet"
+    active = _fixture("search_found_active.json")["results"][0]
+    assert crm_status(active, now=NOW) == "active"
+    assert crm_status(active, now=NOW + CRM_ACTIVITY_WINDOW + timedelta(days=1)) == "quiet"
+    only_note = {"properties": {"notes_last_updated": "2026-10-15T10:00:00.000Z"}}
+    assert crm_status(only_note, now=NOW) == "quiet"
+    garbage = {"properties": {"hs_last_sales_activity_timestamp": "not a date"}}
+    assert crm_status(garbage, now=NOW) == "quiet"
+    naive = {"properties": {"notes_last_contacted": "2026-10-14T10:00:00"}}
+    assert crm_status(naive, now=NOW) == "active"
+    assert "notes_last_updated" not in ACTIVITY_PROPERTIES
+
+
+def test_lookups_ask_for_the_activity_properties(hubspot: respx.MockRouter) -> None:
+    search = hubspot.post("/crm/v3/objects/companies/search").mock(
+        return_value=httpx.Response(200, json=_fixture("search_empty.json"))
+    )
+    listing = hubspot.get("/crm/v3/objects/companies").mock(
+        return_value=httpx.Response(200, json=_fixture("companies_list_end.json"))
+    )
+    with _client() as client:
+        assert client.lookup_company(DOMAIN).company is None
+    asked = set(json.loads(search.calls[0].request.content)["properties"])
+    assert asked >= set(ACTIVITY_PROPERTIES)
+    listed = set(listing.calls[0].request.url.params["properties"].split(","))
+    assert listed >= set(ACTIVITY_PROPERTIES)
+
+
+def test_push_finds_a_company_the_search_index_does_not_have_yet(
+    hubspot: respx.MockRouter,
+) -> None:
+    """Issue #5: a company created seconds ago is missing from the search index; the
+    object-store listing still has it (whatever the case of its ``domain``), so the push
+    updates instead of creating a duplicate."""
+    hubspot.post("/crm/v3/objects/companies/search").mock(
+        return_value=httpx.Response(200, json=_fixture("search_empty.json"))
+    )
+    listing = hubspot.get("/crm/v3/objects/companies").mock(
+        side_effect=[
+            httpx.Response(200, json=_fixture("companies_list_more.json")),
+            httpx.Response(200, json=_fixture("companies_list_found.json")),
+        ]
+    )
+    create = hubspot.post("/crm/v3/objects/companies")
+    update = hubspot.patch("/crm/v3/objects/companies/1001").mock(
+        return_value=httpx.Response(200, json=_fixture("company_updated.json"))
+    )
+    hubspot.post("/crm/v3/objects/notes").mock(
+        return_value=httpx.Response(201, json=_fixture("note_created.json"))
+    )
+    with _client() as client:
+        outcome = push_company(client, _receipt(), now=NOW, base_url=PAGES, threshold=6.0)
+    assert outcome.action == "updated"
+    assert outcome.hubspot_company_id == "1001"
+    assert outcome.as_record()["listed"] == {"pages": 2, "capped": False}
+    assert not create.called
+    assert update.called
+    assert "after" not in listing.calls[0].request.url.params
+    assert listing.calls[1].request.url.params["after"] == "1000"
+
+
+def test_push_lookup_is_unchanged_through_the_listing_too(hubspot: respx.MockRouter) -> None:
+    hubspot.post("/crm/v3/objects/companies/search").mock(
+        return_value=httpx.Response(200, json=_fixture("search_empty.json"))
+    )
+    hubspot.get("/crm/v3/objects/companies").mock(
+        return_value=httpx.Response(200, json=_fixture("companies_list_found.json"))
+    )
+    update = hubspot.patch("/crm/v3/objects/companies/1001")
+    note = hubspot.post("/crm/v3/objects/notes")
+    receipt = Receipt(
+        company_id=1,
+        domain=DOMAIN,
+        name=NAME,
+        profile="default",
+        as_of=date(2026, 10, 13),
+        score=12.4,
+        contributions=[c for c in CONTRIBUTIONS if c["url"]],
+    )
+    with _client() as client:
+        outcome = push_company(client, receipt, now=NOW, base_url=PAGES, threshold=6.0)
+    assert outcome.action == "unchanged"
+    assert outcome.as_record()["listed"] == {"pages": 1, "capped": False}
+    assert not update.called
+    assert not note.called
+
+
+def test_push_stops_listing_at_the_page_cap_and_says_so(hubspot: respx.MockRouter) -> None:
+    hubspot.post("/crm/v3/objects/companies/search").mock(
+        return_value=httpx.Response(200, json=_fixture("search_empty.json"))
+    )
+    listing = hubspot.get("/crm/v3/objects/companies").mock(
+        return_value=httpx.Response(200, json=_fixture("companies_list_more.json"))
+    )
+    hubspot.post("/crm/v3/objects/companies").mock(
+        return_value=httpx.Response(201, json=_fixture("company_created.json"))
+    )
+    hubspot.post("/crm/v3/objects/notes").mock(
+        return_value=httpx.Response(201, json=_fixture("note_created.json"))
+    )
+    with _client() as client:
+        outcome = push_company(client, _receipt(), now=NOW, base_url=PAGES, threshold=6.0)
+    assert outcome.action == "created"
+    assert listing.call_count == LIST_PAGE_CAP
+    assert outcome.as_record()["listed"] == {"pages": LIST_PAGE_CAP, "capped": True}
+
+
+def test_list_company_honours_a_smaller_cap(hubspot: respx.MockRouter) -> None:
+    listing = hubspot.get("/crm/v3/objects/companies").mock(
+        return_value=httpx.Response(200, json=_fixture("companies_list_more.json"))
+    )
+    with _client() as client:
+        found = client.list_company(DOMAIN, page_cap=2)
+    assert found.company is None
+    assert found.via == "list_capped"
+    assert found.pages == 2
+    assert listing.call_count == 2
 
 
 def test_dry_run_builds_every_payload_and_sends_nothing(hubspot: respx.MockRouter) -> None:
@@ -500,6 +639,9 @@ def test_push_command_end_to_end(
     hubspot.post("/crm/v3/objects/companies/search").mock(
         return_value=httpx.Response(200, json=_fixture("search_empty.json"))
     )
+    hubspot.get("/crm/v3/objects/companies").mock(
+        return_value=httpx.Response(200, json=_fixture("companies_list_end.json"))
+    )
     hubspot.post("/crm/v3/objects/companies").mock(
         return_value=httpx.Response(201, json=_fixture("company_created.json"))
     )
@@ -513,6 +655,7 @@ def test_push_command_end_to_end(
         "hubspot_company_id": "2002",
         "note_id": "3003",
         "task_id": None,
+        "listed": {"pages": 1, "capped": False},
     }
     sent = json.loads(note.calls[0].request.content)["properties"]
     assert sent["hs_timestamp"] == "2026-10-15T18:00:00+00:00"

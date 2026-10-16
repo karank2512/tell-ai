@@ -662,6 +662,11 @@ class EnrichmentVerdict(Base):
     reasons: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     families: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     decided_at: Mapped[datetime] = mapped_column(_timestamptz(), nullable=False)
+    crm_action: Mapped[str | None] = mapped_column(Text)
+    """ADR 0040: what the HubSpot push on an ``enrich`` verdict did (``created``,
+    ``updated``, ``unchanged``, ``failed``); ``NULL`` when no push was attempted."""
+    crm_company_id: Mapped[str | None] = mapped_column(Text)
+    crm_pushed_at: Mapped[datetime | None] = mapped_column(_timestamptz())
 
 
 ALL_MODELS: tuple[type[Base], ...] = (

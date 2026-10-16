@@ -481,6 +481,12 @@ class PrivateWatchlist(_Strict):
     credit_budget_monthly: int | None = Field(default=None, ge=0)
     """Enrichment credits this watchlist may be advised to spend per UTC month (gate rule 5,
     ADR 0038); ``None`` means the gate's default. Hand-edited, never from the form."""
+    hubspot_private_app_token: str | None = None
+    """The customer's HubSpot private-app or service-key token (ADR 0040): with it the gate
+    checks the CRM (rule 3) and an ``enrich`` verdict is pushed to HubSpot with the nudge.
+    Hand-edited, never from the form; like the webhook it lives only in ``tell-private``."""
+    hubspot_owner_id: str | None = None
+    """Optional ``hubspot_owner_id`` the pushed task is assigned to."""
     contacts: list[Contact] = Field(default_factory=list)
     domains: list[str] = Field(default_factory=list)
     submissions: list[str] = Field(default_factory=list)

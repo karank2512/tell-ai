@@ -108,6 +108,29 @@ to company): subject `tell: {company} crossed {threshold}`, body the `Why now` s
 writes them anyway. A new day's score is a new note. No tell table records pushes; the
 HubSpot record is the ledger.
 
+**Lookup.** The company is looked up by `domain` in HubSpot's search index first. The
+index lags creates by seconds, so a push that follows another within that window would
+not see the company it just made (the first live test, 2026-10-16, created a duplicate
+that way; issue #5). When the search misses, the push therefore pages through
+`GET /crm/v3/objects/companies` (the object store, never stale) 100 companies at a time,
+case-insensitively, up to 10 pages, and stops at the first match. The JSON line then
+carries `listed: {pages, capped}`. A portal with more than 1,000 companies that misses the
+index can still create a duplicate; raise `LIST_PAGE_CAP` or wait a minute and re-run.
+
+## With the nudge (ADR 0040)
+
+A watchlist whose `tell-private/watchlists/<slug>.yaml` carries
+`hubspot_private_app_token` (and optionally `hubspot_owner_id`) needs no command: on every
+nudge run the enrichment gate (ADR 0038) looks the company up in that portal for rule 3
+(`hs_last_sales_activity_timestamp` or `notes_last_contacted` inside 90 days means a
+person is on it and the verdict is `skip`; `notes_last_updated` is never read because
+tell's own note sets it), and an `enrich` verdict runs this page's push with `--task`
+before the Slack message goes out. The nudge then ends with `HubSpot: added · note +
+task`, `updated · note + task`, `already current` or `push failed (401)`; the
+`enrichment_verdicts` row records `crm_action`, `crm_company_id` and `crm_pushed_at`. A
+resend never pushes twice; a failed push is retried on the next attempt and never stops
+the nudge. Run `setup` once with the partner's token before adding it to the record.
+
 ## What tell never writes
 
 No contact, no deal, no ticket, no person's name, email or phone. The company's existing
@@ -122,7 +145,8 @@ day per account; HubSpot states that a service key follows the same limits as a 
 distributed app. The client paces itself at 4 requests per second through one shared
 budget, retries 429 and 5xx with the project's backoff schedule, and never retries a POST
 or PATCH after a transport error (a timed-out create may have landed). A `push` is at most
-five requests: search, create or update, note, task.
+five requests (search, create or update, note, task) plus up to 10 listing pages when the
+search index has no match.
 
 | Answer | Reported as |
 | --- | --- |
