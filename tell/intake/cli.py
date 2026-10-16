@@ -9,6 +9,10 @@ Commands:
   (default ``../tell-private``, relative to the working directory; the nightly workflow
   in ``docs/deploy/tell-private-intake.yml`` passes it explicitly).
 
+* ``feedback-sync --csv-url URL | --csv-file PATH``: read the feedback form's published
+  sheet (``--csv-url`` defaults to ``TELL_FEEDBACK_CSV_URL``) and write one ``feedback``
+  row per new response (ADR 0039, ``docs/intake/feedback-form.md``).
+
 Output is one JSON line of counts plus rejected row numbers and reasons, never a
 name, email, company, URL or slug, so it is safe in a public Actions log. Exit 1 when
 the sheet cannot be fetched or its columns drifted, when a private watchlist file does
@@ -29,6 +33,7 @@ import yaml
 
 from tell.collectors.base import utcnow
 from tell.db import session_scope
+from tell.intake.feedback import sync_feedback
 from tell.intake.reader import (
     DEFAULT_PRIVATE_DIR,
     IntakeError,
@@ -101,3 +106,42 @@ def sync_command(
     record = result.log_record()
     record["private_files_written"] = len(written)
     typer.echo(json.dumps(record, sort_keys=True))
+
+
+@app.command("feedback-sync")
+def feedback_sync_command(
+    csv_url: Annotated[
+        str | None,
+        typer.Option(
+            "--csv-url",
+            envvar="TELL_FEEDBACK_CSV_URL",
+            show_envvar=True,
+            show_default=False,
+            help="Published-as-CSV URL of the feedback form's response sheet (a secret).",
+        ),
+    ] = None,
+    csv_file: Annotated[
+        Path | None,
+        typer.Option("--csv-file", exists=True, dir_okay=False, help="A downloaded copy."),
+    ] = None,
+) -> None:
+    """Sync feedback-form responses into the feedback table (labels)."""
+    if (csv_url is None) == (csv_file is None):
+        msg = "pass exactly one of --csv-url or --csv-file"
+        raise typer.BadParameter(msg, param_hint="--csv-url / --csv-file")
+    try:
+        text = read_csv_source(csv_url=csv_url, csv_file=csv_file)
+    except IntakeError as exc:
+        typer.echo(json.dumps({"source": "feedback_sync", "error": str(exc)}, sort_keys=True))
+        raise typer.Exit(code=1) from None
+    drift: str | None = None
+    with session_scope() as session:
+        try:
+            result = sync_feedback(session, text, now=utcnow())
+        except IntakeError as exc:
+            # The run row is already marked failed; let the scope commit it, then exit 1.
+            drift = str(exc)
+    if drift is not None:
+        typer.echo(json.dumps({"source": "feedback_sync", "error": drift}, sort_keys=True))
+        raise typer.Exit(code=1)
+    typer.echo(json.dumps(result.log_record(), sort_keys=True))

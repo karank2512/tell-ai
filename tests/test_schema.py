@@ -31,7 +31,7 @@ from tests.conftest import alembic_config
 
 pytestmark = pytest.mark.db
 
-HEAD_REVISION = "0011"
+HEAD_REVISION = "0012"
 
 # --- the spec, hardcoded -----------------------------------------------------------------
 
@@ -122,7 +122,15 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
         "is_public",  # ADR 0022, migration 0006
     ],
     "watchlist_items": ["watchlist_id", "company_id"],
-    "feedback": ["id", "watchlist_id", "signal_id", "verdict", "note", "created_at"],
+    "feedback": [
+        "id",
+        "watchlist_id",
+        "signal_id",
+        "verdict",
+        "note",
+        "created_at",
+        "submission_id",  # ADR 0039, migration 0012
+    ],
     "runs": [
         "run_id",
         "source",
@@ -220,6 +228,7 @@ EXPECTED_UNIQUES: dict[str, set[tuple[str, ...]]] = {
     "company_feeds": {("feed_url",)},
     "watchlists": {("slug",)},  # ADR 0022
     "api_keys": {("key_hash",)},  # ADR 0024
+    "feedback": {("submission_id",)},  # ADR 0039
     "nudges": {("event_id", "watchlist_id")},  # ADR 0036
     "enrichment_verdicts": {("event_id", "watchlist_id")},  # ADR 0038
 }
@@ -324,7 +333,7 @@ EXPECTED_NULLABLE: dict[str, set[str]] = {
     "scores": set(),
     "watchlists": {"slug"},
     "watchlist_items": set(),
-    "feedback": {"note"},
+    "feedback": {"note", "submission_id"},
     "runs": {"finished_at", "fetched", "inserted", "skipped", "errors", "notes"},
     "review_queue": {"resolved_at"},
     "company_feeds": {"discovered_from", "last_polled_at", "etag", "last_modified"},

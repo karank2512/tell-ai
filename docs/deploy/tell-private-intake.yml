@@ -24,6 +24,8 @@ permissions:
 env:
   DATABASE_URL: ${{ secrets.DATABASE_URL }}
   TELL_INTAKE_CSV_URL: ${{ secrets.TELL_INTAKE_CSV_URL }}
+  # Optional: the feedback form's published sheet (ADR 0039). Unset, the step is skipped.
+  TELL_FEEDBACK_CSV_URL: ${{ secrets.TELL_FEEDBACK_CSV_URL }}
   TELL_ENV: prod
   UV_FROZEN: "1"
 
@@ -63,6 +65,13 @@ jobs:
         # read or its columns drifted.
         working-directory: tell
         run: uv run tell intake sync --private-dir ../tell-private
+      - name: Sync feedback-form responses into labels
+        # One JSON line of counts and rejected row numbers; never a note, a domain or the
+        # sheet URL. Skipped when the secret is unset; exit 1 when the sheet cannot be read
+        # or its columns drifted (docs/intake/feedback-form.md).
+        if: env.TELL_FEEDBACK_CSV_URL != ''
+        working-directory: tell
+        run: uv run tell intake feedback-sync
       - name: Commit the private watchlist records
         # Contacts and webhooks live only here. The commit message carries no field value.
         working-directory: tell-private

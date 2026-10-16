@@ -25,7 +25,8 @@ from tell.db import SessionLocal
 from tell.intake import cli as intake_cli
 from tell.intake import load_private_watchlists
 from tell.intake.reader import REPO_ROOT, is_intake_owner
-from tell.models import Run, Watchlist
+from tell.models import Feedback, Run, Signal, Watchlist, WatchlistItem
+from tests.publish import scenario as sc
 
 runner = CliRunner()
 
@@ -224,3 +225,96 @@ def test_exactly_one_source_is_required(tmp_path: Path, extra: list[str]) -> Non
 def test_intake_is_mounted() -> None:
     assert "sync" in _invoke(["--help"]).output
     assert "--csv-url" in _invoke(["sync", "--help"]).output
+
+
+# --- feedback-sync (ADR 0039) --------------------------------------------------------------------
+
+FEEDBACK_CSV_URL = "https://docs.google.invalid/spreadsheets/d/e/feedback/pub?output=csv"
+
+
+def _seed_signal(engine: Engine) -> int:
+    with freeze_time(sc.NOW), SessionLocal(bind=engine) as session:
+        scenario = sc.build(session)
+        signal = session.scalars(
+            select(Signal)
+            .join(WatchlistItem, WatchlistItem.company_id == Signal.company_id)
+            .where(WatchlistItem.watchlist_id == scenario.private.id)
+            .order_by(Signal.id)
+        ).first()
+        assert signal is not None
+        session.commit()
+        return signal.id
+
+
+def _feedback_sheet(signal_id: int) -> str:
+    return (
+        "Timestamp,Signal id,Domain,Verdict,Watchlist,Note\n"
+        f"10/6/2026 9:15:03,{signal_id},,useful,,Looked real\n"
+        "10/6/2026 9:16:00,999999,,useful,,\n"
+    )
+
+
+@freeze_time("2026-10-06 12:00:00")
+def test_feedback_sync_from_file_twice(bound: Engine, tmp_path: Path) -> None:
+    signal_id = _seed_signal(bound)
+    sheet = tmp_path / "feedback.csv"
+    sheet.write_text(_feedback_sheet(signal_id), encoding="utf-8")
+    first = _json(_invoke(["feedback-sync", "--csv-file", str(sheet)]))
+    assert (first["source"], first["rows"], first["applied"], first["skipped"]) == (
+        "feedback_sync",
+        2,
+        1,
+        0,
+    )
+    assert first["rejected_rows"] == [{"row": 3, "reason": "unknown signal"}]
+    assert "Looked real" not in json.dumps(first)
+    with SessionLocal(bind=bound) as session:
+        (row,) = session.scalars(select(Feedback))
+        assert (row.signal_id, row.verdict, row.note) == (signal_id, "useful", "Looked real")
+        assert [r.status for r in session.scalars(select(Run).where(Run.source == "feedback_sync"))]
+    second = _json(_invoke(["feedback-sync", "--csv-file", str(sheet)]))
+    assert (second["applied"], second["skipped"]) == (0, 1)
+
+
+@respx.mock
+def test_feedback_sync_from_url_reads_the_env_var(
+    bound: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    signal_id = _seed_signal(bound)
+    respx.get(FEEDBACK_CSV_URL).mock(
+        return_value=httpx.Response(200, text=_feedback_sheet(signal_id))
+    )
+    monkeypatch.setenv("TELL_FEEDBACK_CSV_URL", FEEDBACK_CSV_URL)
+    result = _invoke(["feedback-sync"])
+    assert "feedback/pub" not in result.output
+    assert _json(result)["applied"] == 1
+
+
+@respx.mock
+def test_feedback_sync_fetch_failure_and_drift_exit_1(bound: Engine, tmp_path: Path) -> None:
+    respx.get(FEEDBACK_CSV_URL).mock(return_value=httpx.Response(403))
+    failed = _invoke(["feedback-sync", "--csv-url", FEEDBACK_CSV_URL], code=1)
+    assert json.loads(failed.output) == {
+        "source": "feedback_sync",
+        "error": "intake CSV fetch failed: HTTP 403",
+    }
+    assert FEEDBACK_CSV_URL not in failed.output
+    sheet = tmp_path / "drift.csv"
+    sheet.write_text("Timestamp,Note\nt,x\n", encoding="utf-8")
+    drifted = _invoke(["feedback-sync", "--csv-file", str(sheet)], code=1)
+    assert "missing required columns" in json.loads(drifted.output)["error"]
+    with SessionLocal(bind=bound) as session:
+        statuses = [
+            r.status for r in session.scalars(select(Run).where(Run.source == "feedback_sync"))
+        ]
+    assert statuses == ["failed"]
+
+
+@pytest.mark.parametrize("extra", [[], ["--csv-url", FEEDBACK_CSV_URL, "--csv-file", "x.csv"]])
+def test_feedback_sync_needs_exactly_one_source(tmp_path: Path, extra: list[str]) -> None:
+    if "x.csv" in extra:
+        (tmp_path / "x.csv").write_text("", encoding="utf-8")
+        extra[-1] = str(tmp_path / "x.csv")
+    result = runner.invoke(app, ["intake", "feedback-sync", *extra])
+    assert result.exit_code == 2
+    assert "exactly one of --csv-url or --csv-file" in result.output

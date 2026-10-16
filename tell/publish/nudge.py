@@ -150,6 +150,7 @@ def build_nudge_blocks(
     pages_base_url: str,
     feedback_form_url: str | None = None,
     verdict: Verdict | None = None,
+    watchlist_slug: str | None = None,
 ) -> list[dict[str, Any]]:
     """The Block Kit ``blocks`` of one nudge (see the module docstring).
 
@@ -177,6 +178,7 @@ def build_nudge_blocks(
                     domain=account.domain,
                     verdict=verdict,
                     form_url=feedback_form_url,
+                    watchlist=watchlist_slug,
                 ),
                 label,
             )
@@ -295,6 +297,7 @@ def send_nudges(
             pages_base_url=settings.tell_base_url,
             feedback_form_url=settings.tell_feedback_form_url,
             verdict=verdict,
+            watchlist_slug=watchlist.slug,
         )
         status = post_blocks(webhook, _text(account), blocks, client=client, sleep=pause)
         if _record(session, watchlist, account, now=now, http_status=status):

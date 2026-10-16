@@ -133,8 +133,16 @@ class Settings(BaseSettings):
     tell_feedback_form_url: str | None = Field(
         default=None,
         description=(
-            "Prefilled Google Form link for the account-page thumbs row and the CSV "
-            "rate_this_row column; {signal_id}, {domain} and {verdict} are substituted."
+            "Prefilled Google Form link for the account-page thumbs row, the CSV "
+            "rate_this_row column and the nudge's rating links; {signal_id}, {domain}, "
+            "{verdict} and {watchlist} are substituted."
+        ),
+    )
+    tell_feedback_csv_url: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Published-as-CSV URL of the feedback form's response sheet (tell intake "
+            "feedback-sync); a secret, because anyone with it can read every response."
         ),
     )
     tell_intake_form_url: str | None = Field(
