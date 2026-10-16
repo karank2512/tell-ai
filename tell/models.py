@@ -33,7 +33,9 @@ The ``api_keys`` and ``api_usage`` tables (migration ``0007``,
 YC directory facts the Form D guards read. ``companies.source`` / ``companies.cik_source``
 and the ``issuer_discovery`` table (migration ``0009``,
 ``docs/decisions/0035-issuer-first-discovery.md``) record where a company and its CIK came
-from and what issuer-first discovery found per Form D issuer.
+from and what issuer-first discovery found per Form D issuer. The ``nudges`` table
+(migration ``0010``, ``docs/decisions/0036-per-event-slack-nudges.md``) records which
+``score_crossed_threshold`` event has been nudged to which watchlist's own Slack webhook.
 """
 
 from __future__ import annotations
@@ -600,6 +602,28 @@ class IssuerDiscovery(Base):
     )
 
 
+class Nudge(Base):
+    """One per-event Slack nudge: a crossing event sent to a watchlist's webhook (ADR 0036).
+
+    One row per (event, watchlist). ``status`` is ``ok`` once the message was accepted
+    (2xx) or ``failed`` (``http_status`` holds the response code, ``NULL`` on a transport
+    error); a ``failed`` row is updated in place when the next run retries. Nothing here
+    names a person: the webhook itself stays in ``tell-private``.
+    """
+
+    __tablename__ = "nudges"
+    __table_args__ = (UniqueConstraint("event_id", "watchlist_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    event_id: Mapped[str] = mapped_column(Text, ForeignKey("events.event_id"), nullable=False)
+    watchlist_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("watchlists.id"), nullable=False
+    )
+    sent_at: Mapped[datetime] = mapped_column(_timestamptz(), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    http_status: Mapped[int | None] = mapped_column(Integer)
+
+
 ALL_MODELS: tuple[type[Base], ...] = (
     Company,
     CompanyAlias,
@@ -619,5 +643,6 @@ ALL_MODELS: tuple[type[Base], ...] = (
     ApiKey,
     ApiUsage,
     IssuerDiscovery,
+    Nudge,
 )
 """Every mapped class, in DDL order then the recorded additions (tests, TRUNCATE lists)."""

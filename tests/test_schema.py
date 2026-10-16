@@ -8,7 +8,8 @@ columns ``watchlists.slug`` / ``watchlists.is_public`` (migration ``0006``, ADR 
 the FastAPI v1 ``api_keys`` / ``api_usage`` tables (migration ``0007``, ADR 0024) and
 the YC directory columns ``companies.yc_status`` / ``companies.yc_batch`` (migration
 ``0008``, ADR 0034) and the issuer-first columns ``companies.source`` /
-``companies.cik_source`` plus the ``issuer_discovery`` table (migration ``0009``, ADR 0035).
+``companies.cik_source`` plus the ``issuer_discovery`` table (migration ``0009``, ADR 0035),
+and the ``nudges`` table (migration ``0010``, ADR 0036).
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from tests.conftest import alembic_config
 
 pytestmark = pytest.mark.db
 
-HEAD_REVISION = "0009"
+HEAD_REVISION = "0010"
 
 # --- the spec, hardcoded -----------------------------------------------------------------
 
@@ -173,6 +174,8 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
         "next_retry_at",
         "created_at",
     ],
+    # ADR 0036, migration 0010
+    "nudges": ["id", "event_id", "watchlist_id", "sent_at", "status", "http_status"],
 }
 
 EXPECTED_PRIMARY_KEYS: dict[str, list[str]] = {
@@ -194,6 +197,7 @@ EXPECTED_PRIMARY_KEYS: dict[str, list[str]] = {
     "api_keys": ["id"],
     "api_usage": ["key_id", "day"],
     "issuer_discovery": ["cik"],
+    "nudges": ["id"],
 }
 
 EXPECTED_UNIQUES: dict[str, set[tuple[str, ...]]] = {
@@ -204,6 +208,7 @@ EXPECTED_UNIQUES: dict[str, set[tuple[str, ...]]] = {
     "company_feeds": {("feed_url",)},
     "watchlists": {("slug",)},  # ADR 0022
     "api_keys": {("key_hash",)},  # ADR 0024
+    "nudges": {("event_id", "watchlist_id")},  # ADR 0036
 }
 
 # (constrained columns, referred table, referred columns)
@@ -232,6 +237,10 @@ EXPECTED_FOREIGN_KEYS: dict[str, set[tuple[tuple[str, ...], str, tuple[str, ...]
     "company_feeds": {(("company_id",), "companies", ("id",))},
     "posting_ghost_votes": {(("posting_id",), "postings", ("id",))},
     "api_usage": {(("key_id",), "api_keys", ("id",))},
+    "nudges": {
+        (("event_id",), "events", ("event_id",)),
+        (("watchlist_id",), "watchlists", ("id",)),
+    },
 }
 
 # name -> (columns, {column: sort})
@@ -299,6 +308,7 @@ EXPECTED_NULLABLE: dict[str, set[str]] = {
     "api_keys": {"last_used_at", "revoked_at"},
     "api_usage": set(),
     "issuer_discovery": {"tier", "domain", "evidence", "last_tried_at", "next_retry_at"},
+    "nudges": {"http_status"},
 }
 
 # Columns with a server default, with the default's leading token after cast stripping.
@@ -363,6 +373,9 @@ EXPECTED_TYPES: dict[tuple[str, str], str] = {
     ("issuer_discovery", "last_tried_at"): "TIMESTAMP WITH TIME ZONE",
     ("issuer_discovery", "next_retry_at"): "TIMESTAMP WITH TIME ZONE",
     ("issuer_discovery", "created_at"): "TIMESTAMP WITH TIME ZONE",
+    ("nudges", "event_id"): "TEXT",
+    ("nudges", "sent_at"): "TIMESTAMP WITH TIME ZONE",
+    ("nudges", "http_status"): "INTEGER",
 }
 
 SERIAL_PRIMARY_KEYS = {
@@ -376,6 +389,7 @@ SERIAL_PRIMARY_KEYS = {
     "company_feeds",
     "posting_ghost_votes",
     "api_keys",
+    "nudges",
 }
 
 
