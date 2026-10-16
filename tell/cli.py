@@ -35,6 +35,7 @@ Top-level commands, matching the spec section 11 workflow YAML:
 * ``prune --out DIR``: the spec section 5 size budget (:mod:`tell.ops.prune`).
 * ``api``: v1 key management (:mod:`tell.api.cli`).
 * ``intake``: the intake form's sheet into watchlists (:mod:`tell.intake.cli`).
+* ``crm hubspot check | setup | push DOMAIN``: the HubSpot write-back (:mod:`tell.crm.cli`).
 * ``discover``, ``seed-yc`` (alias of ``discover seed-yc``), ``backtest``, ``version``.
 
 The global flag ``tell --manual <command>`` marks every ``runs`` row the command records
@@ -76,6 +77,7 @@ from tell.collectors import (
 )
 from tell.collectors.base import RunResult, finish_run, set_manual_run, start_run, utcnow
 from tell.config import get_settings
+from tell.crm import cli as crm_cli
 from tell.db import session_scope
 from tell.discovery import cli as discovery_cli
 from tell.http import make_client
@@ -808,6 +810,7 @@ app.add_typer(discovery_cli.app, name="discover")
 app.add_typer(backtest_cli.app, name="backtest")
 app.add_typer(api_cli.app, name="api")
 app.add_typer(intake_cli.app, name="intake")
+app.add_typer(crm_cli.app, name="crm")
 
 # Aliases matching the spec section 11 workflow lines verbatim.
 app.command("notify")(publish_cli.notify_command)

@@ -129,6 +129,9 @@ COMMANDS: list[list[str]] = [
     ["api", "create-key"],
     ["api", "revoke-key"],
     ["api", "usage"],
+    ["crm"],
+    ["crm", "hubspot"],
+    ["crm", "hubspot", "push"],
     ["version"],
 ]
 
