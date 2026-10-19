@@ -24,11 +24,11 @@ Validation
 ==========
 
 :func:`validate_company_json` checks one object against the company schema; the weekly,
-watchlist and health files have their own (smaller) schemas here
-(:data:`WEEKLY_SCHEMA`, :data:`WATCHLIST_SCHEMA`, :data:`HEALTH_SCHEMA`). The site
-generator validates every object before writing it and :func:`validate_site_tree`
-re-validates every file under ``site/api/v0`` before a push; both raise on the first
-failure.
+rounds, watchlist and health files have their own (smaller) schemas here
+(:data:`WEEKLY_SCHEMA`, :data:`ROUNDS_SCHEMA`, :data:`WATCHLIST_SCHEMA`,
+:data:`HEALTH_SCHEMA`). The site generator validates every object before writing it and
+:func:`validate_site_tree` re-validates every file under ``site/api/v0`` before a push; both
+raise on the first failure.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ from tell.models import (
     WatchlistItem,
 )
 from tell.publish.health import Health
-from tell.publish.weekly import WeeklyData, velocity_postings
+from tell.publish.weekly import RoundsData, WeeklyData, velocity_postings
 from tell.signals.profiles import Profile, get_profile
 from tell.signals.scoring import (
     ScoreResult,
@@ -81,6 +81,8 @@ __all__ = [
     "COMPANY_SCHEMA_PATH",
     "HEALTH_SCHEMA",
     "LOCAL",
+    "ROUNDS_FILE",
+    "ROUNDS_SCHEMA",
     "WATCHLIST_SCHEMA",
     "WEEKLY_SCHEMA",
     "CompanyBatch",
@@ -88,6 +90,7 @@ __all__ = [
     "apportion_tenths",
     "build_company_json",
     "build_health_json",
+    "build_rounds_json",
     "build_watchlist_json",
     "build_weekly_json",
     "code_commit_sha",
@@ -101,6 +104,7 @@ __all__ = [
     "round_half_up",
     "validate_company_json",
     "validate_health_json",
+    "validate_rounds_json",
     "validate_site_tree",
     "validate_watchlist_json",
     "validate_weekly_json",
@@ -113,6 +117,9 @@ COMPANY_SCHEMA_PATH = REPO_ROOT / "docs" / "api" / "company.schema.json"
 
 LOCAL = "local"
 """``generated_by`` of a build with no known commit."""
+
+ROUNDS_FILE = "rounds-not-announced.json"
+"""Rounds filed, not announced, under ``site/api/v0`` (ADR 0042)."""
 
 _DATE = {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
 _URL = {"type": "string", "minLength": 1, "pattern": "^https?://\\S+$"}
@@ -220,6 +227,56 @@ WEEKLY_SCHEMA: dict[str, Any] = {
     },
 }
 
+ROUNDS_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "tell rounds filed, not announced (api/v0/rounds-not-announced.json)",
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "week",
+        "filed_from",
+        "filed_to",
+        "as_of",
+        "rounds",
+        "method",
+        "generated_by",
+    ],
+    "properties": {
+        "week": {"type": "string", "pattern": "^[0-9]{4}-W[0-9]{2}$"},
+        "filed_from": _DATE,
+        "filed_to": _DATE,
+        "as_of": _DATE,
+        "rounds": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "domain",
+                    "name",
+                    "date_filed",
+                    "amount_usd",
+                    "amount_indefinite",
+                    "amount_sold_usd",
+                    "url",
+                ],
+                "properties": {
+                    "domain": {"type": "string", "minLength": 1},
+                    "name": {"type": "string", "minLength": 1},
+                    "date_filed": _DATE,
+                    "amount_usd": _USD,
+                    "amount_indefinite": {"type": "boolean"},
+                    "amount_sold_usd": _USD,
+                    "url": {"type": "string", "pattern": "^https://www\\.sec\\.gov/\\S+$"},
+                },
+            },
+        },
+        "method": {"type": "string", "minLength": 1},
+        "generated_by": _GENERATED_BY,
+    },
+}
+"""Every row is one original Form D and its receipt is the filing on sec.gov (ADR 0042)."""
+
 HEALTH_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "tell run-health (api/v0/health.json)",
@@ -326,6 +383,12 @@ def validate_weekly_json(obj: Any) -> None:
     _validate(obj, WEEKLY_SCHEMA)
 
 
+def validate_rounds_json(obj: Any) -> None:
+    """Raise unless ``obj`` matches :data:`ROUNDS_SCHEMA`."""
+    _reject_non_finite(obj)
+    _validate(obj, ROUNDS_SCHEMA)
+
+
 def validate_health_json(obj: Any) -> None:
     """Raise unless ``obj`` matches :data:`HEALTH_SCHEMA`."""
     _reject_non_finite(obj)
@@ -361,6 +424,8 @@ def validate_site_tree(site_dir: Path) -> int:
                 validate_watchlist_json(obj)
             elif rel.startswith("weekly/"):
                 validate_weekly_json(obj)
+            elif rel == ROUNDS_FILE:
+                validate_rounds_json(obj)
             elif rel == "health.json":
                 validate_health_json(obj)
             else:
@@ -806,6 +871,11 @@ def build_watchlist_json(
 
 def build_weekly_json(data: WeeklyData, *, sha: str | None = None) -> dict[str, Any]:
     """``api/v0/weekly/latest.json``: the weekly edition's lists and coverage."""
+    return {**data.to_dict(), "generated_by": generated_by(sha)}
+
+
+def build_rounds_json(data: RoundsData, *, sha: str | None = None) -> dict[str, Any]:
+    """``api/v0/rounds-not-announced.json``: the edition's rounds filed, not announced."""
     return {**data.to_dict(), "generated_by": generated_by(sha)}
 
 

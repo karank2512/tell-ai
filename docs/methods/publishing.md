@@ -4,7 +4,8 @@ Spec: `docs/SPEC.md` section 9 (outputs), section 12 ("Run-health in production"
 Publish test family), section 11 (the daily `tell-data` commit), section 14 (Pages limits).
 Code: `tell/publish/`. Tests: `tests/test_publish.py`, `tests/publish/`. Decisions beyond
 the spec's wording: `docs/decisions/0022-public-watchlists.md`,
-`docs/decisions/0023-publishing-interpretations.md`.
+`docs/decisions/0023-publishing-interpretations.md`,
+`docs/decisions/0042-rounds-filed-not-announced.md`.
 
 ## 1. Layout of `tell-data`
 
@@ -14,10 +15,12 @@ tell-data/
   postings/snapshots/2026-10-06/{vendor}-{identifier}.json   # 90-day retention
   site/                                                      # GitHub Pages root
     index.html  health.html  style.css
+    rounds-not-announced.html                                # the current edition's list (5a)
     companies/{domain}.html
     weekly/{ISO-week}.html
     api/v0/companies/{domain}.json
     api/v0/weekly/latest.json
+    api/v0/rounds-not-announced.json                         # the same list as JSON (5a)
     api/v0/watchlists/{slug}.json                            # public watchlists only
     api/v0/health.json
 ```
@@ -78,7 +81,40 @@ role family `sales` in the week, each with its receipts), top 25 new Form D fili
 offering amount among monitored companies (an active board or a CIK), the "what changed in
 the method" line (the newest `CHANGELOG.md` bullet mentioning scoring, velocity or
 resolution), coverage numbers (companies monitored, boards polled, filings read) and the
-repo link.
+repo link. Between the Form D list and the method line sits "Rounds filed, not announced"
+(5a), which is published on its own as well and is not part of `latest.json`.
+
+### 5a. Rounds filed, not announced
+
+ADR 0042. Code: `rounds_not_announced` in `tell/publish/weekly.py`; schema `ROUNDS_SCHEMA` in
+`tell/publish/json_api.py`; tests `tests/publish/test_rounds.py`.
+
+- **Rows.** Every original Form D (`form_d_filed` from EDGAR with `is_amendment` false:
+  never an amendment, never a pooled fund by the guard (e) test of ADR 0034) filed in the 14
+  days that end with the edition's week (for 2026-W42: 2026-10-05 to 2026-10-18), linked to
+  its company by a link the speed-vs-press cohort trusts (rules R0-R4 with no guard failure,
+  a reviewer's link, or a CIK with a trusted `cik_source` or carried by such a link), whose
+  company has no `news_funding` event dated from 14 days before the filing through the
+  publish instant. Any funding headline counts, one-word brands included.
+- **Which companies.** Only companies with a published account page (section 4), and never
+  one with `companies.source = 'manual'` (intake lists, review verdicts, domains added by
+  hand), so no one's private list can be read from the page. Watchlists are not read; no
+  person's name appears.
+- **Columns.** Company (linked to its account page), domain, filing date, offering amount
+  and amount sold as the payload stores them (a column appears only when some row states
+  it; an indefinite offering reads "indefinite", a missing amount "undisclosed") and the
+  receipt, the filing on `www.sec.gov`. Newest filing first, then domain. Under the table
+  one sentence of method (filing window, cohort, press window, "the list changes as news
+  arrives"); no percentage or other statistic.
+- **Where and when.** The section in `weekly/{ISO-week}.html`, the page
+  `rounds-not-announced.html` and `api/v0/rounds-not-announced.json`, written by
+  `tell weekly` on Monday and by every `tell publish` after an ingest, so rows drop off as
+  headlines arrive during the week after the edition; the archived weekly page keeps the
+  list as it last stood. A filing stays listed for two editions while no headline comes.
+- **Limits.** "Not announced" means no funding headline in tell's news data (Google News
+  RSS and company feeds; scheduled polls ask for the last 7 days): a round covered where tell
+  does not read, never named in a headline, or of a company not polled since the filing is
+  listed.
 
 ## 6. Run-health
 
