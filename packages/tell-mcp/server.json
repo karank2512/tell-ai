@@ -1,0 +1,47 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.karank2512/tell-mcp",
+  "title": "tell: buying signals with receipts",
+  "description": "Ask tell which accounts are in market and why, with a receipt URL behind every claim.",
+  "repository": {
+    "url": "https://github.com/karank2512/tell-ai",
+    "source": "github",
+    "subfolder": "packages/tell-mcp"
+  },
+  "websiteUrl": "https://github.com/karank2512/tell-ai/blob/main/docs/mcp.md",
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "tell-mcp",
+      "version": "0.1.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "TELL_BASE_URL",
+          "description": "Root of the static site tell-mcp reads; a fork's own GitHub Pages URL works too.",
+          "isRequired": false,
+          "format": "string",
+          "default": "https://karank2512.github.io/tell-data"
+        },
+        {
+          "name": "TELL_API_KEY",
+          "description": "Optional Bearer key for tell's v1 API (not deployed yet). Used only together with TELL_API_URL.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "TELL_API_URL",
+          "description": "Optional base URL of tell's v1 API (not deployed yet). Used only together with TELL_API_KEY.",
+          "isRequired": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

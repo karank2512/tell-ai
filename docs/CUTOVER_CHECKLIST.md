@@ -450,7 +450,8 @@ its condition has held, and quote numbers only from dated reports in
   exiting 1 for the never-scheduled collector, and ADR 0028 explains the rule); five design
   partners have watchlists in `tell-private` and have received a CSV.
 - [ ] **M4** (launch): reports 13.1, 13.3, 13.4 published and dated, the README quotes them
-  with those dates; the README quickstart works on a clean machine in under 5 minutes
+  with those dates (from 13.1 only the press share, no lead-time figure: ADR 0041); the
+  README quickstart works on a clean machine in under 5 minutes
   (`git clone`, `uv sync`, `make migrate`, `discover domain`, `ingest`); the weekly page
   renders for the current week with real, correctly linked top-25 companies; every number
   in the LinkedIn post and Show HN draft traces to a report line

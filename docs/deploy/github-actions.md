@@ -9,7 +9,7 @@ repo is public, so the minutes are free (SPEC section 14). Nothing here needs a 
 | [`ingest.yml`](../../.github/workflows/ingest.yml) | `17 15 * * *` daily, plus `17 2,8,20 * * *` when `TELL_RUNS_PER_DAY` is `4` (UTC; ADR 0029), and manual | Discovery, four ATS legs, EDGAR + news, then resolve, score, publish to `tell-data`, prune, Slack digest, dead-man |
 | [`weekly.yml`](../../.github/workflows/weekly.yml) | `23 6 * * 1` (Mondays 06:23 UTC) and manual | Weekly page, methods reports into `tell-data`, operations line, private Slack summary, schedule keepalive |
 | [`ci.yml`](../../.github/workflows/ci.yml) | Pull requests, pushes to `main`, `13 6 * * 1` (Mondays 06:13 UTC), manual | Ruff, mypy, Postgres 16 service + `alembic upgrade head`, pytest with coverage floors, gitleaks; `pip-audit` weekly |
-| [`publish-mcp.yml`](../../.github/workflows/publish-mcp.yml) | Push of a tag `tell-mcp-v*` | Builds `packages/tell-mcp` and publishes it to PyPI by trusted publishing |
+| [`publish-mcp.yml`](../../.github/workflows/publish-mcp.yml) | Push of a tag `tell-mcp-v*` | Builds `packages/tell-mcp`, publishes it to PyPI by trusted publishing, then lists it in the MCP Registry through GitHub OIDC (no secret) |
 | [`tell-data-pages.yml`](tell-data-pages.yml) | Copied into `tell-data` at cutover | Deploys `tell-data/site/` to GitHub Pages on every push |
 | [`tell-private-intake.yml`](tell-private-intake.yml) | Copied into `tell-private` at cutover; `41 3 * * *` (nightly 03:41 UTC) and manual | `tell intake sync`: the intake form's sheet into watchlists; commits `watchlists/*.yaml` to `tell-private` only |
 
@@ -33,7 +33,7 @@ the repo; `.env.example` lists every variable with a comment.
 
 `GITHUB_TOKEN` is provided by Actions; every workflow pins it to `contents: read` and
 grants more only where one job needs it (`actions: write` for the weekly keepalive,
-`id-token: write` for the PyPI publish job, `pull-requests: read` for gitleaks).
+`id-token: write` for the PyPI publish job and the MCP Registry job, `pull-requests: read` for gitleaks).
 
 **Variables**
 
@@ -273,8 +273,9 @@ nothing to `tell-ai` or `tell-data`. Steps and the form itself:
 
 `publish-mcp.yml` builds `packages/tell-mcp` with `uv build --package tell-mcp` and
 publishes with `pypa/gh-action-pypi-publish` through **trusted publishing**: PyPI accepts a
-short-lived OIDC token from this exact workflow, so no PyPI token is stored anywhere. Only
-the `publish` job gets `id-token: write`, and it runs in the `pypi` environment.
+short-lived OIDC token from this exact workflow, so no PyPI token is stored anywhere. The
+`publish` job gets `id-token: write` and runs in the `pypi` environment; the separate
+`registry` job (below) also gets `id-token: write` but declares no environment.
 
 One-time setup (PLAN Phase 13 step 5):
 
@@ -289,13 +290,20 @@ One-time setup (PLAN Phase 13 step 5):
 Releasing:
 
 ```bash
-# bump version in packages/tell-mcp/pyproject.toml, merge, then:
+# bump the version in packages/tell-mcp/pyproject.toml, tell_mcp/__init__.py and both
+# fields of packages/tell-mcp/server.json (a test checks all four), merge, then:
 git tag tell-mcp-v0.1.0
 git push origin tell-mcp-v0.1.0
 ```
 
 The build job fails when the tag does not match the package version. The first successful
 run turns the pending publisher into the project's trusted publisher.
+
+After the upload, the `registry` job lists the server in the official MCP Registry with
+`mcp-publisher` and GitHub OIDC (no secret; files, verification and failure handling:
+[docs/mcp.md](../mcp.md#listing-in-the-mcp-registry)). It needs `publish`, so a registry
+failure never touches the PyPI release, and it has no `pypi` environment, so its OIDC tokens
+do not match the PyPI trusted publisher.
 
 ## CI and security checks (SPEC section 12)
 

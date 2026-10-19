@@ -2,6 +2,10 @@
 # tell-mcp-vX.Y.Z is pushed (ADR 0010, PLAN Phase 13 step 5). Uses PyPI trusted
 # publishing: no API token is stored anywhere. One-time setup:
 # docs/deploy/github-actions.md#publishing-tell-mcp-to-pypi.
+#
+# After the PyPI upload the `registry` job lists the server in the official MCP Registry
+# (packages/tell-mcp/server.json) through GitHub OIDC: no secret there either.
+# docs/mcp.md#listing-in-the-mcp-registry.
 name: publish-mcp
 
 on:
@@ -56,3 +60,30 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
+
+  # Lists the server in the MCP Registry, which reads the release from PyPI, so it runs only
+  # after `publish` succeeded. A separate job on purpose: a registry outage or rejection
+  # cannot fail or undo the PyPI upload, and "Re-run failed jobs" retries just this job. It
+  # declares no environment, so the OIDC tokens it can mint carry no `pypi` environment claim,
+  # which the PyPI trusted publisher (configured with environment `pypi`, see
+  # docs/deploy/github-actions.md) requires: the downloaded mcp-publisher binary cannot be used
+  # to publish to PyPI. The commands are the ones in the registry's GitHub Actions guide
+  # (https://modelcontextprotocol.io/registry/github-actions).
+  registry:
+    needs: [publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # checkout, to read packages/tell-mcp/server.json
+      id-token: write # GitHub OIDC login to the registry; no stored secret
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+      - name: Authenticate to MCP Registry
+        run: ./mcp-publisher login github-oidc
+      - name: Publish server to MCP Registry
+        run: ./mcp-publisher publish packages/tell-mcp/server.json
