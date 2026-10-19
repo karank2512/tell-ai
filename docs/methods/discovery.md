@@ -224,7 +224,7 @@ company, where only the open review item records the attempt). Coverage is there
 select status, count(distinct company_id) from ats_boards group by status;
 ```
 
-and by destination, so the report can read "16% supported board, N% hiring only via YC,
+and by destination, so the report can read "13.0% supported board, N% hiring only via YC,
 N% via another ATS or channel, N% no public hiring signal":
 
 ```sql
