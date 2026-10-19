@@ -2,6 +2,8 @@
 
 Drafts of the launch copy from SPEC section 15.1-15.4, plus how to fill them. **Posting is Karan's. The agent never sends, posts or contacts anyone, and nothing ships while any `{{ placeholder }}` is still in the text.** A number that has no dated report behind it is deleted, not rounded up.
 
+**Lead-time medians are quoted only from a dated report with N of at least 100 and full 60-day follow-up that marks them quotable** (that covers a median or p75 of the days between a Form D and its first press mention, any "days before press" figure and a "filing first" share). Until then the only speed claims are these two, each with its N: "of 331 Form D filings tracked, 44 (13.3%) had verified press within 60 days" and "29.1% of new Delaware-corporation issuers linked to a company at 59 of 59 precision" (2026-10-15 verified report; ADR 0041).
+
 | Draft | SPEC | Purpose |
 | --- | --- | --- |
 | [50-domains-dm.md](50-domains-dm.md) | 15.1 | The cold and warm "send me 50 domains" message and the one-line follow-up |
