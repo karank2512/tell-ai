@@ -10,7 +10,7 @@ Status: draft, about 180 words once filled. Posting is Karan's, in week 8 of the
 >
 > What it caught in its first {{ reports.ops.weeks_live }} weeks:
 >
-> - {{ reports.speed_vs_press.n }} funding rounds a median {{ reports.speed_vs_press.median_lead_days }} days before the first press mention
+> - Of {{ reports.speed_vs_press.cohort_n }} Form D filings tracked, {{ reports.speed_vs_press.n }} ({{ reports.speed_vs_press.press_share_pct }}%) had verified press within 60 days
 > - {{ reports.velocity_lead.spike_share_pct }}% of {{ reports.velocity_lead.n }} funding events had a hiring spike in the 8 weeks before
 > - {{ reports.ops.companies_monitored }} companies watched, {{ reports.ops.postings_tracked }} postings tracked, p95 freshness {{ reports.ops.freshness_p95_h }} hours, $0 a month to run
 >
@@ -24,6 +24,6 @@ One image: the account page for a real company with the receipts visible. No car
 
 - Each number comes from the report line named in `numbers.yaml`; the report must be dated and show its N. If a study has N under 30, quote it with the N or drop the bullet.
 - The second bullet is the prospective study (SPEC 13.2). The retrospective version is rougher; if only that exists, say "retrospectively" in the bullet. The SPEC text says "60 days"; the report measures the 8 weeks (56 days) before the filing, so the bullet says "8 weeks" to match its source line.
-- The first bullet's N is the count of filings with press (the N beside the median), not the cohort N. The median is `first_press_at - filing_date`: negative means the press came first, so quote "before" only when the median is negative, and quote its absolute value.
+- The first bullet is the press-share claim, worded as in the rule in [README.md](README.md), with both its Ns: `cohort_n` (the Form D filings tracked) and `n` (the filings with press). Fill it from the report that rule cites, or a later dated report that supports the same sentence; a newer report with a smaller N does not replace it. No lead-time figure goes in this post (no median of the days between a filing and its press, no "days before the press", no "filing first" share) until that rule is met.
 - "$0 a month" is true only when the deployed stack is still on free tiers (Actions, Neon free, Pages). Check at posting time.
 - No person's name in the image: use a company whose account page shows only company-level events.
