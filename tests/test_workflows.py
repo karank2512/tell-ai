@@ -713,6 +713,37 @@ def test_publish_mcp_trusted_publishing() -> None:
     assert "password" not in (WORKFLOWS_DIR / "publish-mcp.yml").read_text(encoding="utf-8")
 
 
+def test_publish_mcp_registry_listing() -> None:
+    """docs/mcp.md "Listing in the MCP Registry": the listing is its own job after the PyPI
+    upload, with GitHub OIDC and no secret, so a registry failure cannot fail the PyPI publish."""
+    jobs = _load("publish-mcp.yml")["jobs"]
+    assert list(jobs) == ["build", "publish", "registry"]
+    # The PyPI jobs never wait for the registry; the registry reads the PyPI release, so it
+    # waits for the upload and, with the default `if`, never runs after a failed one.
+    assert "needs" not in jobs["build"]
+    assert jobs["publish"]["needs"] == ["build"]
+    registry = jobs["registry"]
+    assert registry["needs"] == ["publish"]
+    assert "if" not in registry
+    # GitHub OIDC and a read-only checkout, nothing else. No environment: only the PyPI upload
+    # runs in `pypi`, so a token minted here carries no `pypi` claim for the trusted publisher.
+    assert registry["permissions"] == {"contents": "read", "id-token": "write"}
+    assert "environment" not in registry
+    assert jobs["publish"]["environment"]["name"] == "pypi"
+    steps = registry["steps"]
+    install = _index(steps, "releases/latest/download/mcp-publisher_")
+    login = _index(steps, "mcp-publisher login")
+    publish = _index(steps, "mcp-publisher publish")
+    assert install < login < publish
+    assert str(steps[login]["run"]).strip() == "./mcp-publisher login github-oidc"
+    published = "./mcp-publisher publish packages/tell-mcp/server.json"
+    assert str(steps[publish]["run"]).strip() == published
+    assert (REPO_ROOT / "packages" / "tell-mcp" / "server.json").is_file()
+    text = (WORKFLOWS_DIR / "publish-mcp.yml").read_text(encoding="utf-8")
+    assert "secrets." not in text  # OIDC login: no PAT, no private key
+    assert "--token" not in text
+
+
 def test_weekly_keepalive_reenables_scheduled_workflows() -> None:
     """ADR 0026: the 60-day inactivity timer is reset through the API, never by a commit."""
     keepalive = _load("weekly.yml")["jobs"]["keepalive"]

@@ -63,3 +63,5 @@ company and watchlist reads to it without any other change.
 
 Full docs: [docs/mcp.md](https://github.com/karank2512/tell-ai/blob/main/docs/mcp.md).
 License: Apache-2.0.
+
+<!-- mcp-name: io.github.karank2512/tell-mcp -->
