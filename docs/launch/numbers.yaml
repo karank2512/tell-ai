@@ -16,15 +16,21 @@
 reports:
   speed_vs_press:                       # SPEC 13.1
     report: tell-data/site/methods/speed-vs-press-[0-9]*.md
+    # Only the press-share claim is mapped: "Of {cohort_n} Form D filings tracked, {n}
+    # ({press_share_pct}%) had verified press within 60 days", filled from the report the rule in
+    # docs/launch/README.md cites (ADR 0041). No lead-time number has a placeholder here (median
+    # or p75 of the days between a filing and its press, "days before press", filing-first share).
+    cohort_n:
+      field: "Cohort N: Form D filings (isAmendment = false) linked to a monitored company"
+      used_in: [linkedin-post.md]
+      status: pending soak
     n:
-      # The rounds behind the median: filings with press, not the whole cohort.
+      # Filings with press, not the whole cohort.
       field: "Filings with any press within the window (the N behind the lag numbers)"
       used_in: [linkedin-post.md]
       status: pending soak
-    median_lead_days:
-      # Negative means the press came first; quote the absolute value only when the median is
-      # below zero, and say "after" instead of "before" when it is not.
-      field: "Median of first_press_at - filing_date, days"
+    press_share_pct:
+      field: "Share with any press within the window (filing - 14d to filing + 60d)"
       used_in: [linkedin-post.md]
       status: pending soak
   velocity_lead:                        # SPEC 13.2 (quote the prospective study once it exists)
