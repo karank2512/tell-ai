@@ -6,7 +6,8 @@ Commands (``DIR`` is the ``tell-data`` checkout):
 * ``data --out DIR [--day DATE]``: append the day's (and the previous day's) events to
   ``events/YYYY/MM/DD.jsonl``, write today's board snapshots, prune snapshots past 90 days.
 * ``csv --watchlist NAME --out FILE [--as-of DATE]``: the CSV with receipts for one watchlist.
-* ``weekly [--week current|YYYY-Www] --out DIR``: the weekly page and ``latest.json`` only.
+* ``weekly [--week current|YYYY-Www] --out DIR``: the weekly page, ``latest.json`` and the
+  edition's rounds filed, not announced (``rounds-not-announced.html`` and its JSON) only.
 * ``health --out DIR``: ``health.html`` and ``api/v0/health.json`` only.
 * ``notify --slack [--force] [--private-dir DIR]``: per-event Slack nudges on every call, then
   the digest (sends only on the digest run unless forced); ADR 0036.
@@ -49,9 +50,17 @@ from tell.publish.nudge import (
     load_private_webhooks,
     send_nudges,
 )
-from tell.publish.site import environment, page_context, render_site, weekly_view, write_json
+from tell.publish.site import (
+    environment,
+    page_context,
+    published_company_ids,
+    render_site,
+    weekly_view,
+    write_json,
+    write_rounds,
+)
 from tell.publish.slack import send_digests
-from tell.publish.weekly import build_weekly, resolve_week
+from tell.publish.weekly import build_weekly, resolve_week, rounds_not_announced
 from tell.signals.profiles import DEFAULT_PROFILE_NAME, ProfileNotFoundError
 
 PUBLISH_SOURCE = "publish"
@@ -213,7 +222,7 @@ def weekly_command(
         str, typer.Option("--week", help="'current' (last complete ISO week) or YYYY-Www.")
     ] = "current",
 ) -> None:
-    """Render one weekly page and api/v0/weekly/latest.json."""
+    """Render one weekly page, api/v0/weekly/latest.json and the rounds not announced."""
     now = utcnow()
     try:
         chosen = resolve_week(week, now)
@@ -221,22 +230,31 @@ def weekly_command(
         raise typer.BadParameter(str(exc)) from exc
     site = out / "site"
     sha = code_commit_sha()
+    env = environment()
     with session_scope() as session:
         data = build_weekly(session, chosen)
         obj = build_weekly_json(data, sha=sha)
         validate_weekly_json(obj)
         write_json(site / "api" / "v0" / "weekly" / "latest.json", obj)
-        html = (
-            environment()
-            .get_template("weekly.html")
-            .render(
-                **page_context(now.date(), sha, chosen.label, "../"), w=weekly_view(data, set())
-            )
+        published = published_company_ids(session, now.date())
+        rounds = rounds_not_announced(session, chosen, now=now, published=published)
+        rounds_page = write_rounds(site, env, rounds, as_of=now.date(), sha=sha)
+        html = env.get_template("weekly.html").render(
+            **page_context(now.date(), sha, chosen.label, "../"),
+            w=weekly_view(data, set()),
+            rounds=rounds_page,
         )
         path = site / "weekly" / f"{chosen.label}.html"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(html, encoding="utf-8")
-        _echo({"week": chosen.label, "path": str(path), "top_hiring": len(data.top_hiring)})
+        _echo(
+            {
+                "week": chosen.label,
+                "path": str(path),
+                "top_hiring": len(data.top_hiring),
+                "rounds_not_announced": len(rounds.rounds),
+            }
+        )
 
 
 @app.command("health")

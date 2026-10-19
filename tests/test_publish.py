@@ -251,6 +251,38 @@ def test_weekly_json_shape(db_session: Session, scenario: sc.Scenario, tmp_path:
     assert "What changed in the method" in page
 
 
+def test_rounds_not_announced_files(
+    db_session: Session, scenario: sc.Scenario, tmp_path: Path
+) -> None:
+    _render(db_session, scenario, tmp_path)
+    site = tmp_path / "site"
+    rounds = _load(site / "api" / "v0" / "rounds-not-announced.json")
+    assert (rounds["week"], rounds["filed_from"], rounds["filed_to"], rounds["as_of"]) == (
+        "2026-W40",
+        "2026-09-21",
+        "2026-10-04",
+        "2026-10-06",
+    )
+    # Both Form D filings of 2026-10-01 have no funding headline (the news is Quillstone's).
+    assert [(r["domain"], r["amount_usd"], r["amount_indefinite"]) for r in rounds["rounds"]] == [
+        (sc.BLUEFIN, None, True),
+        (sc.ROBOTICS, 18_000_000, False),
+    ]
+    for row in rounds["rounds"]:
+        assert row["url"].startswith("https://www.sec.gov/Archives/edgar/data/")
+    page = (site / "rounds-not-announced.html").read_text()
+    weekly = (site / "weekly" / "2026-W40.html").read_text()
+    assert '<a href="companies/bluefin.example.html">Bluefin Data Systems</a>' in page
+    assert '<a href="../companies/bluefin.example.html">Bluefin Data Systems</a>' in weekly
+    assert "Rounds filed, not announced" in weekly
+    assert "the list changes as news arrives." in page
+    assert '<a href="rounds-not-announced.html">' in (site / "index.html").read_text()
+    # Nothing about watchlists (names, owners, membership) reaches the list.
+    text = page + weekly.split('id="rounds-not-announced"')[1] + json.dumps(rounds)
+    for private in ("Pilot list", "Private list", "pilot", "team-a", "team-b", "heat"):
+        assert private not in text
+
+
 def test_health_json_fields(db_session: Session, scenario: sc.Scenario, tmp_path: Path) -> None:
     _render(db_session, scenario, tmp_path)
     health = _load(tmp_path / "site" / "api" / "v0" / "health.json")

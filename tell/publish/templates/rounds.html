@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}Rounds filed, not announced: tell {{ rounds.week }}{% endblock %}
+{% block content %}
+<h1>Rounds filed, not announced</h1>
+<p class="muted">Weekly edition {{ rounds.week }}: Form D filings dated {{ rounds.filed_from }} to {{ rounds.filed_to }}, press read through {{ rounds.as_of }}. Every row links its filing on sec.gov.</p>
+{% include "rounds_table.html" %}
+<p>The full edition: <a href="weekly/{{ rounds.week }}.html">tell weekly {{ rounds.week }}</a>. JSON: <a href="api/v0/rounds-not-announced.json">api/v0/rounds-not-announced.json</a>.</p>
+{% endblock %}

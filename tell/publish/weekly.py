@@ -30,12 +30,42 @@ Contents
     The code repository.
 
 Ties sort by domain, so an edition is deterministic.
+
+Rounds filed, not announced
+===========================
+
+:func:`rounds_not_announced` (ADR 0042) is the edition's third list. It is published in the
+weekly page and on its own (``rounds-not-announced.html``,
+``api/v0/rounds-not-announced.json``), not in ``latest.json``: press is read again at every
+render, so the list shrinks as funding headlines arrive while ``latest.json`` stays fixed
+for the week. One row per original Form D (``form_d_filed`` from EDGAR with
+``is_amendment`` false, not a pooled fund by :func:`tell.resolve.guards.fund_signals`)
+whose filing date falls in the 14 days that end with the edition's week
+(:func:`rounds_window`: the week and the week before) and that
+
+* is linked by a link the speed-vs-press cohort trusts (:func:`trusted_match` and the CIK
+  rule of :mod:`tell.backtest.speed_vs_press`: a reviewer's link, rules R0-R4 with no
+  guard failure, or a CIK match whose CIK has a trusted ``cik_source`` or was set by
+  such a link);
+* belongs to a company with a published account page (``published``, the site's size
+  budget) whose ``source`` is not ``manual``: intake lists, review verdicts and domains
+  added by hand never appear, so no one's private list can be read from the page;
+* has no ``news_funding`` event of its company dated from the filing date minus 14 days
+  through the publish instant ``now`` (any funding headline counts, including the
+  one-word brands the speed-vs-press report discounts: a false "not announced" is the
+  worse error on a public page).
+
+Newest filing first, then domain, then URL. The amounts are the payload's own
+``total_offering_amount`` (with its ``indefinite`` flag) and ``total_amount_sold``
+(``None`` when undisclosed) and the receipt is the filing's EDGAR URL (a row without an ``https://www.sec.gov/`` URL is left
+out). No person's name is read: Form D related persons are never stored.
 """
 
 from __future__ import annotations
 
 import re
 from collections import defaultdict
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -44,29 +74,42 @@ from typing import Any
 from sqlalchemy import distinct, func, or_, select, union
 from sqlalchemy.orm import Session
 
+from tell.backtest.speed_vs_press import TRUSTED_CIK_SOURCES, TRUSTED_RULES
+from tell.collectors.news_classify import event_type
 from tell.config import get_settings
 from tell.models import AtsBoard, Company, EventRow, Posting, PostingObservation
+from tell.resolve.guards import IssuerFacts, fund_signals
 from tell.signals.scoring import FORM_D_FILED
 from tell.signals.velocity import HIRING_VELOCITY
 
 __all__ = [
     "CHANGELOG_PATH",
+    "EDGAR_RECEIPT_PREFIX",
+    "MANUAL_SOURCE",
     "METHOD_KEYWORDS",
     "METHOD_LINE_MAX",
+    "NEWS_FUNDING",
     "NO_METHOD_CHANGE",
+    "PRESS_LOOKBACK_DAYS",
+    "ROUNDS_WINDOW_DAYS",
     "SALES_FAMILY",
     "TOP_N",
     "Coverage",
     "FundingRow",
     "HiringRow",
     "IsoWeek",
+    "RoundRow",
+    "RoundsData",
     "WeeklyData",
     "build_weekly",
     "coverage",
     "method_change_line",
     "resolve_week",
+    "rounds_not_announced",
+    "rounds_window",
     "top_funding",
     "top_hiring",
+    "trusted_match",
     "velocity_postings",
 ]
 
@@ -85,6 +128,18 @@ _METHOD_LABEL_RE = re.compile(r"^(" + "|".join(METHOD_KEYWORDS) + r")( rule)?:",
 _MARKDOWN = re.compile(r"`|\*\*")
 METHOD_LINE_MAX = 280
 """Length cap of the method-change line on the weekly page and in ``latest.json``."""
+
+NEWS_FUNDING = event_type("funding")
+"""``news_funding``: a funding headline the news collector kept and linked to a company."""
+ROUNDS_WINDOW_DAYS = 14
+"""Filing dates the rounds list covers: the edition's week and the week before."""
+PRESS_LOOKBACK_DAYS = 14
+"""Press counts from the filing date minus this many days (the speed-vs-press window start)."""
+MANUAL_SOURCE = "manual"
+"""``companies.source`` of rows added by hand (an intake list, a review verdict, a domain
+passed to ``tell discover``): never in the rounds list."""
+EDGAR_RECEIPT_PREFIX = "https://www.sec.gov/"
+"""Every rounds row links its EDGAR filing."""
 
 
 @dataclass(frozen=True, order=True)
@@ -162,6 +217,21 @@ class FundingRow:
 
 
 @dataclass(frozen=True)
+class RoundRow:
+    domain: str
+    name: str
+    date_filed: str
+    amount_usd: int | None
+    """``total_offering_amount`` as stored; ``None`` when undisclosed or indefinite."""
+    amount_indefinite: bool
+    """The filing states an indefinite offering amount (``total_offering_amount_indefinite``)."""
+    amount_sold_usd: int | None
+    """``total_amount_sold`` as stored; ``None`` when undisclosed."""
+    url: str
+    """The filing's EDGAR folder: the receipt."""
+
+
+@dataclass(frozen=True)
 class Coverage:
     companies_monitored: int
     boards_polled: int
@@ -209,6 +279,68 @@ class WeeklyData:
                 "filings_read": self.coverage.filings_read,
             },
             "repo_url": self.repo_url,
+        }
+
+
+def rounds_window(week: IsoWeek) -> tuple[datetime, datetime]:
+    """``[start, end)`` of the filing dates the rounds list covers: 14 days ending with ``week``."""
+    return week.end - timedelta(days=ROUNDS_WINDOW_DAYS), week.end
+
+
+@dataclass(frozen=True)
+class RoundsData:
+    """Rounds filed, not announced: one edition's list as read at ``now`` (ADR 0042)."""
+
+    week: IsoWeek
+    now: datetime
+    """The publish instant: funding headlines are read through it."""
+    rounds: list[RoundRow]
+
+    @property
+    def filed_from(self) -> date:
+        return rounds_window(self.week)[0].date()
+
+    @property
+    def filed_to(self) -> date:
+        """Inclusive: the last day of the edition's week."""
+        return rounds_window(self.week)[1].date() - timedelta(days=1)
+
+    @property
+    def as_of(self) -> date:
+        """The UTC day of the publish instant."""
+        return self.now.astimezone(UTC).date()
+
+    @property
+    def method(self) -> str:
+        """The one-sentence method printed under the table: window, cohort, freshness."""
+        return (
+            f"Every original Form D (no amendments, no pooled funds) filed {self.filed_from} "
+            f"to {self.filed_to} by a company with a tell account page and a trusted link to "
+            "the issuer (an exact CIK, a name match that passed the Form D guards, or a "
+            "reviewer's link), with no funding headline in tell's news data from "
+            f"{PRESS_LOOKBACK_DAYS} days before the filing through {self.as_of}; the list "
+            "changes as news arrives."
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "week": self.week.label,
+            "filed_from": self.filed_from.isoformat(),
+            "filed_to": self.filed_to.isoformat(),
+            "as_of": self.as_of.isoformat(),
+            "rounds": [
+                {
+                    "domain": r.domain,
+                    "name": r.name,
+                    "date_filed": r.date_filed,
+                    "amount_usd": r.amount_usd,
+                    "amount_indefinite": r.amount_indefinite,
+                    "amount_sold_usd": r.amount_sold_usd,
+                    "url": r.url,
+                }
+                for r in self.rounds
+            ],
+            "method": self.method,
         }
 
 
@@ -331,6 +463,151 @@ def top_funding(session: Session, week: IsoWeek, limit: int = TOP_N) -> list[Fun
         )
     rows.sort(key=lambda r: (r.amount_usd is None, -(r.amount_usd or 0), r.domain, r.url))
     return rows[:limit]
+
+
+def trusted_match(match: Any) -> bool:
+    """Whether a ``payload.match`` record is a link the speed-vs-press cohort trusts.
+
+    A reviewer's link (``rule = 'manual'``, which wins over a guard failure left from the R5
+    candidate it resolved) or rules R0-R4 with no guard failure. ``guard_failed`` counts as
+    failed when it is ``true``, a non-empty list, object or string, or a non-zero number,
+    exactly as :data:`tell.backtest.speed_vs_press.SQL` reads it; a record that is not an
+    object is not trusted.
+    """
+    if not isinstance(match, Mapping):
+        return False
+    rule = match.get("rule")
+    if rule == "manual":
+        return True
+    return rule in TRUSTED_RULES and not match.get("guard_failed")
+
+
+def _vouched_ciks(session: Session, company_ids: Collection[int]) -> dict[int, set[str]]:
+    """``{company_id: CIKs}`` carried by the companies' EDGAR events whose link is trusted.
+
+    A CIK one of these links carries vouches for the company's filings linked by CIK alone
+    (the speed-vs-press ``trusted`` CTE): the CIK was set by a trusted link.
+    """
+    if not company_ids:
+        return {}
+    stmt = select(
+        EventRow.company_id, EventRow.payload["match"], EventRow.payload["cik"].astext
+    ).where(
+        EventRow.source == "edgar",
+        EventRow.company_id.in_(sorted(company_ids)),
+        EventRow.payload["match"].is_not(None),
+    )
+    vouched: dict[int, set[str]] = defaultdict(set)
+    for company_id, match, cik in session.execute(stmt):
+        if cik is not None and trusted_match(match):
+            vouched[int(company_id)].add(str(cik))
+    return vouched
+
+
+def _press(
+    session: Session, company_ids: Collection[int], since: datetime, until: datetime
+) -> dict[int, list[datetime]]:
+    """``{company_id: [occurred_at]}`` of the companies' ``news_funding`` events in the span."""
+    if not company_ids:
+        return {}
+    stmt = select(EventRow.company_id, EventRow.occurred_at).where(
+        EventRow.type == NEWS_FUNDING,
+        EventRow.company_id.in_(sorted(company_ids)),
+        EventRow.occurred_at >= since,
+        EventRow.occurred_at <= until,
+    )
+    press: dict[int, list[datetime]] = defaultdict(list)
+    for company_id, occurred_at in session.execute(stmt):
+        if company_id is not None:  # always: the query selects by company id
+            press[company_id].append(occurred_at)
+    return press
+
+
+def _original_operating_filing(row: EventRow) -> bool:
+    """An original Form D (not an amendment) of an operating company with an EDGAR receipt."""
+    payload = row.payload or {}
+    if payload.get("is_amendment") is not False:
+        return False
+    if not row.url.startswith(EDGAR_RECEIPT_PREFIX):
+        return False
+    issuer = IssuerFacts.from_payload(str(payload.get("issuer_name") or ""), payload)
+    return not fund_signals(issuer)
+
+
+def rounds_not_announced(
+    session: Session, week: IsoWeek, *, now: datetime, published: Collection[int]
+) -> RoundsData:
+    """Original Form D filings of ``week``'s 14-day window with no funding headline by ``now``.
+
+    ``published`` holds the ids of the companies that have an account page (the site's
+    :func:`tell.publish.site.published_company_ids`); ``now`` is the publish instant and
+    must be timezone-aware. See the module docstring for every rule. Reads only.
+    """
+    if now.tzinfo is None or now.utcoffset() is None:
+        msg = f"now must be a timezone-aware datetime, got naive {now!r}"
+        raise ValueError(msg)
+    pages = set(published)
+    start, end = rounds_window(week)
+    stmt = (
+        select(EventRow, Company, EventRow.payload["cik"].astext)
+        .join(Company, Company.id == EventRow.company_id)
+        .where(
+            EventRow.source == "edgar",
+            EventRow.type == FORM_D_FILED,
+            EventRow.occurred_at >= start,
+            EventRow.occurred_at < end,
+            Company.source != MANUAL_SOURCE,
+        )
+        .order_by(EventRow.event_id)
+    )
+    candidates = [
+        (row, company, cik)
+        for row, company, cik in session.execute(stmt)
+        if company.id in pages and _original_operating_filing(row)
+    ]
+    by_cik = {company.id for row, company, _ in candidates if "match" not in (row.payload or {})}
+    vouched = _vouched_ciks(session, by_cik)
+
+    def trusted(row: EventRow, company: Company, cik: str | None) -> bool:
+        payload = row.payload or {}
+        if "match" in payload:
+            return trusted_match(payload["match"])
+        return (
+            company.cik is not None
+            and cik == company.cik
+            and (company.cik_source in TRUSTED_CIK_SOURCES or cik in vouched.get(company.id, ()))
+        )
+
+    linked = [(row, company) for row, company, cik in candidates if trusted(row, company, cik)]
+    press = _press(
+        session,
+        {company.id for _, company in linked},
+        start - timedelta(days=PRESS_LOOKBACK_DAYS),
+        now,
+    )
+    rounds: list[RoundRow] = []
+    for row, company in linked:
+        filed_on = row.occurred_at.astimezone(UTC).date()
+        floor = datetime.combine(filed_on, time(0), tzinfo=UTC) - timedelta(
+            days=PRESS_LOOKBACK_DAYS
+        )
+        if any(at >= floor for at in press.get(company.id, ())):
+            continue
+        payload = row.payload or {}
+        rounds.append(
+            RoundRow(
+                domain=company.domain,
+                name=company.name or company.domain,
+                date_filed=_day(payload.get("date_filed"), row.occurred_at),
+                amount_usd=_usd(payload.get("total_offering_amount")),
+                amount_indefinite=payload.get("total_offering_amount_indefinite") is True,
+                amount_sold_usd=_usd(payload.get("total_amount_sold")),
+                url=row.url,
+            )
+        )
+    rounds.sort(key=lambda r: (r.domain, r.url))
+    rounds.sort(key=lambda r: r.date_filed, reverse=True)
+    return RoundsData(week=week, now=now, rounds=rounds)
 
 
 def coverage(session: Session, week: IsoWeek) -> Coverage:

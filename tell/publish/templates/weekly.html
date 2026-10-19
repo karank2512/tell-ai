@@ -44,6 +44,9 @@
 <p>No new Form D filings by monitored companies this week.</p>
 {% endif %}
 
+<h2 id="rounds-not-announced">Rounds filed, not announced</h2>
+{% include "rounds_table.html" %}
+
 <h2>What changed in the method</h2>
 <p>{{ w.method_change }}</p>
 
@@ -53,5 +56,5 @@
   <li>Boards polled: {{ w.coverage.boards_polled }}</li>
   <li>Filings read: {{ w.coverage.filings_read }}</li>
 </ul>
-<p>Code and methods: <a href="{{ w.repo_url }}">{{ w.repo_url }}</a>. JSON: <a href="../api/v0/weekly/latest.json">api/v0/weekly/latest.json</a> (latest edition).</p>
+<p>Code and methods: <a href="{{ w.repo_url }}">{{ w.repo_url }}</a>. JSON: <a href="../api/v0/weekly/latest.json">api/v0/weekly/latest.json</a> (latest edition) and <a href="../api/v0/rounds-not-announced.json">api/v0/rounds-not-announced.json</a> (its rounds filed, not announced).</p>
 {% endblock %}

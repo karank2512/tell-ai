@@ -5,10 +5,12 @@
     index.html                       this week's top movers, weekly excerpt, methods, repo, health
     companies/{domain}.html          account page per published company
     weekly/{ISO-week}.html           the current weekly edition (the last complete ISO week)
+    rounds-not-announced.html        the edition's rounds filed, not announced (ADR 0042)
     health.html                      run-health, red banner when a source is stale
     style.css
     api/v0/companies/{domain}.json   the section 9 contract
     api/v0/weekly/latest.json        the current weekly edition
+    api/v0/rounds-not-announced.json the edition's rounds filed, not announced
     api/v0/watchlists/{slug}.json    public watchlists only
     api/v0/health.json
 
@@ -62,8 +64,10 @@ from tell.models import Company, Signal, Watchlist
 from tell.publish.health import Health, compute_health
 from tell.publish.json_api import (
     LOCAL,
+    ROUNDS_FILE,
     build_company_json,
     build_health_json,
+    build_rounds_json,
     build_watchlist_json,
     build_weekly_json,
     code_commit_sha,
@@ -72,16 +76,25 @@ from tell.publish.json_api import (
     prepare_companies,
     validate_company_json,
     validate_health_json,
+    validate_rounds_json,
     validate_site_tree,
     validate_watchlist_json,
     validate_weekly_json,
 )
-from tell.publish.weekly import IsoWeek, WeeklyData, build_weekly
+from tell.publish.weekly import (
+    IsoWeek,
+    RoundsData,
+    WeeklyData,
+    build_weekly,
+    rounds_not_announced,
+)
 from tell.signals.profiles import DEFAULT_PROFILE_NAME, Profile, get_profile
 from tell.signals.scoring import ScoreResult, score_companies, score_instant
 
 __all__ = [
     "METHOD_PAGES",
+    "ROUNDS_METHOD_DOC",
+    "ROUNDS_PAGE",
     "SIZE_BUDGET_DAYS",
     "TEMPLATE_DIR",
     "TOP_MOVERS",
@@ -90,8 +103,10 @@ __all__ = [
     "page_context",
     "published_company_ids",
     "render_site",
+    "rounds_view",
     "weekly_view",
     "write_json",
+    "write_rounds",
 ]
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
@@ -99,6 +114,11 @@ SIZE_BUDGET_DAYS = 180
 TOP_MOVERS = 10
 WEEKLY_EXCERPT = 5
 MOVER_WINDOW = timedelta(days=7)
+
+ROUNDS_PAGE = "rounds-not-announced.html"
+"""The edition's rounds filed, not announced, at the site root (ADR 0042)."""
+ROUNDS_METHOD_DOC = "docs/methods/publishing.md#5a-rounds-filed-not-announced"
+"""Where the rounds list's method sentence links (path in the code repo)."""
 
 METHOD_PAGES: tuple[tuple[str, str], ...] = (
     ("Signals, decay and scoring", "docs/methods/scoring.md"),
@@ -259,6 +279,46 @@ def weekly_view(data: WeeklyData, published: set[str]) -> dict[str, Any]:
     return view
 
 
+def rounds_view(data: RoundsData) -> dict[str, Any]:
+    """The rounds partial's view: the JSON shape, formatted amounts and the method link.
+
+    An amount column is shown only when at least one row's payload states that amount (an
+    indefinite offering counts and reads "indefinite"); a row without it reads "undisclosed".
+    """
+    view = data.to_dict()
+    for row in view["rounds"]:
+        indefinite = row["amount_usd"] is None and row["amount_indefinite"]
+        row["amount_text"] = "indefinite" if indefinite else _usd(row["amount_usd"])
+        row["sold_text"] = _usd(row["amount_sold_usd"])
+    view["show_offering"] = any(
+        r["amount_usd"] is not None or r["amount_indefinite"] for r in view["rounds"]
+    )
+    view["show_sold"] = any(r["amount_sold_usd"] is not None for r in view["rounds"])
+    repo = get_settings().tell_repo_url.rstrip("/")
+    view["method_url"] = f"{repo}/blob/main/{ROUNDS_METHOD_DOC}"
+    return view
+
+
+def write_rounds(
+    site: Path, env: Environment, data: RoundsData, *, as_of: date, sha: str | None
+) -> dict[str, Any]:
+    """Write ``api/v0/rounds-not-announced.json`` (validated first) and its page.
+
+    Returns the view the weekly page includes for the same list.
+    """
+    obj = build_rounds_json(data, sha=sha)
+    validate_rounds_json(obj)
+    write_json(site / "api" / "v0" / ROUNDS_FILE, obj)
+    view = rounds_view(data)
+    _write(
+        site / ROUNDS_PAGE,
+        env.get_template("rounds.html").render(
+            **page_context(as_of, sha, data.week.label, ""), rounds=view
+        ),
+    )
+    return view
+
+
 def _movers(
     session: Session,
     profile: Profile,
@@ -404,10 +464,12 @@ def render_site(
     validate_weekly_json(weekly_obj)
     write_json(api / "weekly" / "latest.json", weekly_obj)
     weekly_page = weekly_view(weekly, set(published))
+    rounds = rounds_not_announced(session, week, now=now, published=companies.keys())
+    rounds_page = write_rounds(site, env, rounds, as_of=as_of, sha=commit)
     _write(
         site / "weekly" / f"{week.label}.html",
         env.get_template("weekly.html").render(
-            **page_context(as_of, commit, week.label, "../"), w=weekly_page
+            **page_context(as_of, commit, week.label, "../"), w=weekly_page, rounds=rounds_page
         ),
     )
 

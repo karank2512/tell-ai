@@ -76,7 +76,7 @@ def test_publish_out_runs_data_then_site(bound: Engine, tmp_path: Path) -> None:
 
 def test_each_command(bound: Engine, tmp_path: Path) -> None:
     site = _ok(["site", "--out", str(tmp_path), "--as-of", sc.AS_OF.isoformat()])
-    assert site["validated"] == 7
+    assert site["validated"] == 8
     data = _ok(["data", "--out", str(tmp_path), "--day", "2026-10-05"])
     assert data["events_written"] > 0
     assert list((tmp_path / "events" / "2026" / "10").glob("*.jsonl"))
@@ -87,6 +87,12 @@ def test_each_command(bound: Engine, tmp_path: Path) -> None:
     weekly = _ok(["weekly", "--week", "2026-W40", "--out", str(tmp_path)])
     assert weekly["week"] == "2026-W40"
     assert weekly["top_hiring"] == 1
+    assert weekly["rounds_not_announced"] == 2
+    rounds = json.loads(
+        (tmp_path / "site" / "api" / "v0" / "rounds-not-announced.json").read_text()
+    )
+    assert [r["domain"] for r in rounds["rounds"]] == [sc.BLUEFIN, sc.ROBOTICS]
+    assert "../companies/bluefin.example.html" in Path(weekly["path"]).read_text()
     assert _ok(["weekly", "--out", str(tmp_path)])["week"] == "2026-W40"  # current edition
     health = _ok(["health", "--out", str(tmp_path)])
     assert health["stale_sources"] == ["edgar", "greenhouse"]
