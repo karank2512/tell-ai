@@ -14,6 +14,7 @@ one private watchlist) is rendered to a temporary ``tell-data`` tree, then:
 
 from __future__ import annotations
 
+import html
 import json
 import re
 from collections.abc import Iterator
@@ -27,7 +28,8 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from tell.models import Watchlist
+from tell.config import get_settings
+from tell.models import Signal, Watchlist
 from tell.publish import json_api
 from tell.publish import site as site_module
 from tell.publish.json_api import (
@@ -319,6 +321,40 @@ def test_health_json_fields(db_session: Session, scenario: sc.Scenario, tmp_path
     page = (tmp_path / "site" / "health.html").read_text()
     assert 'class="banner stale"' in page
     assert "Stale: edgar, greenhouse" in page
+
+
+def _href(page: str, label: str) -> str:
+    """The one link on ``page`` whose text is ``label``, with HTML entities decoded."""
+    (href,) = re.findall(rf'<a href="([^"]*)">{re.escape(label)}</a>', page)
+    return html.unescape(href)
+
+
+def test_account_page_feedback_link_is_an_issue_draft_even_with_a_form(
+    db_session: Session, scenario: sc.Scenario, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Page feedback is not a signal verdict. With the form configured, the bottom link used
+    # to open the form with no signal id and a verdict ("page") that is not one of its
+    # options, so the form looked blank and `tell intake feedback-sync` rejected the row.
+    monkeypatch.setenv(
+        "TELL_FEEDBACK_FORM_URL",
+        "https://forms.example/f?entry.1={signal_id}&entry.2={domain}&entry.3={verdict}",
+    )
+    get_settings.cache_clear()
+    _render(db_session, scenario, tmp_path)
+    page = (tmp_path / "site" / "companies" / f"{sc.ROBOTICS}.html").read_text()
+    (signal_id,) = db_session.scalars(
+        select(Signal.id).where(Signal.company_id == scenario.companies[sc.ROBOTICS])
+    )
+
+    assert _href(page, "Feedback on this page") == (
+        "https://github.com/karank2512/tell-ai/issues/new?"
+        f"title=Feedback+%28page%29%3A+{sc.ROBOTICS}&labels=feedback"
+    )
+    # The thumbs row beside the contribution still opens the form, filled in.
+    form = f"https://forms.example/f?entry.1={signal_id}&entry.2={sc.ROBOTICS}&entry.3="
+    assert _href(page, "yes") == form + "useful"
+    assert _href(page, "no") == form + "not_useful"
+    assert _href(page, "already knew") == form + "already_knew"
 
 
 # --- determinism and validation ----------------------------------------------------------------

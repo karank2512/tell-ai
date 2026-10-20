@@ -30,10 +30,12 @@ Score (raw sum, one decimal); a bar per contribution with its decayed value and 
 link beside it; the counted postings expanded under a velocity bar; long-open roles in
 grey; a "why not higher" footer of signals that decayed to zero in the last 30 days; a
 thumbs row per contribution linking to the feedback form prefilled with ``signal_id``
-(``TELL_FEEDBACK_FORM_URL``) or, without one, to a prefilled GitHub issue. Heat is a
-percentile *within a watchlist*, so the public page shows it only for the public
-watchlists that include the company ("heat 87 in pilot"); a company on no public
-watchlist shows its score alone (ADR 0023).
+(``TELL_FEEDBACK_FORM_URL``) or, without one, to a prefilled GitHub issue. The
+"Feedback on this page" link at the bottom is not a signal verdict, so it is always
+a prefilled GitHub issue draft, form or no form. Heat is a percentile *within a
+watchlist*, so the public page shows it only for the public watchlists that include
+the company ("heat 87 in pilot"); a company on no public watchlist shows its score
+alone (ADR 0023).
 
 Determinism
 ===========
@@ -450,7 +452,9 @@ def render_site(
             heats=badges.get(company.domain, []),
             bars=_bars(obj, results[company.id]),
             long_open=facts.long_open,
-            feedback=feedback_link(signal_id=None, domain=company.domain, verdict="page"),
+            feedback=feedback_link(
+                signal_id=None, domain=company.domain, verdict="page", issue_only=True
+            ),
         )
         _write(site / "companies" / f"{company.domain}.html", page)
         published.append(company.domain)

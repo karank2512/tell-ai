@@ -7,6 +7,11 @@ API is deployed, a rating is a click on a prefilled Google Form link: from a Sla
 writes one `feedback` row per response, which is what the precision report
 (`tell/signals/feedback.py`) and, at 300 labels per profile, the re-weighting need.
 
+The account page's "Feedback on this page" link at the bottom is not a rating and never
+opens the form: page feedback is not a signal verdict (the form needs a stored signal id
+and one of the six verdicts below), so that link is always a prefilled GitHub issue
+draft, whether or not `TELL_FEEDBACK_FORM_URL` is set.
+
 ## Form fields
 
 Create the form with these questions, in this order, with these exact titles. The titles

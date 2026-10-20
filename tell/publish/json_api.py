@@ -479,6 +479,7 @@ def feedback_link(
     verdict: str,
     form_url: str | None = None,
     watchlist: str | None = None,
+    issue_only: bool = False,
 ) -> str:
     """Where a thumbs click goes: the prefilled feedback form, else a GitHub issue draft.
 
@@ -487,6 +488,12 @@ def feedback_link(
     it are replaced (URL-encoded). A form URL without placeholders gets them appended as
     query parameters. Without a form the link opens a new issue on the code repo with a
     prefilled title, never a ``mailto:``.
+
+    The account page's "Feedback on this page" link is not a thumbs click and passes
+    ``issue_only=True``: page feedback is not a signal verdict, so it is always the issue
+    draft, form configured or not. The form needs a stored signal id and one of its six
+    verdicts; a link to it from the page opens with both wrong, and ``tell intake
+    feedback-sync`` rejects what is submitted.
     """
     form = form_url if form_url is not None else get_settings().tell_feedback_form_url
     values = {
@@ -495,7 +502,7 @@ def feedback_link(
         "verdict": verdict,
         "watchlist": watchlist or "",
     }
-    if form:
+    if form and not issue_only:
         if any(f"{{{key}}}" in form for key in values):
             out = form
             for key, value in values.items():

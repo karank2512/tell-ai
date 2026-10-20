@@ -60,8 +60,9 @@ One file per active, polled board per day: the open postings with `external_id`,
   grey, the "why not higher" footer (signals that decayed to zero in the last 30 days) and a
   thumbs row per contribution linking to the feedback form prefilled with `signal_id`
   (`TELL_FEEDBACK_FORM_URL`; `{signal_id}`, `{domain}`, `{verdict}` are substituted) or,
-  without a form, to a prefilled GitHub issue. Heat appears only for public watchlists that
-  include the company.
+  without a form, to a prefilled GitHub issue. The "Feedback on this page" link at the
+  bottom is not a signal verdict, so it is always a prefilled GitHub issue draft, form or
+  no form. Heat appears only for public watchlists that include the company.
 - **Index**: the 10 largest score increases over 7 days, an excerpt of the weekly lists,
   methods links, the repo and the health page.
 - **Numbers add up**: contributions are rounded to tenths by largest remainder so they sum

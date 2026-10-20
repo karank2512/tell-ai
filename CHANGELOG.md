@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The account page's "Feedback on this page" link always opens a prefilled GitHub issue draft, also when `TELL_FEEDBACK_FORM_URL` is set. With the form configured it opened the form with an empty Signal id and the verdict `page`, which is none of the form's six options, so the form looked blank and `tell intake feedback-sync` rejected anything submitted from it (`missing or invalid signal id`, `unknown verdict`); page feedback is not a signal verdict. `feedback_link` gains `issue_only` for it. The per-signal thumbs links, the CSV `rate_this_row` column and the nudge's rating links are unchanged.
 - `tell crm hubspot push` no longer creates a duplicate company when it runs within seconds of a previous push (issue #5): HubSpot's search index lags creates, so a search miss now falls through to paging `GET /crm/v3/objects/companies` (100 per page, case-insensitive `domain` match, at most `LIST_PAGE_CAP` = 10 pages) before anything is created; the JSON line reports `listed: {pages, capped}` when the fallback ran. Fixtures `companies_list_found/more/end.json`.
 
 ### Added
