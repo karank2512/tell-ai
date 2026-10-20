@@ -114,9 +114,10 @@ before the service exists. v1 will let `watch_accounts` create the watchlist thr
 The [official MCP Registry](https://modelcontextprotocol.io/registry/about) is the public
 catalogue that MCP marketplaces pull server metadata from. It hosts metadata only (the code
 stays on PyPI) and is still labelled "preview", so its API can change or be reset (checked
-2026-10-19). `tell-mcp` is prepared to appear there as `io.github.karank2512/tell-mcp` the
-moment a release reaches PyPI. Merging the files below publishes nothing: the listing happens
-only when a `tell-mcp-v*` tag runs `publish-mcp.yml`.
+2026-10-19). `tell-mcp` is listed there as `io.github.karank2512/tell-mcp`: the
+`tell-mcp-v0.1.0` tag published version 0.1.0 to PyPI and to the registry on 2026-10-20.
+Merging the files below publishes nothing: the listing happens only when a `tell-mcp-v*` tag
+runs `publish-mcp.yml`.
 
 | File | Role |
 | --- | --- |
