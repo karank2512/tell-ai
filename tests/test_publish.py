@@ -18,6 +18,7 @@ import html
 import json
 import re
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +30,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from tell.config import get_settings
-from tell.models import Signal, Watchlist
+from tell.models import Run, Signal, Watchlist
 from tell.publish import json_api
 from tell.publish import site as site_module
 from tell.publish.json_api import (
@@ -286,6 +287,20 @@ def test_rounds_not_announced_files(
 
 
 def test_health_json_fields(db_session: Session, scenario: sc.Scenario, tmp_path: Path) -> None:
+    # The scenario's news replay would be Quillstone's first Google News query, which is a first
+    # look, not tell's lag (ADR 0043); a query the day before is on record here.
+    earlier = datetime(2026, 10, 4, 20, 17, tzinfo=UTC)
+    db_session.add(
+        Run(
+            run_id="news-20261004T201700-test01",
+            source="news",
+            started_at=earlier,
+            finished_at=earlier + timedelta(minutes=2),
+            status="ok",
+            notes={"polled": {str(scenario.companies[sc.QUILLSTONE]): earlier.isoformat()}},
+        )
+    )
+    db_session.flush()
     _render(db_session, scenario, tmp_path)
     health = _load(tmp_path / "site" / "api" / "v0" / "health.json")
     assert set(health) == {
@@ -314,7 +329,8 @@ def test_health_json_fields(db_session: Session, scenario: sc.Scenario, tmp_path
     assert news["stale"] is False
     assert news["success_rate_7d"] == 1.0
     assert news["fetched_24h"] > 0
-    assert news["freshness_p95_h"] is not None
+    # Every item is dated before that query, which did not list it: 24 h since, not its age.
+    assert news["freshness_p95_h"] == 24.0
     assert by_source["greenhouse"]["stale"] is True  # last success 2026-09-25
     assert health["stale_sources"] == ["edgar", "greenhouse"]
     assert by_source["ashby"]["status"] == "never_run"

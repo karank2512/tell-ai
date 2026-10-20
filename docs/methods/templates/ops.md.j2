@@ -2,4 +2,6 @@
 {% extends "report.md.j2" %}
 {% block intro %}
 Dated report written by `tell backtest ops` (spec section 13.4): how long the pipeline has run without a hand on it, how often runs succeed, how fresh the data is, what it covers and how well names resolve.
+
+Freshness is tell's lag, from the earliest moment tell could have seen an event to the moment it recorded it (ADR 0043), not the age of what tell reads. Events from tell's first look at a board, company feed, Google News query or source, events without a source timestamp of their own, and backfills are counted beside its N, not in it.
 {% endblock %}

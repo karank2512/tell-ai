@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from decimal import Decimal
+from typing import Any, Literal
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tell.collectors.base import FIRST_POLL_KEY, Event, finish_run, start_run, write_events
+from tell.models import AtsBoard, Company, CompanyFeed, Posting, PostingObservation
 from tell.publish.health import (
     INTERNAL_JOBS,
     compute_health,
@@ -20,6 +23,7 @@ pytestmark = pytest.mark.db
 
 NOW = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
 HOUR = timedelta(hours=1)
+DAY = timedelta(days=1)
 
 
 def _run(
@@ -43,13 +47,58 @@ def _run(
         )
 
 
+def _watched(session: Session, source: str, observed: datetime) -> dict[str, Any]:
+    """The payload of an event from a place tell already watched (ADR 0043).
+
+    ATS sources get a board polled 30 hours before ``observed``; ``news`` gets a company
+    feed discovered three days before. ``tell`` events need nothing (never counted).
+    """
+    if source == "tell":
+        return {}
+    company = session.scalars(select(Company).where(Company.domain == "acme.example")).first()
+    if company is None:
+        company = Company(domain="acme.example", name="Acme")
+        session.add(company)
+        session.flush()
+    if source == "news":
+        url = "https://acme.example/feed.xml"
+        if session.scalars(select(CompanyFeed).where(CompanyFeed.feed_url == url)).first() is None:
+            session.add(
+                CompanyFeed(company_id=company.id, feed_url=url, created_at=observed - 3 * DAY)
+            )
+            session.flush()
+        return {"query": url}
+    board = AtsBoard(company_id=company.id, vendor=source, identifier="acme", confidence=Decimal(1))
+    session.add(board)
+    session.flush()
+    posting = Posting(
+        board_id=board.id,
+        external_id="older",
+        fingerprint="fp-older",
+        title="Account Executive",
+        title_norm="account executive",
+        role_family="sales",
+        first_seen_at=observed - 30 * HOUR,
+        last_seen_at=observed,
+        url="https://jobs.acme.example/older",
+    )
+    session.add(posting)
+    session.flush()
+    session.add(
+        PostingObservation(posting_id=posting.id, observed_at=observed - 30 * HOUR, run_id="r")
+    )
+    session.flush()
+    return {"vendor": source, "board_identifier": "acme"}
+
+
 def _events(
     session: Session, source: str, lags_h: list[float], *, first_poll: bool = False
 ) -> None:
     events = []
+    observed = NOW - HOUR * 2
+    watched = _watched(session, source, observed) if not first_poll else {}
     for n, lag in enumerate(lags_h):
-        observed = NOW - HOUR * 2
-        payload = {FIRST_POLL_KEY: True} if first_poll else {}
+        payload = {FIRST_POLL_KEY: True} if first_poll else dict(watched)
         events.append(
             Event(
                 source=source,

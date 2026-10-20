@@ -78,6 +78,14 @@ contract: entries without a title, link or date are dropped and counted as skipp
 | `payload.title_redacted` | `true` for `news_leadership` (the title is redacted), `false` otherwise (the title is the feed's, unchanged) |
 | `payload.match` | Google News: `{"rule": "news_query", "guard": "name_in_title"}`; own-domain feed: `{"rule": "R1", "confidence": 0.98}` |
 
+**Freshness (ADR 0043).** `occurred_at` is the item's own `pubDate`, so it is the age of the
+item, not tell's lag, whenever tell had not looked before: the feed's whole archive is read
+when discovery finds a feed (posts years old), and a company's first Google News query
+returns up to 7 days of items. Freshness leaves out company-feed items dated before
+`company_feeds.created_at` and Google News items with no earlier query for the company
+(`runs.notes.polled`), and measures a later Google News item from its `pubDate` or tell's
+previous query for the company, whichever is later.
+
 **Stored:** title (redacted for leadership), URL, pubDate, publisher name, the matching
 rule. **Never stored:** the raw leadership headline, the `description`, article text,
 author names, images, or anything fetched from the publisher's site (the publisher URL is
@@ -269,8 +277,8 @@ uv run tell ingest --source news --cohort formd --when-days 120 --cohort-days 90
   scheduled 7-day poll an hour earlier never hides a company from the 120-day cohort run,
   while a cohort poll does satisfy a later narrower one. Cohort polls also count for the
   rotation (`notes.polled`).
-- Events from a 120-day query are observed today but can be four months old, so the news
-  freshness p95 on `health.json` is high for the 24 hours after a cohort run.
+- Events from a 120-day query are observed today but can be four months old: freshness
+  counts them as backfills, never as tell's lag (`runs.notes.when_days` above 7, ADR 0043).
 - Report dated in the past (`tell backtest speed-vs-press --as-of D`, e.g. when the newest
   posted Form D data set ends before the last 90 days): use `--cohort-days` = days from D-90
   to today, and `--when-days` = days from D-104 to today (capped at 365), so both the cohort

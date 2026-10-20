@@ -24,8 +24,9 @@ line, over the trailing 7 days:
     not on ingestion, and the one-off ``edgar_backfill`` load) are excluded, so the
     quoted number describes the ingest pipeline.
 ``freshness_p95_h``
-    Spec section 12's p95 of ``observed_at - occurred_at`` over the last 24 hours of
-    collector events (:func:`tell.publish.health.freshness_p95_h`).
+    Spec section 12's freshness p95 as ADR 0043 reads it: tell's lag over the collector
+    events of the last 24 hours, first looks, first-seen-only events and backfills left out
+    (:func:`tell.publish.health.freshness_p95_h`).
 ``companies_monitored`` / ``postings_tracked``
     Companies with an ``active`` board or a CIK; postings with ``closed_at IS NULL``.
 """
