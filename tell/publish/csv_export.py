@@ -24,6 +24,7 @@ column                         content
                                ``dead:lever:acme`` so gaps are explicit
 ``account_page``               the public account page URL
 ``rate_this_row``              the prefilled feedback form link (``TELL_FEEDBACK_FORM_URL``), or empty
+                               (no form configured, or no top signal: the form needs a signal id)
 =============================  ==================================================================
 """
 
@@ -155,9 +156,12 @@ def csv_rows(
         row["coverage_note"] = facts.coverage_note
         row["account_page"] = f"{base}/companies/{company.domain}.html"
         top_id = int(tops[0]["signal_id"]) if tops else None
+        # The feedback form requires a signal id and `tell intake feedback-sync` rejects a
+        # response without one: a row with no top signal has nothing to rate, so the cell
+        # stays empty (as it does without a form) rather than carry a link with no id.
         row["rate_this_row"] = (
             feedback_link(signal_id=top_id, domain=company.domain, verdict="")
-            if settings.tell_feedback_form_url
+            if settings.tell_feedback_form_url and top_id is not None
             else ""
         )
         rows.append(row)

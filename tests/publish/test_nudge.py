@@ -126,10 +126,83 @@ def test_nudge_blocks_feedback_links_only_with_a_form() -> None:
     assert f"&v=useful&w={SLUG}|useful>" in listed[1]["elements"][1]["text"]
     unlisted = build_nudge_blocks(account, pages_base_url=BASE, feedback_form_url=FORM_WITH_LIST)
     assert "&v=useful&w=|useful>" in unlisted[1]["elements"][1]["text"]
-    # No contribution: the links still work, with an empty signal id.
-    lone = CrossedAccount(name="Q", domain="q.example", score=6.0, contributions=[])
-    blocks = build_nudge_blocks(lone, pages_base_url=BASE, feedback_form_url=FORM)
-    assert "f?s=&d=q.example&v=useful" in blocks[1]["elements"][1]["text"]
+
+
+def test_nudge_with_a_signal_id_keeps_the_account_page_and_rating_links() -> None:
+    # The links rate the top contribution's signal (100, not the second one's 101), carry the
+    # watchlist slug, and follow the account page link.
+    blocks = build_nudge_blocks(
+        _account("funding", "launch"),
+        pages_base_url=BASE,
+        feedback_form_url=FORM_WITH_LIST,
+        watchlist_slug=SLUG,
+    )
+    assert blocks[1]["elements"] == [
+        {"type": "mrkdwn", "text": f"<{BASE}/companies/acme.example.html|Account page>"},
+        {
+            "type": "mrkdwn",
+            "text": (
+                f"Rate it: <https://forms.example/f?s=100&d=acme.example&v=useful&w={SLUG}|useful>"
+                " · "
+                f"<https://forms.example/f?s=100&d=acme.example&v=not_useful&w={SLUG}|not useful>"
+            ),
+        },
+    ]
+
+
+NO_SIGNAL_TO_RATE: list[Any] = [
+    pytest.param([], id="no_contributions"),
+    pytest.param(
+        [{"signal_type": "launch", "summary": "Launch", "url": "https://news.example/1"}],
+        id="top_contribution_without_a_signal_id",
+    ),
+    pytest.param(
+        [
+            {
+                "signal_id": None,
+                "signal_type": "launch",
+                "summary": "Launch",
+                "url": "https://news.example/1",
+            }
+        ],
+        id="top_contribution_with_a_null_signal_id",
+    ),
+    pytest.param(
+        [
+            {"signal_type": "launch", "summary": "Launch", "url": "https://news.example/1"},
+            {
+                "signal_id": 7,
+                "signal_type": "funding",
+                "summary": "Form D",
+                "url": "https://receipts.example/7",
+            },
+        ],
+        id="only_a_lower_contribution_has_a_signal_id",
+    ),
+]
+
+
+@pytest.mark.parametrize("contributions", NO_SIGNAL_TO_RATE)
+def test_nudge_without_a_signal_to_rate_has_no_rating_links(
+    contributions: list[dict[str, Any]],
+) -> None:
+    # The feedback form requires a Signal id and `tell intake feedback-sync` rejects an empty
+    # one ("missing or invalid signal id"), so a rating link is never built without one: the
+    # nudge keeps its account page link and has no "Rate it" element at all, form URL set
+    # or not. Only the top contribution's signal is ever rated.
+    account = CrossedAccount(
+        name="Q", domain="q.example", score=6.0, contributions=contributions, threshold=6.0
+    )
+    for form in (FORM, FORM_WITH_LIST, None):
+        blocks = build_nudge_blocks(
+            account, pages_base_url=BASE, feedback_form_url=form, watchlist_slug=SLUG
+        )
+        assert [b["type"] for b in blocks] == ["section", "context"]
+        assert blocks[1]["elements"] == [
+            {"type": "mrkdwn", "text": f"<{BASE}/companies/q.example.html|Account page>"}
+        ]
+        assert "Rate it" not in json.dumps(blocks)
+        assert "forms.example" not in json.dumps(blocks)
 
 
 def test_nudge_section_stays_under_the_slack_limit() -> None:
@@ -262,6 +335,51 @@ def test_send_nudges_one_message_per_account_to_the_private_webhook_only(
     assert send_nudges(db_session, now=sc.NOW, private_webhooks={"ghost": PRIVATE}).skipped == (
         "nothing to nudge"
     )
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("frozen")
+def test_send_nudges_rates_only_what_has_a_stored_signal(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With the form configured, a crossing whose stored score lists no contribution is
+    # nudged with the account page link alone: the form needs a Signal id and the nightly
+    # reader rejects an empty one. The other crossing keeps "Rate it" for its top signal.
+    monkeypatch.setenv("TELL_FEEDBACK_FORM_URL", FORM_WITH_LIST)
+    monkeypatch.setenv("TELL_BASE_URL", BASE)
+    get_settings.cache_clear()
+    scenario = _scenario_with_private_slug(db_session)
+    rated = db_session.scalars(
+        select(Score).where(Score.company_id == scenario.companies[sc.ROBOTICS])
+    ).one()
+    bare = db_session.scalars(
+        select(Score).where(Score.company_id == scenario.companies[sc.BLUEFIN])
+    ).one()
+    top_signal = rated.contributions[0]["signal_id"]
+    bare.contributions = []
+    db_session.flush()
+    with respx.mock(assert_all_called=True, assert_all_mocked=True) as mock:
+        route = mock.post(PRIVATE).respond(200, text="ok")
+        outcome = send_nudges(
+            db_session, now=sc.NOW, private_webhooks={SLUG: PRIVATE}, sleep=lambda _: None
+        )
+    assert (outcome.candidates, outcome.sent, outcome.errors) == (2, 2, 0)
+    bodies = [json.loads(call.request.content) for call in route.calls]
+    sent = {d: b for b in bodies for d in (sc.ROBOTICS, sc.BLUEFIN) if f"({d})" in b["text"]}
+    assert set(sent) == {sc.ROBOTICS, sc.BLUEFIN}
+
+    def account_page(domain: str) -> dict[str, str]:
+        return {"type": "mrkdwn", "text": f"<{BASE}/companies/{domain}.html|Account page>"}
+
+    stem = f"https://forms.example/f?s={top_signal}&d={sc.ROBOTICS}"
+    rate = f"Rate it: <{stem}&v=useful&w={SLUG}|useful> · <{stem}&v=not_useful&w={SLUG}|not useful>"
+    assert "• " in sent[sc.ROBOTICS]["blocks"][0]["text"]["text"]
+    assert sent[sc.ROBOTICS]["blocks"][1]["elements"] == [
+        account_page(sc.ROBOTICS),
+        {"type": "mrkdwn", "text": rate},
+    ]
+    assert "• " not in sent[sc.BLUEFIN]["blocks"][0]["text"]["text"]  # nothing to rate
+    assert sent[sc.BLUEFIN]["blocks"][1]["elements"] == [account_page(sc.BLUEFIN)]
 
 
 @pytest.mark.db

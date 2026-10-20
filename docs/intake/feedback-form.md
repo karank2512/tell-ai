@@ -12,6 +12,11 @@ opens the form: page feedback is not a signal verdict (the form needs a stored s
 and one of the six verdicts below), so that link is always a prefilled GitHub issue
 draft, whether or not `TELL_FEEDBACK_FORM_URL` is set.
 
+Likewise, a link to the form is never built without a signal id (the reader rejects such
+a response as `missing or invalid signal id`): a nudge for an account with no contribution
+carries the account page link only, with no "Rate it" links, and a CSV row with no top
+signal leaves `rate_this_row` empty.
+
 ## Form fields
 
 Create the form with these questions, in this order, with these exact titles. The titles

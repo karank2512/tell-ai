@@ -8,9 +8,11 @@ from pathlib import Path
 
 import pytest
 from freezegun import freeze_time
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tell.config import get_settings
+from tell.models import Signal
 from tell.publish.csv_export import CSV_COLUMNS, export_csv
 from tests.publish import scenario as sc
 
@@ -110,3 +112,37 @@ def test_rate_this_row_uses_the_feedback_form(
     _, rows = _read(path)
     assert rows[0]["rate_this_row"].startswith("https://forms.example/f?entry.1=")
     assert rows[0]["rate_this_row"] != "https://forms.example/f?entry.1="
+
+
+def test_rate_this_row_is_empty_for_a_row_without_a_top_signal(
+    db_session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The feedback form requires a Signal id and `tell intake feedback-sync` rejects an empty
+    # one, so a company with nothing to rate (OLDCO's only signal is 200 days old: score 0.0,
+    # no contribution) gets an empty cell, not a form link with an empty Signal id. A row
+    # with a top signal keeps its link, filled in with that signal's id.
+    monkeypatch.setenv(
+        "TELL_FEEDBACK_FORM_URL", "https://forms.example/f?s={signal_id}&d={domain}&v={verdict}"
+    )
+    get_settings.cache_clear()
+    scenario = sc.build(db_session)
+    path = tmp_path / "list.csv"
+    ids = [scenario.companies[sc.ROBOTICS], scenario.companies[sc.OLDCO]]
+    assert export_csv(db_session, path, ids, scenario.default, sc.AS_OF) == 2
+    _, rows = _read(path)
+    by_domain = {r["domain"]: r for r in rows}
+    (signal_id,) = db_session.scalars(
+        select(Signal.id).where(Signal.company_id == scenario.companies[sc.ROBOTICS])
+    )
+
+    robotics = by_domain[sc.ROBOTICS]
+    assert robotics["top_signal_1"] != ""
+    assert robotics["rate_this_row"] == f"https://forms.example/f?s={signal_id}&d={sc.ROBOTICS}&v="
+
+    oldco = by_domain[sc.OLDCO]
+    assert (oldco["score"], oldco["top_signal_1"], oldco["top_signal_1_url"]) == ("0.0", "", "")
+    assert oldco["rate_this_row"] == ""
+    # The rest of the row is still there.
+    assert oldco["account_page"] == (
+        f"https://karank2512.github.io/tell-data/companies/{sc.OLDCO}.html"
+    )

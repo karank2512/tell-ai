@@ -166,11 +166,12 @@ that watchlist becomes one message to that webhook, paced 1.1 s apart:
   reads the partner's HubSpot and an `enrich` verdict is pushed there first (company,
   `tell_*` properties, receipt note, task; ADR 0040), adding a `HubSpot: added · note +
   task` / `updated · note + task` / `already current` / `push failed (401)` line;
-- a context line with the account page and, when `TELL_FEEDBACK_FORM_URL` is set,
-  prefilled `useful` / `not useful` links for the top contribution's signal, carrying the
-  watchlist slug in the form's `{watchlist}` placeholder; the nightly
-  `tell intake feedback-sync` turns the responses into `feedback` rows (ADR 0039,
-  `docs/intake/feedback-form.md`).
+- a context line with the account page and, when `TELL_FEEDBACK_FORM_URL` is set and the
+  top contribution has a signal id, prefilled `useful` / `not useful` links for that
+  signal, carrying the watchlist slug in the form's `{watchlist}` placeholder (an account
+  with no contribution gets the account page link only: the form requires a signal id and
+  the reader rejects a response without one); the nightly `tell intake feedback-sync`
+  turns the responses into `feedback` rows (ADR 0039, `docs/intake/feedback-form.md`).
 
 The `nudges` table (migration 0010) holds one row per (event, watchlist): `ok` once a 2xx
 came back, `failed` with the HTTP status (or `NULL` on a transport error) otherwise; a
@@ -190,4 +191,5 @@ new_roles_7d_other, funding_last_180d_usd, funding_url, open_postings, long_open
 ats, coverage_note, account_page, rate_this_row`. `heat` is the percentile within the
 exported list; `coverage_note` is `greenhouse:acme`, `no_board`, `unsupported:workday` or
 `dead:lever:acme`, so gaps are explicit; `rate_this_row` is the prefilled feedback link
-when `TELL_FEEDBACK_FORM_URL` is set, else empty.
+when `TELL_FEEDBACK_FORM_URL` is set and the row has a top signal (the form requires a
+signal id), else empty.
