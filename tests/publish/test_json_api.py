@@ -169,6 +169,19 @@ def test_feedback_link_variants(monkeypatch: pytest.MonkeyPatch) -> None:
     assert feedback_link(signal_id=1, domain="a.com", verdict="useful").startswith(
         "https://forms.example/f?signal_id=1"
     )
+    # Page feedback is not a signal verdict: issue_only keeps the issue draft even with a form
+    # configured, whether it comes from the environment or from the argument.
+    assert feedback_link(signal_id=None, domain="acme.com", verdict="page", issue_only=True) == page
+    assert (
+        feedback_link(
+            signal_id=None,
+            domain="acme.com",
+            verdict="page",
+            form_url="https://forms.example/f?entry.1={signal_id}&entry.2={verdict}",
+            issue_only=True,
+        )
+        == page
+    )
 
 
 def test_intake_link_and_generated_by(monkeypatch: pytest.MonkeyPatch) -> None:
