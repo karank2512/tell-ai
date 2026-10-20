@@ -21,6 +21,10 @@ It does:
 - Resolve every event to a company domain (rules R1-R6, with a review queue for the unsure cases) and classify postings into ten role families.
 - Compute hiring velocity (new postings in 7 days against a four-week baseline, with repost and stale-posting handling) and an additive score with per-signal exponential decay.
 - Publish static pages, JSON, a Slack digest and a CSV in which every row links to its receipt.
+- Send a Slack nudge to a watchlist's own webhook on the ingest run that scores a threshold crossing, with the receipts ([method](docs/methods/publishing.md#7a-per-event-nudges), [ADR 0036](docs/decisions/0036-per-event-slack-nudges.md)). Each nudge says whether the account is worth an enrichment credit: `yes`, `skip` or `hold`, with the reason ([ADR 0038](docs/decisions/0038-enrichment-gate.md)).
+- Write the score, a receipt note and an optional task onto the company in the customer's own HubSpot ([docs/crm/hubspot.md](docs/crm/hubspot.md), [ADR 0037](docs/decisions/0037-hubspot-write-back.md)). A watchlist with a HubSpot token in its `tell-private` record gets that push on each `enrich` verdict, before its nudge ([ADR 0040](docs/decisions/0040-hubspot-with-the-nudge.md)).
+- Collect ratings: with a feedback form configured, rating links on nudges, account pages and the CSV open it prefilled ([docs/intake/feedback-form.md](docs/intake/feedback-form.md)). A nightly `tell intake feedback-sync` turns the responses into `feedback` labels ([ADR 0039](docs/decisions/0039-feedback-form-reader.md)).
+- Publish "Rounds filed, not announced" weekly: original Form D filings of the last two complete weeks with no funding headline in tell's news data. Only companies with an account page and a trusted link to the issuer appear, and no customer's private list can be read off it. Each row's receipt is its filing on sec.gov ([page](https://karankapur.com/tell-data/rounds-not-announced.html), `api/v0/rounds-not-announced.json`, [method](docs/methods/publishing.md#5a-rounds-filed-not-announced), [ADR 0042](docs/decisions/0042-rounds-filed-not-announced.md)).
 
 It does not:
 
@@ -42,7 +46,7 @@ Headline-redaction policy: a leadership-change headline usually names a person, 
   "env": { "TELL_BASE_URL": "https://karank2512.github.io/tell-data" } } } }
 ```
 
-Restart the app and ask: "Which of these ten domains are in market and why?" The answer should cite a receipt URL for every signal. Tools: `watch_accounts`, `in_market`, `explain`, `events`, `coverage`, plus the `why_now_email` prompt. Details: [docs/mcp.md](docs/mcp.md). `uvx tell-mcp` works once the first release is on PyPI (a cutover step); until then run it from a checkout with `uv run tell-mcp`.
+Restart the app and ask: "Which of these ten domains are in market and why?" The answer should cite a receipt URL for every signal. Tools: `watch_accounts`, `in_market`, `explain`, `events`, `coverage`, plus the `why_now_email` prompt. Details: [docs/mcp.md](docs/mcp.md). `uvx tell-mcp`, as in the config above, is the recommended way to run it and needs no checkout: it installs the release from PyPI. `pip install tell-mcp` also works and gives a `tell-mcp` console script. The server is listed in the official MCP Registry as `io.github.karank2512/tell-mcp` ([docs/mcp.md](docs/mcp.md#listing-in-the-mcp-registry)).
 
 ### From source
 
@@ -103,6 +107,8 @@ flowchart TD
 
 Data repo: [karank2512/tell-data](https://github.com/karank2512/tell-data) (append-only `events/YYYY/MM/DD.jsonl` is the system of record). The static API is documented in [docs/api/README.md](docs/api/README.md).
 
+Not drawn: per-event Slack nudges and their HubSpot push, sent from the same notify step as the digest. They read each watchlist's webhook and token from `tell-private` at run time; neither is stored in the database ([ADR 0036](docs/decisions/0036-per-event-slack-nudges.md), [ADR 0040](docs/decisions/0040-hubspot-with-the-nudge.md)).
+
 ## Data sources
 
 Every source is a documented public endpoint or a public-domain government file. Full pages, with endpoint, rate limit, legal note and sample response, are in [docs/sources/](docs/sources/README.md).
@@ -139,8 +145,11 @@ Numbers that exist today:
 | Entity-resolution recall on SEC-verified legal names (name rules, 36 of the 300) | 0.75 (27/36) | 2026-10-14 | Was 0.78 (28/36) before R3 became review-only for Form D. The all-300 figure (0.9433) is inflated: 290 of the 300 drafted legal names normalise to the brand and match trivially. The misses are issuers filed under a former corporate name (unlinked) and one former R3 link now sent to review. |
 | Look-alike decoys auto-linked in the gold-set test (token supersets that fuzzy-score 100, e.g. "Blue Stripe Bakery" vs Stripe) | 0 of 180 | 2026-10-14 | Synthetic decoys only. Production's real look-alikes (Compass vs nCompass, Payload Inc. vs Payload CMS) were linked; see the first row. |
 | Same measures on the public 50-row sample | precision 1.0000, recall 0.9200 | 2026-10-14 | Release gate is precision at least 0.97 and recall at least 0.85; both pass. Recall was 1.0000 before R3 became review-only for Form D. |
+| Companies monitored (an active job board or a CIK) | 907 | 2026-10-19 | A count at the moment the report ran, not an estimate. Source: [ops-2026-10-19.md](https://github.com/karank2512/tell-data/blob/main/site/methods/ops-2026-10-19.md). |
+| Postings tracked (open, `closed_at` is null) | 10,585 | 2026-10-19 | A count at the moment the report ran. Source: [ops-2026-10-19.md](https://github.com/karank2512/tell-data/blob/main/site/methods/ops-2026-10-19.md). |
+| Pipeline run success rate, ok / (ok + failed) | 97.8% (N=321) | 2026-10-19 | N is every finished pipeline run since collection started; the intake and feedback readers and the Form D backfill are left out. It counts runs, not boards: one failed vendor leg is one failed run. Source: [ops-2026-10-19.md](https://github.com/karank2512/tell-data/blob/main/site/methods/ops-2026-10-19.md). |
 
-The backtest reports are generated by `tell backtest refresh` every Monday into [`tell-data/site/methods/`](https://github.com/karank2512/tell-data/tree/main/site/methods) (speed versus press, hiring velocity as a leading indicator, noise handling, operations; the workflow never commits to this repo, see [ADR 0025](docs/decisions/0025-weekly-reports-published-to-tell-data.md)). Their headline numbers (the share of funding events preceded by a hiring spike, repost share, freshness p95, success rate, companies and postings tracked) are pending soak: they need calendar time of real collection after cutover, and nothing is quoted until a dated report with its N exists. A number with N under 30 is never quoted.
+The backtest reports are generated by `tell backtest refresh` every Monday into [`tell-data/site/methods/`](https://github.com/karank2512/tell-data/tree/main/site/methods) (speed versus press, hiring velocity as a leading indicator, noise handling, operations; the workflow never commits to this repo, see [ADR 0025](docs/decisions/0025-weekly-reports-published-to-tell-data.md)). Three of their headline numbers are pending soak: the share of funding events preceded by a hiring spike, the repost share and freshness p95. They need calendar time of real collection, and none is quoted until a dated, quotable report gives it with its N. The [2026-10-19 noise report](https://github.com/karank2512/tell-data/blob/main/site/methods/noise-2026-10-19.md) is marked not quotable, and no report written before [ADR 0043](docs/decisions/0043-freshness-is-tells-lag.md) is quoted for freshness. A number with N under 30 is never quoted.
 
 Speed claims: lead-time figures (the days between a Form D and its first press mention, how often the filing came first) are not quoted anywhere until a dated report with N of at least 100 and full 60-day follow-up marks them quotable. Until then tell's only speed claims, each with its N, are: of 331 Form D filings tracked, 44 (13.3%) had verified press within 60 days, and 29.1% of new Delaware-corporation issuers linked to a company at 59 of 59 precision; both from the 2026-10-15 verified report ([ADR 0041](docs/decisions/0041-no-lead-time-claims.md)).
 
@@ -179,18 +188,18 @@ PR checklist (also in the PR template): one ticket per PR naming the acceptance 
 - Google News coverage is incomplete for small companies, and the feed's terms are an open question (see the data sources table).
 - A company with no public job board and no SEC filing has no signals; `coverage` says so rather than guessing.
 - Reposts and ghost jobs are filtered by heuristics (requisition fingerprints, a 30-day repost window, stale-posting weights), not by ground truth. The ghost-job vote counter is inert until 500 votes.
-- The entity-resolution gold set is a draft that a person has not yet spot-checked, and the measured numbers are one day old. Backtest numbers are pending soak.
+- The entity-resolution gold set is a draft that a person has not yet spot-checked, and the entity-resolution numbers above were measured on 2026-10-14. Of the backtest numbers, only the operations rows and the two speed claims above are quoted; the rest are pending soak.
 - Score weights and half-lives are hand-tuned defaults, revisited after at least 100 rated signals; no precision-of-signal number is quoted before then.
 - The FastAPI v1 service is written and tested but not deployed; the static JSON on GitHub Pages is the API.
 
 ## Roadmap
 
-- Cutover (the guided one-time setup): public repos, Neon database, push token, Slack webhook, SEC contact, PyPI release of `tell-mcp`, first supervised runs, then the unattended soak that produces the numbers above.
+- Cutover (the guided one-time setup): public repos, Neon database, push token, Slack webhook, SEC contact, first supervised runs, then the unattended soak that produces the numbers above.
 - Published backtest reports with real N, then the prospective hiring-velocity study once 60 days of collection exist, with a matched control group.
 - GitHub org signals for developer-tool ICPs (v1.1; the collector exists and is config-gated).
 - LLM-proposed answers for the review queue, with a human still clicking the button (v1.1).
 - Deploy the FastAPI service when a consumer needs keys and quotas.
-- CRM write-back beyond HubSpot (Attio, Salesforce) and a per-event Slack nudge that triggers the push; HubSpot ships first through the customer's private app (`tell crm hubspot`, ADR 0037).
+- CRM write-back beyond HubSpot (Attio, Salesforce); HubSpot shipped first, by command or from the nudge (`tell crm hubspot`, ADR 0037, ADR 0040).
 - Government-contract sources (USAspending, SAM.gov) when a public-sector seller asks (v2).
 
 ## License and contact
