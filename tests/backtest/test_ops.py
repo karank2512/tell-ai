@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -12,7 +12,8 @@ from tell.backtest import ops
 from tell.backtest.common import render_report
 from tell.collectors import base as collectors_base
 from tell.models import ReviewQueueItem
-from tests.backtest.helpers import DAY, HOUR, NOW, board, company, event, posting, run
+from tests.backtest.helpers import DAY, HOUR, NOW, board, company, event, midnight, posting, run
+from tests.publish.freshness_window import load_window
 
 pytestmark = pytest.mark.db
 
@@ -50,9 +51,11 @@ def _world(session: Session, *, manual: bool) -> None:
     posting(session, gh, "open-1", first_seen=NOW - 5 * DAY)
     posting(session, gh, "closed-1", first_seen=NOW - 5 * DAY, closed=NOW - DAY)
 
-    # Freshness: lags 1 h and 3 h in the last 24 h (p95 = 1 + 0.95 * 2 = 2.9 h).
-    event(session, "form_d_filed", NOW - 5 * HOUR, owner=owner, observed=NOW - 4 * HOUR)
-    event(session, "form_d_filed", NOW - 6 * HOUR, owner=owner, observed=NOW - 3 * HOUR)
+    # Freshness: two filings dated 2026-10-05 are in EDGAR's daily index from 2026-10-06 02:00
+    # UTC (filing date + 26 h); recorded 1 h and 3 h later (p95 = 1 + 0.95 * 2 = 2.9 h).
+    filed = midnight(date(2026, 10, 5))
+    event(session, "form_d_filed", filed, owner=owner, observed=filed + 27 * HOUR)
+    event(session, "form_d_filed", filed, owner=owner, observed=filed + 29 * HOUR)
     event(session, "form_d_filed", NOW - 20 * DAY, owner=owner, observed=NOW - 10 * DAY)
     event(session, "form_d_filed", NOW - 40 * DAY, owner=owner, observed=NOW - 40 * DAY)
     session.add_all(
@@ -100,9 +103,9 @@ def test_numbers_with_manual_intervention(db_session: Session, tmp_path: Path) -
     assert (
         "Success rate ok / (ok + failed), percent, overall: 83.3% (N=6; too small to quote)" in text
     )
-    assert (
-        "Freshness p95, hours (SPEC section 12 definition): 2.9 h (N=2; too small to quote)" in text
-    )
+    assert f"{ops.FRESHNESS_LABEL}: 2.9 h (N=2; too small to quote)" in text
+    assert "Collector events observed in the 24-hour freshness window: 2" in text
+    assert "| edgar | 2 | 2 | 0 | 0 | 0 | 2.9 h (N=2; too small to quote) |" in text
     assert "Companies monitored (active board or a CIK): 2" in text
     assert "Postings tracked (closed_at is null): 1" in text
     assert (
@@ -162,3 +165,31 @@ def test_empty_database(db_session: Session, tmp_path: Path) -> None:
     text = render_report(report)
     assert report.n == 0
     assert "starts at no run yet" in text
+
+
+def test_report_on_the_2026_10_19_window(db_session: Session, tmp_path: Path) -> None:
+    """The window that printed 23298.1 h now prints tell's lag, its N and what was left out."""
+    window = load_window(db_session)
+    report = ops.build_report(db_session, window.now, gold_doc=tmp_path / "absent.md")
+    text = render_report(report)
+    assert f"{ops.FRESHNESS_LABEL}: 103.0 h (N=16; too small to quote)" in text
+    assert "Collector events observed in the 24-hour freshness window: 34" in text
+    assert (
+        "Left out of freshness, first looks (tell was not yet watching the board, company feed, "
+        "Google News query or source): 15"
+    ) in text
+    assert (
+        "Left out of freshness, first-seen-only (no source timestamp: tell dated the event when "
+        "it saw it): 1"
+    ) in text
+    assert (
+        "Left out of freshness, backfills (archive loads and widened Google News windows): 2"
+    ) in text
+    assert "### Freshness by source" in text
+    assert "| ashby | 5 | 1 | 4 | 0 | 0 | 8.0 h (N=1; too small to quote) |" in text
+    assert "| edgar | 1 | 0 | 0 | 0 | 1 | n/a (N=0; too small to quote) |" in text
+    assert "| greenhouse | 4 | 3 | 0 | 1 | 0 | 10.8 h (N=3; too small to quote) |" in text
+    assert "| news | 24 | 12 | 11 | 0 | 1 | 105.4 h (N=12; too small to quote) |" in text
+    assert "ADR 0043" in text
+    assert "Freshness is tell's lag" in text  # the template's intro
+    assert "[" not in text

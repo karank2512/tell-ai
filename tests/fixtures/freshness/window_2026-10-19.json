@@ -1,0 +1,1023 @@
+{
+ "about": "Hand-authored miniature of the 24 hours behind tell-data/site/methods/ops-2026-10-19.md (evaluation instant 2026-10-19T07:02:24Z). Synthetic companies and URLs; event shapes follow the public events JSONL. Production printed a freshness p95 of 23298.1 h (N=455) because 66 of its 455 events were company-blog posts from 2015 to 2026, read when tell discovered each feed.",
+ "now": "2026-10-19T07:02:24+00:00",
+ "companies": [
+  "alpha.example",
+  "bravo.example",
+  "charlie.example",
+  "delta.example",
+  "echo.example",
+  "foxtrot.example"
+ ],
+ "runs": [
+  {
+   "run_id": "greenhouse-20261014T023500-gh0001",
+   "source": "greenhouse",
+   "started_at": "2026-10-14T02:35:00+00:00",
+   "notes": null
+  },
+  {
+   "run_id": "greenhouse-20261018T025100-gh0001",
+   "source": "greenhouse",
+   "started_at": "2026-10-18T02:51:00+00:00",
+   "notes": null
+  },
+  {
+   "run_id": "greenhouse-20261018T154504-gh0001",
+   "source": "greenhouse",
+   "started_at": "2026-10-18T15:45:04+00:00",
+   "notes": null
+  },
+  {
+   "run_id": "greenhouse-20261019T025623-gh0001",
+   "source": "greenhouse",
+   "started_at": "2026-10-19T02:56:23+00:00",
+   "notes": null
+  },
+  {
+   "run_id": "ashby-20261014T023501-ab0001",
+   "source": "ashby",
+   "started_at": "2026-10-14T02:35:01+00:00",
+   "notes": null
+  },
+  {
+   "run_id": "ashby-20261018T025101-ab0001",
+   "source": "ashby",
+   "started_at": "2026-10-18T02:51:01+00:00",
+   "notes": null
+  },
+  {
+   "run_id": "ashby-20261018T154503-ab0001",
+   "source": "ashby",
+   "started_at": "2026-10-18T15:45:03+00:00",
+   "notes": null
+  },
+  {
+   "run_id": "ashby-20261019T025624-ab0001",
+   "source": "ashby",
+   "started_at": "2026-10-19T02:56:24+00:00",
+   "notes": null
+  },
+  {
+   "run_id": "news-20261014T023300-a1b2c3",
+   "source": "news",
+   "started_at": "2026-10-14T02:33:00+00:00",
+   "notes": {
+    "when_days": 7,
+    "polled": [
+     "alpha.example",
+     "bravo.example"
+    ]
+   }
+  },
+  {
+   "run_id": "news-20261018T023304-d4e5f6",
+   "source": "news",
+   "started_at": "2026-10-18T02:33:04+00:00",
+   "notes": {
+    "when_days": 7,
+    "polled": [
+     "alpha.example"
+    ]
+   }
+  },
+  {
+   "run_id": "news-20261018T152555-0a1b2c",
+   "source": "news",
+   "started_at": "2026-10-18T15:25:55+00:00",
+   "notes": {
+    "when_days": 7,
+    "polled": [
+     "charlie.example"
+    ]
+   }
+  },
+  {
+   "run_id": "news-20261018T202438-3d4e5f",
+   "source": "news",
+   "started_at": "2026-10-18T20:24:38+00:00",
+   "notes": {
+    "when_days": 120,
+    "cohort": "formd",
+    "polled": [
+     "echo.example"
+    ]
+   }
+  },
+  {
+   "run_id": "news-20261019T023708-6a7b8c",
+   "source": "news",
+   "started_at": "2026-10-19T02:37:08+00:00",
+   "notes": {
+    "when_days": 7,
+    "polled": [
+     "alpha.example",
+     "bravo.example",
+     "foxtrot.example"
+    ]
+   }
+  },
+  {
+   "run_id": "edgar_backfill-20261018T120000-bf0001",
+   "source": "edgar_backfill",
+   "started_at": "2026-10-18T12:00:00+00:00",
+   "notes": null
+  }
+ ],
+ "boards": [
+  {
+   "vendor": "greenhouse",
+   "identifier": "alpha",
+   "company": "alpha.example",
+   "postings": [
+    {
+     "external_id": "4100001",
+     "posted_at": "2026-08-01T16:00:00+00:00",
+     "observed": [
+      "2026-10-14T02:35:00+00:00",
+      "2026-10-18T02:51:00+00:00",
+      "2026-10-18T15:45:04+00:00",
+      "2026-10-19T02:56:23+00:00"
+     ]
+    },
+    {
+     "external_id": "4100002",
+     "posted_at": "2026-09-02T14:36:47+00:00",
+     "observed": [
+      "2026-10-19T02:56:23+00:00"
+     ]
+    },
+    {
+     "external_id": "4100003",
+     "posted_at": "2026-10-18T22:37:41+00:00",
+     "observed": [
+      "2026-10-19T02:56:23+00:00"
+     ]
+    }
+   ]
+  },
+  {
+   "vendor": "greenhouse",
+   "identifier": "bravo",
+   "company": "bravo.example",
+   "postings": [
+    {
+     "external_id": "5200001",
+     "posted_at": "2026-07-14T09:00:00+00:00",
+     "observed": [
+      "2026-10-14T02:35:00+00:00",
+      "2026-10-18T02:51:00+00:00",
+      "2026-10-18T15:45:04+00:00"
+     ]
+    },
+    {
+     "external_id": "5200002",
+     "posted_at": "2026-10-18T08:55:16+00:00",
+     "observed": [
+      "2026-10-18T15:45:04+00:00"
+     ]
+    }
+   ]
+  },
+  {
+   "vendor": "ashby",
+   "identifier": "charlie",
+   "company": "charlie.example",
+   "postings": [
+    {
+     "external_id": "c-1",
+     "posted_at": "2025-01-10T12:00:00+00:00",
+     "observed": [
+      "2026-10-18T15:45:03+00:00"
+     ]
+    },
+    {
+     "external_id": "c-2",
+     "posted_at": "2025-06-02T12:00:00+00:00",
+     "observed": [
+      "2026-10-18T15:45:03+00:00"
+     ]
+    },
+    {
+     "external_id": "c-3",
+     "posted_at": "2026-03-15T12:00:00+00:00",
+     "observed": [
+      "2026-10-18T15:45:03+00:00"
+     ]
+    }
+   ]
+  },
+  {
+   "vendor": "ashby",
+   "identifier": "delta",
+   "company": "delta.example",
+   "postings": [
+    {
+     "external_id": "d-1",
+     "posted_at": "2026-06-01T12:00:00+00:00",
+     "observed": [
+      "2026-10-14T02:35:01+00:00",
+      "2026-10-18T02:51:01+00:00",
+      "2026-10-18T15:45:03+00:00",
+      "2026-10-19T02:56:24+00:00"
+     ]
+    },
+    {
+     "external_id": "d-2",
+     "posted_at": "2026-10-18T18:58:19+00:00",
+     "observed": [
+      "2026-10-19T02:56:24+00:00"
+     ]
+    }
+   ]
+  }
+ ],
+ "feeds": [
+  {
+   "company": "alpha.example",
+   "feed_url": "https://blog.alpha.example/rss.xml",
+   "created_at": "2026-10-19T02:41:12+00:00"
+  },
+  {
+   "company": "bravo.example",
+   "feed_url": "https://www.bravo.example/blog/feed.xml",
+   "created_at": "2026-10-14T02:40:00+00:00"
+  }
+ ],
+ "events": [
+  {
+   "source": "greenhouse",
+   "type": "job_opened",
+   "company": "alpha.example",
+   "occurred_at": "2026-09-02T14:36:47+00:00",
+   "observed_at": "2026-10-19T02:56:23+00:00",
+   "url": "https://jobs.alpha.example/4100002",
+   "run_id": "greenhouse-20261019T025623-gh0001",
+   "payload": {
+    "vendor": "greenhouse",
+    "board_identifier": "alpha",
+    "posting_external_id": "4100002",
+    "title": "Account Executive",
+    "posted_at": "2026-09-02T14:36:47+00:00",
+    "first_seen_at": "2026-10-19T02:56:23+00:00",
+    "match": {
+     "rule": "R1",
+     "confidence": 0.98,
+     "via": "ats_board"
+    }
+   },
+   "case": "old-dated posting on a later poll"
+  },
+  {
+   "source": "greenhouse",
+   "type": "job_opened",
+   "company": "alpha.example",
+   "occurred_at": "2026-10-18T22:37:41+00:00",
+   "observed_at": "2026-10-19T02:56:23+00:00",
+   "url": "https://jobs.alpha.example/4100003",
+   "run_id": "greenhouse-20261019T025623-gh0001",
+   "payload": {
+    "vendor": "greenhouse",
+    "board_identifier": "alpha",
+    "posting_external_id": "4100003",
+    "title": "Account Executive",
+    "posted_at": "2026-10-18T22:37:41+00:00",
+    "first_seen_at": "2026-10-19T02:56:23+00:00",
+    "match": {
+     "rule": "R1",
+     "confidence": 0.98,
+     "via": "ats_board"
+    }
+   },
+   "case": "new posting"
+  },
+  {
+   "source": "greenhouse",
+   "type": "job_updated",
+   "company": "alpha.example",
+   "occurred_at": "2026-10-18T15:45:04+00:00",
+   "observed_at": "2026-10-18T15:45:04+00:00",
+   "url": "https://jobs.alpha.example/4100001",
+   "run_id": "greenhouse-20261018T154504-gh0001",
+   "payload": {
+    "vendor": "greenhouse",
+    "board_identifier": "alpha",
+    "posting_external_id": "4100001",
+    "title": "Account Executive",
+    "posted_at": null,
+    "first_seen_at": "2026-10-18T15:45:04+00:00",
+    "match": {
+     "rule": "R1",
+     "confidence": 0.98,
+     "via": "ats_board"
+    }
+   },
+   "case": "job_updated: no source timestamp"
+  },
+  {
+   "source": "greenhouse",
+   "type": "job_opened",
+   "company": "bravo.example",
+   "occurred_at": "2026-10-18T08:55:16+00:00",
+   "observed_at": "2026-10-18T15:45:04+00:00",
+   "url": "https://jobs.bravo.example/5200002",
+   "run_id": "greenhouse-20261018T154504-gh0001",
+   "payload": {
+    "vendor": "greenhouse",
+    "board_identifier": "bravo",
+    "posting_external_id": "5200002",
+    "title": "Account Executive",
+    "posted_at": "2026-10-18T08:55:16+00:00",
+    "first_seen_at": "2026-10-18T15:45:04+00:00",
+    "match": {
+     "rule": "R1",
+     "confidence": 0.98,
+     "via": "ats_board"
+    }
+   },
+   "case": "new posting"
+  },
+  {
+   "source": "ashby",
+   "type": "job_opened",
+   "company": "charlie.example",
+   "occurred_at": "2025-01-10T12:00:00+00:00",
+   "observed_at": "2026-10-18T15:45:03+00:00",
+   "url": "https://jobs.charlie.example/c-1",
+   "run_id": "ashby-20261018T154503-ab0001",
+   "payload": {
+    "vendor": "ashby",
+    "board_identifier": "charlie",
+    "posting_external_id": "c-1",
+    "title": "Account Executive",
+    "posted_at": "2025-01-10T12:00:00+00:00",
+    "first_seen_at": "2026-10-18T15:45:03+00:00",
+    "match": {
+     "rule": "R1",
+     "confidence": 0.98,
+     "via": "ats_board"
+    },
+    "first_poll": true
+   },
+   "case": "board first poll"
+  },
+  {
+   "source": "ashby",
+   "type": "job_opened",
+   "company": "charlie.example",
+   "occurred_at": "2025-06-02T12:00:00+00:00",
+   "observed_at": "2026-10-18T15:45:03+00:00",
+   "url": "https://jobs.charlie.example/c-2",
+   "run_id": "ashby-20261018T154503-ab0001",
+   "payload": {
+    "vendor": "ashby",
+    "board_identifier": "charlie",
+    "posting_external_id": "c-2",
+    "title": "Account Executive",
+    "posted_at": "2025-06-02T12:00:00+00:00",
+    "first_seen_at": "2026-10-18T15:45:03+00:00",
+    "match": {
+     "rule": "R1",
+     "confidence": 0.98,
+     "via": "ats_board"
+    },
+    "first_poll": true
+   },
+   "case": "board first poll"
+  },
+  {
+   "source": "ashby",
+   "type": "job_opened",
+   "company": "charlie.example",
+   "occurred_at": "2026-03-15T12:00:00+00:00",
+   "observed_at": "2026-10-18T15:45:03+00:00",
+   "url": "https://jobs.charlie.example/c-3",
+   "run_id": "ashby-20261018T154503-ab0001",
+   "payload": {
+    "vendor": "ashby",
+    "board_identifier": "charlie",
+    "posting_external_id": "c-3",
+    "title": "Account Executive",
+    "posted_at": "2026-03-15T12:00:00+00:00",
+    "first_seen_at": "2026-10-18T15:45:03+00:00",
+    "match": {
+     "rule": "R1",
+     "confidence": 0.98,
+     "via": "ats_board"
+    },
+    "first_poll": true
+   },
+   "case": "board first poll"
+  },
+  {
+   "source": "ashby",
+   "type": "tech_mentioned_first_time",
+   "company": "charlie.example",
+   "occurred_at": "2025-01-10T12:00:00+00:00",
+   "observed_at": "2026-10-18T15:45:03+00:00",
+   "url": "https://jobs.charlie.example/c-1",
+   "run_id": "ashby-20261018T154503-ab0001",
+   "case": "board first poll",
+   "payload": {
+    "keyword": "kubernetes",
+    "posting_title": "Platform Engineer",
+    "posting_external_id": "c-1",
+    "vendor": "ashby",
+    "board_identifier": "charlie",
+    "scope": "charlie",
+    "first_poll": true
+   }
+  },
+  {
+   "source": "ashby",
+   "type": "job_opened",
+   "company": "delta.example",
+   "occurred_at": "2026-10-18T18:58:19+00:00",
+   "observed_at": "2026-10-19T02:56:24+00:00",
+   "url": "https://jobs.delta.example/d-2",
+   "run_id": "ashby-20261019T025624-ab0001",
+   "payload": {
+    "vendor": "ashby",
+    "board_identifier": "delta",
+    "posting_external_id": "d-2",
+    "title": "Account Executive",
+    "posted_at": "2026-10-18T18:58:19+00:00",
+    "first_seen_at": "2026-10-19T02:56:24+00:00",
+    "match": {
+     "rule": "R1",
+     "confidence": 0.98,
+     "via": "ats_board"
+    }
+   },
+   "case": "new posting"
+  },
+  {
+   "source": "news",
+   "type": "news_launch",
+   "company": "alpha.example",
+   "occurred_at": "2015-08-18T00:00:00+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://blog.alpha.example/posts/1",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "company feed archive read on discovery",
+   "payload": {
+    "title": "Alpha launches its first product",
+    "title_redacted": false,
+    "source": "Alpha Blog",
+    "matched_regex": "launch.fixture",
+    "category": "launch",
+    "query": "https://blog.alpha.example/rss.xml",
+    "match": {
+     "rule": "R1",
+     "confidence": 0.98
+    },
+    "key": "news:https://blog.alpha.example/posts/1"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_funding",
+   "company": "alpha.example",
+   "occurred_at": "2017-08-30T14:00:00+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://blog.alpha.example/posts/2",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "company feed archive read on discovery",
+   "payload": {
+    "title": "Alpha raises a seed round",
+    "title_redacted": false,
+    "source": "Alpha Blog",
+    "matched_regex": "funding.fixture",
+    "category": "funding",
+    "query": "https://blog.alpha.example/rss.xml",
+    "match": {
+     "rule": "R1",
+     "confidence": 0.98
+    },
+    "key": "news:https://blog.alpha.example/posts/2"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_launch",
+   "company": "alpha.example",
+   "occurred_at": "2019-10-20T00:00:00+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://blog.alpha.example/posts/3",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "company feed archive read on discovery",
+   "payload": {
+    "title": "Alpha launches version 2",
+    "title_redacted": false,
+    "source": "Alpha Blog",
+    "matched_regex": "launch.fixture",
+    "category": "launch",
+    "query": "https://blog.alpha.example/rss.xml",
+    "match": {
+     "rule": "R1",
+     "confidence": 0.98
+    },
+    "key": "news:https://blog.alpha.example/posts/3"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_launch",
+   "company": "alpha.example",
+   "occurred_at": "2021-07-06T16:00:00+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://blog.alpha.example/posts/4",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "company feed archive read on discovery",
+   "payload": {
+    "title": "Alpha launches an API",
+    "title_redacted": false,
+    "source": "Alpha Blog",
+    "matched_regex": "launch.fixture",
+    "category": "launch",
+    "query": "https://blog.alpha.example/rss.xml",
+    "match": {
+     "rule": "R1",
+     "confidence": 0.98
+    },
+    "key": "news:https://blog.alpha.example/posts/4"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_funding",
+   "company": "alpha.example",
+   "occurred_at": "2022-11-16T10:30:00+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://blog.alpha.example/posts/5",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "company feed archive read on discovery",
+   "payload": {
+    "title": "Alpha raises a Series A",
+    "title_redacted": false,
+    "source": "Alpha Blog",
+    "matched_regex": "funding.fixture",
+    "category": "funding",
+    "query": "https://blog.alpha.example/rss.xml",
+    "match": {
+     "rule": "R1",
+     "confidence": 0.98
+    },
+    "key": "news:https://blog.alpha.example/posts/5"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_launch",
+   "company": "alpha.example",
+   "occurred_at": "2023-06-15T00:00:00+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://blog.alpha.example/posts/6",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "company feed archive read on discovery",
+   "payload": {
+    "title": "Alpha launches in Europe",
+    "title_redacted": false,
+    "source": "Alpha Blog",
+    "matched_regex": "launch.fixture",
+    "category": "launch",
+    "query": "https://blog.alpha.example/rss.xml",
+    "match": {
+     "rule": "R1",
+     "confidence": 0.98
+    },
+    "key": "news:https://blog.alpha.example/posts/6"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_launch",
+   "company": "alpha.example",
+   "occurred_at": "2024-02-23T00:00:00+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://blog.alpha.example/posts/7",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "company feed archive read on discovery",
+   "payload": {
+    "title": "Alpha launches a mobile app",
+    "title_redacted": false,
+    "source": "Alpha Blog",
+    "matched_regex": "launch.fixture",
+    "category": "launch",
+    "query": "https://blog.alpha.example/rss.xml",
+    "match": {
+     "rule": "R1",
+     "confidence": 0.98
+    },
+    "key": "news:https://blog.alpha.example/posts/7"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_funding",
+   "company": "alpha.example",
+   "occurred_at": "2025-08-27T12:00:00+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://blog.alpha.example/posts/8",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "company feed archive read on discovery",
+   "payload": {
+    "title": "Alpha raises a Series B",
+    "title_redacted": false,
+    "source": "Alpha Blog",
+    "matched_regex": "funding.fixture",
+    "category": "funding",
+    "query": "https://blog.alpha.example/rss.xml",
+    "match": {
+     "rule": "R1",
+     "confidence": 0.98
+    },
+    "key": "news:https://blog.alpha.example/posts/8"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_launch",
+   "company": "bravo.example",
+   "occurred_at": "2026-10-18T10:00:00+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://www.bravo.example/blog/partners",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "company feed item published after discovery",
+   "payload": {
+    "title": "Bravo launches a partner program",
+    "title_redacted": false,
+    "source": "Bravo Blog",
+    "matched_regex": "launch.fixture",
+    "category": "launch",
+    "query": "https://www.bravo.example/blog/feed.xml",
+    "match": {
+     "rule": "R1",
+     "confidence": 0.98
+    },
+    "key": "news:https://www.bravo.example/blog/partners"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_launch",
+   "company": "alpha.example",
+   "occurred_at": "2026-10-19T01:37:08+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://news.google.com/rss/articles/alpha-1?oc=5",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "Google News, company polled before",
+   "payload": {
+    "title": "Alpha launches feature 1",
+    "title_redacted": false,
+    "source": "Example Wire",
+    "matched_regex": "launch.fixture",
+    "category": "launch",
+    "query": "https://news.google.com/rss/search?q=%22Alpha%22+when%3A7d&hl=en-US&gl=US&ceid=US:en",
+    "match": {
+     "rule": "news_query",
+     "guard": "name_in_title"
+    },
+    "key": "news:https://news.google.com/rss/articles/alpha-1?oc=5"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_launch",
+   "company": "alpha.example",
+   "occurred_at": "2026-10-18T23:07:08+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://news.google.com/rss/articles/alpha-2?oc=5",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "Google News, company polled before",
+   "payload": {
+    "title": "Alpha launches feature 2",
+    "title_redacted": false,
+    "source": "Example Wire",
+    "matched_regex": "launch.fixture",
+    "category": "launch",
+    "query": "https://news.google.com/rss/search?q=%22Alpha%22+when%3A7d&hl=en-US&gl=US&ceid=US:en",
+    "match": {
+     "rule": "news_query",
+     "guard": "name_in_title"
+    },
+    "key": "news:https://news.google.com/rss/articles/alpha-2?oc=5"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_launch",
+   "company": "alpha.example",
+   "occurred_at": "2026-10-18T19:25:08+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://news.google.com/rss/articles/alpha-3?oc=5",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "Google News, company polled before",
+   "payload": {
+    "title": "Alpha launches feature 3",
+    "title_redacted": false,
+    "source": "Example Wire",
+    "matched_regex": "launch.fixture",
+    "category": "launch",
+    "query": "https://news.google.com/rss/search?q=%22Alpha%22+when%3A7d&hl=en-US&gl=US&ceid=US:en",
+    "match": {
+     "rule": "news_query",
+     "guard": "name_in_title"
+    },
+    "key": "news:https://news.google.com/rss/articles/alpha-3?oc=5"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_launch",
+   "company": "alpha.example",
+   "occurred_at": "2026-10-18T14:37:08+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://news.google.com/rss/articles/alpha-4?oc=5",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "Google News, company polled before",
+   "payload": {
+    "title": "Alpha launches feature 4",
+    "title_redacted": false,
+    "source": "Example Wire",
+    "matched_regex": "launch.fixture",
+    "category": "launch",
+    "query": "https://news.google.com/rss/search?q=%22Alpha%22+when%3A7d&hl=en-US&gl=US&ceid=US:en",
+    "match": {
+     "rule": "news_query",
+     "guard": "name_in_title"
+    },
+    "key": "news:https://news.google.com/rss/articles/alpha-4?oc=5"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_launch",
+   "company": "alpha.example",
+   "occurred_at": "2026-10-18T06:07:08+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://news.google.com/rss/articles/alpha-5?oc=5",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "Google News, company polled before",
+   "payload": {
+    "title": "Alpha launches feature 5",
+    "title_redacted": false,
+    "source": "Example Wire",
+    "matched_regex": "launch.fixture",
+    "category": "launch",
+    "query": "https://news.google.com/rss/search?q=%22Alpha%22+when%3A7d&hl=en-US&gl=US&ceid=US:en",
+    "match": {
+     "rule": "news_query",
+     "guard": "name_in_title"
+    },
+    "key": "news:https://news.google.com/rss/articles/alpha-5?oc=5"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_funding",
+   "company": "alpha.example",
+   "occurred_at": "2026-10-15T09:00:00+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://news.google.com/rss/articles/alpha-late?oc=5",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "Google News item dated before the previous query (indexed late)",
+   "payload": {
+    "title": "Alpha raises a bridge round",
+    "title_redacted": false,
+    "source": "Example Wire",
+    "matched_regex": "funding.fixture",
+    "category": "funding",
+    "query": "https://news.google.com/rss/search?q=%22Alpha%22+when%3A7d&hl=en-US&gl=US&ceid=US:en",
+    "match": {
+     "rule": "news_query",
+     "guard": "name_in_title"
+    },
+    "key": "news:https://news.google.com/rss/articles/alpha-late?oc=5"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_launch",
+   "company": "bravo.example",
+   "occurred_at": "2026-10-17T20:37:08+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://news.google.com/rss/articles/bravo-1?oc=5",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "Google News, company polled before",
+   "payload": {
+    "title": "Bravo launches feature 1",
+    "title_redacted": false,
+    "source": "Example Wire",
+    "matched_regex": "launch.fixture",
+    "category": "launch",
+    "query": "https://news.google.com/rss/search?q=%22Bravo%22+when%3A7d&hl=en-US&gl=US&ceid=US:en",
+    "match": {
+     "rule": "news_query",
+     "guard": "name_in_title"
+    },
+    "key": "news:https://news.google.com/rss/articles/bravo-1?oc=5"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_launch",
+   "company": "bravo.example",
+   "occurred_at": "2026-10-16T19:37:08+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://news.google.com/rss/articles/bravo-2?oc=5",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "Google News, company polled before",
+   "payload": {
+    "title": "Bravo launches feature 2",
+    "title_redacted": false,
+    "source": "Example Wire",
+    "matched_regex": "launch.fixture",
+    "category": "launch",
+    "query": "https://news.google.com/rss/search?q=%22Bravo%22+when%3A7d&hl=en-US&gl=US&ceid=US:en",
+    "match": {
+     "rule": "news_query",
+     "guard": "name_in_title"
+    },
+    "key": "news:https://news.google.com/rss/articles/bravo-2?oc=5"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_launch",
+   "company": "bravo.example",
+   "occurred_at": "2026-10-15T18:37:08+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://news.google.com/rss/articles/bravo-3?oc=5",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "Google News, company polled before",
+   "payload": {
+    "title": "Bravo launches feature 3",
+    "title_redacted": false,
+    "source": "Example Wire",
+    "matched_regex": "launch.fixture",
+    "category": "launch",
+    "query": "https://news.google.com/rss/search?q=%22Bravo%22+when%3A7d&hl=en-US&gl=US&ceid=US:en",
+    "match": {
+     "rule": "news_query",
+     "guard": "name_in_title"
+    },
+    "key": "news:https://news.google.com/rss/articles/bravo-3?oc=5"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_launch",
+   "company": "bravo.example",
+   "occurred_at": "2026-10-14T22:37:08+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://news.google.com/rss/articles/bravo-4?oc=5",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "Google News, company polled before",
+   "payload": {
+    "title": "Bravo launches feature 4",
+    "title_redacted": false,
+    "source": "Example Wire",
+    "matched_regex": "launch.fixture",
+    "category": "launch",
+    "query": "https://news.google.com/rss/search?q=%22Bravo%22+when%3A7d&hl=en-US&gl=US&ceid=US:en",
+    "match": {
+     "rule": "news_query",
+     "guard": "name_in_title"
+    },
+    "key": "news:https://news.google.com/rss/articles/bravo-4?oc=5"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_launch",
+   "company": "bravo.example",
+   "occurred_at": "2026-10-14T10:37:08+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://news.google.com/rss/articles/bravo-5?oc=5",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "Google News, company polled before",
+   "payload": {
+    "title": "Bravo launches feature 5",
+    "title_redacted": false,
+    "source": "Example Wire",
+    "matched_regex": "launch.fixture",
+    "category": "launch",
+    "query": "https://news.google.com/rss/search?q=%22Bravo%22+when%3A7d&hl=en-US&gl=US&ceid=US:en",
+    "match": {
+     "rule": "news_query",
+     "guard": "name_in_title"
+    },
+    "key": "news:https://news.google.com/rss/articles/bravo-5?oc=5"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_launch",
+   "company": "foxtrot.example",
+   "occurred_at": "2026-10-19T00:37:08+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://news.google.com/rss/articles/foxtrot-1?oc=5",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "Google News, first query for the company",
+   "payload": {
+    "title": "Foxtrot launches feature 1",
+    "title_redacted": false,
+    "source": "Example Wire",
+    "matched_regex": "launch.fixture",
+    "category": "launch",
+    "query": "https://news.google.com/rss/search?q=%22Foxtrot%22+when%3A7d&hl=en-US&gl=US&ceid=US:en",
+    "match": {
+     "rule": "news_query",
+     "guard": "name_in_title"
+    },
+    "key": "news:https://news.google.com/rss/articles/foxtrot-1?oc=5"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_launch",
+   "company": "foxtrot.example",
+   "occurred_at": "2026-10-17T00:37:08+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://news.google.com/rss/articles/foxtrot-2?oc=5",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "Google News, first query for the company",
+   "payload": {
+    "title": "Foxtrot launches feature 2",
+    "title_redacted": false,
+    "source": "Example Wire",
+    "matched_regex": "launch.fixture",
+    "category": "launch",
+    "query": "https://news.google.com/rss/search?q=%22Foxtrot%22+when%3A7d&hl=en-US&gl=US&ceid=US:en",
+    "match": {
+     "rule": "news_query",
+     "guard": "name_in_title"
+    },
+    "key": "news:https://news.google.com/rss/articles/foxtrot-2?oc=5"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_launch",
+   "company": "foxtrot.example",
+   "occurred_at": "2026-10-13T06:37:08+00:00",
+   "observed_at": "2026-10-19T02:37:08+00:00",
+   "url": "https://news.google.com/rss/articles/foxtrot-3?oc=5",
+   "run_id": "news-20261019T023708-6a7b8c",
+   "case": "Google News, first query for the company",
+   "payload": {
+    "title": "Foxtrot launches feature 3",
+    "title_redacted": false,
+    "source": "Example Wire",
+    "matched_regex": "launch.fixture",
+    "category": "launch",
+    "query": "https://news.google.com/rss/search?q=%22Foxtrot%22+when%3A7d&hl=en-US&gl=US&ceid=US:en",
+    "match": {
+     "rule": "news_query",
+     "guard": "name_in_title"
+    },
+    "key": "news:https://news.google.com/rss/articles/foxtrot-3?oc=5"
+   }
+  },
+  {
+   "source": "news",
+   "type": "news_funding",
+   "company": "echo.example",
+   "occurred_at": "2026-07-21T09:00:00+00:00",
+   "observed_at": "2026-10-18T20:24:38+00:00",
+   "url": "https://news.google.com/rss/articles/echo-1?oc=5",
+   "run_id": "news-20261018T202438-3d4e5f",
+   "case": "Google News item from the when:120d cohort run",
+   "payload": {
+    "title": "Echo raises a Series A",
+    "title_redacted": false,
+    "source": "Example Wire",
+    "matched_regex": "funding.fixture",
+    "category": "funding",
+    "query": "https://news.google.com/rss/search?q=%22Echo%22+when%3A120d&hl=en-US&gl=US&ceid=US:en",
+    "match": {
+     "rule": "news_query",
+     "guard": "name_in_title"
+    },
+    "key": "news:https://news.google.com/rss/articles/echo-1?oc=5"
+   }
+  },
+  {
+   "source": "edgar",
+   "type": "form_d_filed",
+   "company": "echo.example",
+   "occurred_at": "2026-07-01T00:00:00+00:00",
+   "observed_at": "2026-10-18T12:00:00+00:00",
+   "url": "https://www.sec.gov/Archives/edgar/data/9990001/000999000126000001/",
+   "run_id": "edgar_backfill-20261018T120000-bf0001",
+   "case": "Form D from the quarterly data set (tell backfill formd)",
+   "payload": {
+    "is_amendment": false,
+    "cik": "0009990001",
+    "accession_number": "0009990001-26-000001",
+    "backfill": true
+   }
+  }
+ ]
+}

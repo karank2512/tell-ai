@@ -93,6 +93,42 @@ toward neither the success rate nor the anchor. Rule for the
 operator and rationale: ADR 0028; deployment side: `docs/deploy/github-actions.md`,
 "Re-running one source".
 
+### Freshness p95 (13.4, SPEC section 12)
+
+SPEC section 12 writes freshness as the 95th percentile of `observed_at - occurred_at` over
+the last 24 hours of events. Read literally, that is the age of whatever tell reads for the
+first time: the first dated `ops` report (2026-10-19) printed 23298.1 h (N=455) because 66
+of its 455 events were company-blog posts from 2015 to 2026, read when tell discovered each
+blog's feed (company feeds had no first-poll rule; boards did, ADR 0023). ADR 0043 reads the
+definition as tell's lag, which is what the SPEC's own target assumes ("four runs a day keeps
+p95 freshness under 12 hours for ATS and filings", section 11). `health.json`, the Slack
+context line, `tell runlog --week` and `tell backtest ops` share one implementation,
+`tell.publish.health.freshness`:
+
+- **Lag**: `observed_at` minus the earliest moment tell could have seen the event. That is
+  the source's own timestamp (`occurred_at`; for EDGAR, filing date + 26 h, when the daily
+  index lists the filing), moved forward to tell's previous look at the same place when that
+  look listed the whole place and did not include the event: the board's previous poll
+  (`posting_observations`) or the company's previous Google News query
+  (`runs.notes.polled`). Negative lags count as zero.
+- **Left out, and counted beside N**: *first looks* (a board's first poll,
+  `payload.first_poll`, or any ATS event with no earlier poll of its board; a Google News item
+  with no earlier query for its company; a company-feed item dated before tell discovered the
+  feed, `company_feeds.created_at`; an EDGAR filing, or any other source's event, visible
+  before tell's first run of that source), *first-seen-only* events (`occurred_at =
+  observed_at`: `job_updated`, `job_closed`, postings without a `posted_at`, keywords of a
+  re-worded posting; tell dated them, so their lag is zero by construction) and *backfills*
+  (`payload.backfill`, the quarterly Form D data sets, and Google News items of news runs
+  whose `runs.notes.when_days` is above 7, the 13.1 cohort fill).
+- The `ops` report prints the p95 with its N, the three exclusion counts and a table with
+  each source's own p95. Google News reaches the long tail of companies once a week, so news
+  dominates the pooled number; boards and EDGAR are read every run.
+- Limits: company feeds keep no poll history, so a feed item dated after discovery counts
+  from its own date; the EDGAR offset is the index's usual publication time (the rule 13.1
+  uses for `alert_at`), so an index that appears later makes EDGAR lags read high.
+
+Freshness in reports written before ADR 0043 is the literal formula; never quote it.
+
 Dated reports written so far (updated by `tell backtest`):
 
 <!-- backtest-reports:start -->

@@ -20,7 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from tell.backtest.ops import freshness_n
-from tell.collectors.base import Event, write_events
+from tell.collectors.base import Event, start_run, write_events
 from tell.collectors.edgar_backfill import (
     DEFAULT_SINCE_DAYS,
     FORMD_DATASET_URL,
@@ -339,6 +339,9 @@ def test_backfilled_events_stay_out_of_freshness(db_session: Session) -> None:
     backfill_formd(db_session, [QUARTERLY], run_id="bf", now=observed)
     assert freshness_p95_h(db_session, NOW, ["edgar"]) is None
     assert freshness_n(db_session, NOW) == 0
+    # A filing the scheduled daily index brought in: filed 2026-03-31, listed from
+    # 2026-04-01 02:00 UTC (filing date + 26 h, ADR 0043), recorded at 11:00.
+    start_run(db_session, "edgar", now=datetime(2026, 3, 20, 2, 17, tzinfo=UTC))
     write_events(
         db_session,
         [
@@ -347,7 +350,7 @@ def test_backfilled_events_stay_out_of_freshness(db_session: Session) -> None:
                 type=FORM_D_FILED,
                 external_id="0009990199-26-000001",
                 version="0009990199-26-000001",
-                occurred_at=observed - timedelta(hours=10),
+                occurred_at=datetime(2026, 3, 31, tzinfo=UTC),
                 observed_at=observed,
                 url="https://www.sec.gov/Archives/edgar/data/9990199/000999019926000001/",
                 payload={"backfill": False},
@@ -355,7 +358,7 @@ def test_backfilled_events_stay_out_of_freshness(db_session: Session) -> None:
             )
         ],
     )
-    assert freshness_p95_h(db_session, NOW, ["edgar"]) == 10.0
+    assert freshness_p95_h(db_session, NOW, ["edgar"]) == 9.0
     assert freshness_n(db_session, NOW) == 1
 
 

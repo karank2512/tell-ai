@@ -180,7 +180,9 @@ uv run tell resolve                                              # link the new 
   original is in an earlier quarter stays a `form_d_amendment` event (never scored as funding).
 - **Health.** Backfilled events are left out of the freshness p95 (`health.json`, the ops
   report), like first-poll baselines: they measure the archive's age, not tell's lag.
-  `edgar_backfill` is not a scheduled or health source.
+  `edgar_backfill` is not a scheduled or health source. Daily-index filings are measured
+  from filing date + 26 h, when the index lists them, and filings indexed before tell's
+  first EDGAR run are left out as first looks (ADR 0043).
 - **Posting lag.** SPEC §3.6 notes the data sets were posted through 2026 Q1 as of October
   2026. If the newest posted quarter ends before the 90-day cohort window, evaluate the report
   at the end of that quarter (`tell backtest speed-vs-press --as-of YYYY-MM-DD`) and collect the

@@ -58,7 +58,10 @@ reports:
       used_in: [linkedin-post.md, show-hn.md]
       status: pending soak
     freshness_p95_h:
-      field: "Freshness p95, hours (SPEC section 12 definition)"
+      # tell's lag (ADR 0043). Quote it with its N; the report prints what was left out beside
+      # it and each source's own p95. Never quote the 2026-10-19 report's 23298.1 h (the SPEC
+      # 12 formula read literally, measuring the age of blog archives).
+      field: "Freshness p95, hours (lag from the earliest moment tell could have seen the event to the moment it was recorded; first looks, first-seen-only events and backfills excluded)"
       used_in: [linkedin-post.md, show-hn.md]
       status: pending soak
     success_rate_pct:

@@ -121,8 +121,10 @@ ADR 0042. Code: `rounds_not_announced` in `tell/publish/weekly.py`; schema `ROUN
 
 Per source (registered collectors, then the `resolve`, `score`, `publish` jobs):
 `last_ok_at`, `success_rate_7d` (ok / finished runs started in 7 days), `fetched_24h`,
-`inserted_24h`, `freshness_p95_h` (95th percentile of `observed_at - occurred_at` over the
-source's events observed in the last 24 hours, first-poll baselines excluded), `stale` (has
+`inserted_24h`, `freshness_p95_h` (95th percentile of tell's lag over the source's events
+observed in the last 24 hours: from the earliest moment tell could have seen an event to the
+moment it recorded it, with first looks, first-seen-only events and backfills left out;
+ADR 0043, defined in [README.md](README.md#freshness-p95-134-spec-section-12)), `stale` (has
 run, but no success in 24 hours) and `status` (`ok` / `stale` / `never_run`). Any stale
 source turns the health page's banner red and adds a red line at the top of the Slack
 digest.

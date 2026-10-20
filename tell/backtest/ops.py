@@ -15,9 +15,14 @@
   :data:`tell.ops.runlog.NON_PIPELINE_SOURCES` (``intake``, ``edgar_backfill``) are left
   out of every query here: they run in ``tell-private`` and fail on a rotated sheet URL,
   not on ingestion.
-* **Freshness p95.** Spec section 12's definition, reused from
-  :func:`tell.publish.health.freshness_p95_h` (last 24 hours of collector events,
-  first-poll baselines and backfilled Form D data sets excluded).
+* **Freshness p95.** Spec section 12's freshness as ADR 0043 reads it, from
+  :func:`tell.publish.health.freshness`: tell's lag, from the earliest moment tell could
+  have seen an event to the moment it recorded it, over the collector events observed in
+  the 24 hours ending at the evaluation instant. First looks (a board's or a company's
+  Google News query's first poll, a company feed's archive read on discovery, filings and
+  other events visible before tell's first run of their source), first-seen-only events (no
+  source timestamp) and backfills are left out and printed beside N, with the numbers per
+  source (:func:`tell.publish.health.freshness_by_source`).
 * **Companies monitored / postings tracked.** :func:`tell.ops.runlog.companies_monitored`
   and :func:`tell.ops.runlog.postings_tracked`.
 * **Gold-set precision and recall.** The measured table in
@@ -43,10 +48,11 @@ from tell.collectors.base import MANUAL_NOTE_KEY, iso_utc
 from tell.models import EventRow, ReviewQueueItem, Run
 from tell.ops.runlog import NON_PIPELINE_SOURCES, companies_monitored, postings_tracked
 from tell.ops.runlog import weeks_unattended as deadman_weeks_unattended
-from tell.publish.health import STALE_AFTER, counts_for_freshness, freshness_p95_h
+from tell.publish.health import Freshness, freshness, freshness_by_source
 
 __all__ = [
     "ENTITY_RESOLUTION_DOC",
+    "FRESHNESS_LABEL",
     "NAME",
     "PERIOD",
     "GoldRow",
@@ -65,6 +71,12 @@ PERIOD = timedelta(days=28)
 """The trailing period for success rate and review-queue rate (four weeks)."""
 
 ENTITY_RESOLUTION_DOC = REPO_ROOT / "docs" / "methods" / "entity-resolution.md"
+
+FRESHNESS_LABEL = (
+    "Freshness p95, hours (lag from the earliest moment tell could have seen the event to the "
+    "moment it was recorded; first looks, first-seen-only events and backfills excluded)"
+)
+"""The headline freshness line; ``docs/launch/numbers.yaml`` quotes it by this exact label."""
 
 _WEEK_S = timedelta(days=7).total_seconds()
 _GOLD_ROW = re.compile(
@@ -146,18 +158,8 @@ def success_by_source(
 
 
 def freshness_n(session: Session, now: datetime) -> int:
-    """Events behind the freshness p95 (same filter as :func:`freshness_p95_h`)."""
-    stmt = (
-        select(func.count())
-        .select_from(EventRow)
-        .where(
-            EventRow.observed_at > now - STALE_AFTER,
-            EventRow.observed_at <= now,
-            EventRow.source != "tell",
-            counts_for_freshness(),
-        )
-    )
-    return int(session.scalar(stmt) or 0)
+    """Events behind the freshness p95 (:func:`tell.publish.health.freshness`)."""
+    return freshness(session, now).n
 
 
 def review_queue_rate(session: Session, since: datetime, now: datetime) -> tuple[int, int]:
@@ -189,7 +191,8 @@ def build_report(
     by_source = success_by_source(session, now - PERIOD, now)
     finished = sum(c for _, c, _ in by_source)
     oks = sum(o for _, _, o in by_source)
-    fresh_n = freshness_n(session, now)
+    fresh = freshness(session, now)
+    fresh_by_source = freshness_by_source(session, now)
     items, events = review_queue_rate(session, now - PERIOD, now)
     gold, measured_on = parse_gold_table(gold_doc)
     days = PERIOD.days
@@ -209,7 +212,9 @@ def build_report(
         cohort=(
             f"Every pipeline runs row up to the evaluation instant (the nightly intake "
             f"reader's runs are left out); success rate and review-queue rate over the "
-            f"trailing {days} days; freshness over the last 24 hours of collector events. "
+            f"trailing {days} days; freshness over the collector events observed in the 24 hours "
+            "ending at the evaluation instant, as tell's lag, with first looks, first-seen-only "
+            "events and backfills left out and counted (ADR 0043). "
             "Cohort N is the number of finished runs in the period."
         ),
         n=finished,
@@ -250,12 +255,8 @@ def build_report(
                     finished,
                     "share",
                 ),
-                Metric(
-                    "Freshness p95, hours (SPEC section 12 definition)",
-                    freshness_p95_h(session, now),
-                    fresh_n,
-                    "hours",
-                ),
+                Metric(FRESHNESS_LABEL, fresh.p95_h, fresh.n, "hours"),
+                *_freshness_exclusions(fresh),
             ],
             table=Table(
                 headers=["source", "finished runs", "ok", "success rate"],
@@ -270,6 +271,7 @@ def build_report(
                 ],
             ),
         ),
+        _freshness_section(fresh_by_source),
         Section(
             title="Coverage",
             metrics=[
@@ -297,7 +299,26 @@ def build_report(
         "Success rate counts runs, not boards: one failed vendor leg is one failed run.",
         (
             "Freshness p95 is a 24-hour window ending at the evaluation instant; a quiet day has a "
-            "small N."
+            "small N. The events left out are counted beside it."
+        ),
+        (
+            "Freshness is tell's lag, not the age of what tell reads (ADR 0043). It runs from the "
+            "earliest moment tell could have seen an event (the source's own timestamp; for EDGAR "
+            "the daily index, filing date + 26 h; moved to tell's previous poll of the same board "
+            "or Google News query when that poll did not list it) to the moment tell recorded it. "
+            "Reports written before ADR 0043 took SPEC section 12's observed_at - occurred_at "
+            "literally and measured the age of company-blog archives read on discovery (23298.1 h "
+            "on 2026-10-19); do not quote them."
+        ),
+        (
+            "Sources run on different clocks: boards are polled every run, while Google News "
+            "reaches the long tail of companies once a week, so news dominates the pooled p95; "
+            "the table gives each source's own number."
+        ),
+        (
+            "Company feeds keep no poll history: a feed item dated after tell discovered the feed "
+            "counts from its own date, so a post that appears days after its date overstates the "
+            "lag."
         ),
         (
             "Postings tracked and companies monitored are counts at the instant the report runs, "
@@ -309,6 +330,71 @@ def build_report(
         ),
     ]
     return report
+
+
+def _freshness_exclusions(fresh: Freshness) -> list[Metric]:
+    """The counts printed beside the freshness p95 (never headline numbers)."""
+    return [
+        Metric(
+            "Collector events observed in the 24-hour freshness window",
+            fresh.observed,
+            kind="count",
+            headline=False,
+        ),
+        Metric(
+            "Left out of freshness, first looks (tell was not yet watching the board, company "
+            "feed, Google News query or source)",
+            fresh.first_look,
+            kind="count",
+            headline=False,
+        ),
+        Metric(
+            "Left out of freshness, first-seen-only (no source timestamp: tell dated the event "
+            "when it saw it)",
+            fresh.first_seen_only,
+            kind="count",
+            headline=False,
+        ),
+        Metric(
+            "Left out of freshness, backfills (archive loads and widened Google News windows)",
+            fresh.backfill,
+            kind="count",
+            headline=False,
+        ),
+    ]
+
+
+def _freshness_section(by_source: dict[str, Freshness]) -> Section:
+    return Section(
+        title="Freshness by source",
+        text=(
+            "The same 24 hours, per source: events observed, events counted, events left out "
+            "and the p95 of tell's lag (ADR 0043)."
+        ),
+        table=Table(
+            headers=[
+                "source",
+                "events observed",
+                "counted",
+                "first looks",
+                "first-seen-only",
+                "backfills",
+                "freshness p95",
+            ],
+            rows=[
+                [
+                    source,
+                    f"{fresh.observed:,}",
+                    f"{fresh.n:,}",
+                    f"{fresh.first_look:,}",
+                    f"{fresh.first_seen_only:,}",
+                    f"{fresh.backfill:,}",
+                    Metric(f"freshness p95 {source}", fresh.p95_h, fresh.n, "hours", False),
+                ]
+                for source, fresh in by_source.items()
+            ],
+        ),
+    )
 
 
 def _resolution_section(
