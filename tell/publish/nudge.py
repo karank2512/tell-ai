@@ -17,7 +17,9 @@ Message shape (:func:`build_nudge_blocks`): one section with
 ``*{name}* ({domain}) · score {score} · crossed {threshold}``, one receipt bullet per
 contribution, the ``Why now:`` sentence and a ``Worth enriching:`` line, then a context
 line with the account page and, when ``TELL_FEEDBACK_FORM_URL`` is set, prefilled
-``useful`` / ``not useful`` links for the top contribution's signal.
+``useful`` / ``not useful`` links for the top contribution's signal. The feedback form
+needs a signal id, so an account with no contribution, or whose top contribution carries
+no signal id, gets the account page link only: a rating link is never built without one.
 
 ``Worth enriching`` is the enrichment gate's verdict (:mod:`tell.signals.gate`, ADR
 0038): ``yes · {family a} + {family b}``, ``skip · {reason}`` or ``hold · {reason}``,
@@ -177,9 +179,11 @@ def build_nudge_blocks(
     elements = [
         {"type": "mrkdwn", "text": link(f"{base}/companies/{account.domain}.html", "Account page")}
     ]
-    if feedback_form_url:
-        top = account.contributions[0] if account.contributions else None
-        signal_id = int(top["signal_id"]) if top and top.get("signal_id") is not None else None
+    top = account.contributions[0] if account.contributions else None
+    # The feedback form requires a signal id and `tell intake feedback-sync` rejects a
+    # response without one, so with no signal to rate there is no "Rate it" element at all.
+    if feedback_form_url and top and top.get("signal_id") is not None:
+        signal_id = int(top["signal_id"])
         votes = " · ".join(
             link(
                 feedback_link(
