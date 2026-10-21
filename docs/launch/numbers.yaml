@@ -92,3 +92,4 @@ inputs:
   delivery.company:  {value: "the top-scored company on this recipient's CSV"}
   delivery.why_now:  {value: "one sentence, with the receipt link, taken from that company's top contribution (summary + url in the CSV)"}
   delivery.methods_link: {value: "same as links.methods"}
+  digest.rows:       {value: "the number of rows in this week's Form D filings table (form-d-filings.html on the public site), counted on the page at posting time, per post; never from a report (weekly-filings-post.md)"}

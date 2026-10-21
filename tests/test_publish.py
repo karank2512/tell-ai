@@ -254,36 +254,59 @@ def test_weekly_json_shape(db_session: Session, scenario: sc.Scenario, tmp_path:
     assert "What changed in the method" in page
 
 
-def test_rounds_not_announced_files(
-    db_session: Session, scenario: sc.Scenario, tmp_path: Path
-) -> None:
+def test_form_d_filings_files(db_session: Session, scenario: sc.Scenario, tmp_path: Path) -> None:
     _render(db_session, scenario, tmp_path)
     site = tmp_path / "site"
-    rounds = _load(site / "api" / "v0" / "rounds-not-announced.json")
-    assert (rounds["week"], rounds["filed_from"], rounds["filed_to"], rounds["as_of"]) == (
+    filings = _load(site / "api" / "v0" / "form-d-filings.json")
+    assert (filings["week"], filings["filed_from"], filings["filed_to"], filings["as_of"]) == (
         "2026-W40",
         "2026-09-21",
         "2026-10-04",
         "2026-10-06",
     )
-    # Both Form D filings of 2026-10-01 have no funding headline (the news is Quillstone's).
-    assert [(r["domain"], r["amount_usd"], r["amount_indefinite"]) for r in rounds["rounds"]] == [
+    # Both Form D filings of 2026-10-01; news is not read (ADR 0044).
+    assert [(r["domain"], r["amount_usd"], r["amount_indefinite"]) for r in filings["filings"]] == [
         (sc.BLUEFIN, None, True),
         (sc.ROBOTICS, 18_000_000, False),
     ]
-    for row in rounds["rounds"]:
+    for row in filings["filings"]:
         assert row["url"].startswith("https://www.sec.gov/Archives/edgar/data/")
-    page = (site / "rounds-not-announced.html").read_text()
+    page = (site / "form-d-filings.html").read_text()
     weekly = (site / "weekly" / "2026-W40.html").read_text()
     assert '<a href="companies/bluefin.example.html">Bluefin Data Systems</a>' in page
     assert '<a href="../companies/bluefin.example.html">Bluefin Data Systems</a>' in weekly
-    assert "Rounds filed, not announced" in weekly
-    assert "the list changes as news arrives." in page
-    assert '<a href="rounds-not-announced.html">' in (site / "index.html").read_text()
-    # Nothing about watchlists (names, owners, membership) reaches the list.
-    text = page + weekly.split('id="rounds-not-announced"')[1] + json.dumps(rounds)
+    assert '<h2 id="form-d-filings">Form D filings</h2>' in weekly
+    assert '<a href="form-d-filings.html">Form D filings</a>' in (site / "index.html").read_text()
+    section = weekly.split('id="form-d-filings"')[1].split("<h2>")[0]
+    text = page + section + json.dumps(filings)
+    # Nothing about press, and nothing about watchlists (names, owners, membership).
+    for word in ("press", "news", "headline", "announc", "stealth"):
+        assert word not in text.lower(), word
     for private in ("Pilot list", "Private list", "pilot", "team-a", "team-b", "heat"):
         assert private not in text
+    assert not list(site.rglob("rounds-not-announced*"))
+
+
+def test_opt_out_line_on_every_account_page_and_nowhere_else(
+    db_session: Session, scenario: sc.Scenario, tmp_path: Path
+) -> None:
+    result = _render(db_session, scenario, tmp_path)
+    site = tmp_path / "site"
+    line = "A company that would rather not appear on this site can ask to be removed: "
+    for domain in result.companies:
+        page = (site / "companies" / f"{domain}.html").read_text()
+        footer = page.split('<footer class="foot">')[1]
+        assert line in footer, domain
+        assert "titled 'Opt out: &lt;domain&gt;'. The next publish removes it.</p>" in footer, (
+            domain
+        )
+        assert _href(page, "open a GitHub issue") == (
+            "https://github.com/karank2512/tell-ai/issues/new?"
+            f"template=opt-out.md&title=Opt+out%3A+{domain}"
+        )
+    assert line in (site / "form-d-filings.html").read_text()
+    for other in ("index.html", "health.html", "weekly/2026-W40.html"):
+        assert line not in (site / other).read_text(), other
 
 
 def test_health_json_fields(db_session: Session, scenario: sc.Scenario, tmp_path: Path) -> None:

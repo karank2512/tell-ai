@@ -1,6 +1,6 @@
 # 0042. Rounds filed, not announced: a weekly list of original Form D filings with no funding headline yet
 
-- Status: proposed
+- Status: superseded by 0044 for the public outputs
 - Date: 2026-10-19
 
 ## Context

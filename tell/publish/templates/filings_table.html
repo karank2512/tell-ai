@@ -1,0 +1,25 @@
+{# The Form D filings table and its method sentence (ADR 0042, ADR 0044); included by weekly.html and filings.html. #}
+{% if digest.filings %}
+<table class="list">
+  <thead><tr><th>Company</th><th>Domain</th><th>Filed</th>{% if digest.show_offering %}<th class="num">Offering</th>{% endif %}{% if digest.show_sold %}<th class="num">Sold</th>{% endif %}<th>Receipt</th></tr></thead>
+  <tbody>
+  {% for row in digest.filings %}
+  <tr>
+    <td><a href="{{ root }}companies/{{ row.domain }}.html">{{ row.name }}</a></td>
+    <td class="muted">{{ row.domain }}</td>
+    <td>{{ row.date_filed }}</td>
+    {% if digest.show_offering %}
+    <td class="num">{{ row.amount_text }}</td>
+    {% endif %}
+    {% if digest.show_sold %}
+    <td class="num">{{ row.sold_text }}</td>
+    {% endif %}
+    <td><a href="{{ row.url }}">sec.gov</a></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>Nothing to list for this window.</p>
+{% endif %}
+<p class="muted"><a href="{{ digest.method_url }}">Method</a>: {{ digest.method }}</p>

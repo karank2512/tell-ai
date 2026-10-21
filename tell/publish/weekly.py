@@ -10,55 +10,58 @@ Contents
 
 ``top_hiring``
     Top 25 companies by **sales-hiring velocity** across every monitored company (not
-    watchlists): the sum of ``hiring_velocity`` event magnitudes (``min(new7, 10)``) for
+    watchlists) that has not opted out of the public site (``companies.public_opt_out``,
+    ADR 0044): the sum of ``hiring_velocity`` event magnitudes (``min(new7, 10)``) for
     role family ``sales`` whose ``occurred_at`` falls in the week, each with its receipts
     (event URL, summary, counted postings). Only the ``sales`` family counts: ``gtm_ops``
     and ``customer`` are the default profile's other target families but are not
     "sales hiring" (ADR 0023).
 ``top_funding``
     Top 25 new Form D filings (``form_d_filed`` with ``is_amendment`` false) filed in the
-    week by monitored companies, by ``totalOfferingAmount`` (integer USD; undisclosed
-    amounts sort last), with the filing URL.
+    week by monitored companies that have not opted out, by ``totalOfferingAmount``
+    (integer USD; undisclosed amounts sort last), with the filing URL.
 ``method_change``
     The most recent ``CHANGELOG.md`` bullet (top of the file first) mentioning scoring,
     velocity or resolution; ``"No method changes this week"`` when there is none.
 ``coverage``
     ``companies_monitored`` (companies with an active board or a CIK), ``boards_polled``
     (boards with a posting observation in the week or last polled during it) and
-    ``filings_read`` (EDGAR events observed in the week).
+    ``filings_read`` (EDGAR events observed in the week). These counts name no company and
+    include the ones that opted out of the public site: tell still reads their sources for
+    the private outputs (ADR 0044).
 ``repo_url``
     The code repository.
 
 Ties sort by domain, so an edition is deterministic.
 
-Rounds filed, not announced
-===========================
+Form D filings
+==============
 
-:func:`rounds_not_announced` (ADR 0042) is the edition's third list. It is published in the
-weekly page and on its own (``rounds-not-announced.html``,
-``api/v0/rounds-not-announced.json``), not in ``latest.json``: press is read again at every
-render, so the list shrinks as funding headlines arrive while ``latest.json`` stays fixed
-for the week. One row per original Form D (``form_d_filed`` from EDGAR with
-``is_amendment`` false, not a pooled fund by :func:`tell.resolve.guards.fund_signals`)
-whose filing date falls in the 14 days that end with the edition's week
-(:func:`rounds_window`: the week and the week before) and that
+:func:`form_d_filings` (ADR 0042 for the cohort, ADR 0044 for the public framing) is the
+edition's third list, a neutral digest of Form D filings. It is published in the weekly page
+and on its own (``form-d-filings.html``, ``api/v0/form-d-filings.json``), not in
+``latest.json``, which keeps the contract its readers (``tell-mcp``) know. One row per
+original Form D (``form_d_filed`` from EDGAR with ``is_amendment`` false, not a pooled fund
+by :func:`tell.resolve.guards.fund_signals`) whose filing date falls in the 14 days that end
+with the edition's week (:func:`filings_window`: the week and the week before) and that
 
 * is linked by a link the speed-vs-press cohort trusts (:func:`trusted_match` and the CIK
   rule of :mod:`tell.backtest.speed_vs_press`: a reviewer's link, rules R0-R4 with no
   guard failure, or a CIK match whose CIK has a trusted ``cik_source`` or was set by
   such a link);
 * belongs to a company with a published account page (``published``, the site's size
-  budget) whose ``source`` is not ``manual``: intake lists, review verdicts and domains
-  added by hand never appear, so no one's private list can be read from the page;
-* has no ``news_funding`` event of its company dated from the filing date minus 14 days
-  through the publish instant ``now`` (any funding headline counts, including the
-  one-word brands the speed-vs-press report discounts: a false "not announced" is the
-  worse error on a public page).
+  budget) whose ``source`` is not ``manual`` and that has not opted out of the public site:
+  intake lists, review verdicts and domains added by hand never appear, so no one's private
+  list can be read from the page.
+
+Every qualifying filing is listed. News is not read, and nothing in a row or in the method
+says whether a funding headline exists (ADR 0044).
 
 Newest filing first, then domain, then URL. The amounts are the payload's own
 ``total_offering_amount`` (with its ``indefinite`` flag) and ``total_amount_sold``
-(``None`` when undisclosed) and the receipt is the filing's EDGAR URL (a row without an ``https://www.sec.gov/`` URL is left
-out). No person's name is read: Form D related persons are never stored.
+(``None`` when undisclosed) and the receipt is the filing's EDGAR URL (a row without an
+``https://www.sec.gov/`` URL is left out). No person's name is read: Form D related persons
+are never stored.
 """
 
 from __future__ import annotations
@@ -75,7 +78,6 @@ from sqlalchemy import distinct, func, or_, select, union
 from sqlalchemy.orm import Session
 
 from tell.backtest.speed_vs_press import TRUSTED_CIK_SOURCES, TRUSTED_RULES
-from tell.collectors.news_classify import event_type
 from tell.config import get_settings
 from tell.models import AtsBoard, Company, EventRow, Posting, PostingObservation
 from tell.resolve.guards import IssuerFacts, fund_signals
@@ -85,28 +87,26 @@ from tell.signals.velocity import HIRING_VELOCITY
 __all__ = [
     "CHANGELOG_PATH",
     "EDGAR_RECEIPT_PREFIX",
+    "FILINGS_WINDOW_DAYS",
     "MANUAL_SOURCE",
     "METHOD_KEYWORDS",
     "METHOD_LINE_MAX",
-    "NEWS_FUNDING",
     "NO_METHOD_CHANGE",
-    "PRESS_LOOKBACK_DAYS",
-    "ROUNDS_WINDOW_DAYS",
     "SALES_FAMILY",
     "TOP_N",
     "Coverage",
+    "FilingRow",
+    "FilingsData",
     "FundingRow",
     "HiringRow",
     "IsoWeek",
-    "RoundRow",
-    "RoundsData",
     "WeeklyData",
     "build_weekly",
     "coverage",
+    "filings_window",
+    "form_d_filings",
     "method_change_line",
     "resolve_week",
-    "rounds_not_announced",
-    "rounds_window",
     "top_funding",
     "top_hiring",
     "trusted_match",
@@ -129,17 +129,13 @@ _MARKDOWN = re.compile(r"`|\*\*")
 METHOD_LINE_MAX = 280
 """Length cap of the method-change line on the weekly page and in ``latest.json``."""
 
-NEWS_FUNDING = event_type("funding")
-"""``news_funding``: a funding headline the news collector kept and linked to a company."""
-ROUNDS_WINDOW_DAYS = 14
-"""Filing dates the rounds list covers: the edition's week and the week before."""
-PRESS_LOOKBACK_DAYS = 14
-"""Press counts from the filing date minus this many days (the speed-vs-press window start)."""
+FILINGS_WINDOW_DAYS = 14
+"""Filing dates the Form D filings list covers: the edition's week and the week before."""
 MANUAL_SOURCE = "manual"
 """``companies.source`` of rows added by hand (an intake list, a review verdict, a domain
-passed to ``tell discover``): never in the rounds list."""
+passed to ``tell discover``): never in the Form D filings list."""
 EDGAR_RECEIPT_PREFIX = "https://www.sec.gov/"
-"""Every rounds row links its EDGAR filing."""
+"""Every Form D filings row links its EDGAR filing."""
 
 
 @dataclass(frozen=True, order=True)
@@ -217,7 +213,7 @@ class FundingRow:
 
 
 @dataclass(frozen=True)
-class RoundRow:
+class FilingRow:
     domain: str
     name: str
     date_filed: str
@@ -282,28 +278,28 @@ class WeeklyData:
         }
 
 
-def rounds_window(week: IsoWeek) -> tuple[datetime, datetime]:
-    """``[start, end)`` of the filing dates the rounds list covers: 14 days ending with ``week``."""
-    return week.end - timedelta(days=ROUNDS_WINDOW_DAYS), week.end
+def filings_window(week: IsoWeek) -> tuple[datetime, datetime]:
+    """``[start, end)`` of the filing dates the Form D list covers: 14 days ending with ``week``."""
+    return week.end - timedelta(days=FILINGS_WINDOW_DAYS), week.end
 
 
 @dataclass(frozen=True)
-class RoundsData:
-    """Rounds filed, not announced: one edition's list as read at ``now`` (ADR 0042)."""
+class FilingsData:
+    """Form D filings: one edition's list as read at ``now`` (ADR 0042, ADR 0044)."""
 
     week: IsoWeek
     now: datetime
-    """The publish instant: funding headlines are read through it."""
-    rounds: list[RoundRow]
+    """The publish instant: the list is the database as it stood then."""
+    filings: list[FilingRow]
 
     @property
     def filed_from(self) -> date:
-        return rounds_window(self.week)[0].date()
+        return filings_window(self.week)[0].date()
 
     @property
     def filed_to(self) -> date:
         """Inclusive: the last day of the edition's week."""
-        return rounds_window(self.week)[1].date() - timedelta(days=1)
+        return filings_window(self.week)[1].date() - timedelta(days=1)
 
     @property
     def as_of(self) -> date:
@@ -312,14 +308,12 @@ class RoundsData:
 
     @property
     def method(self) -> str:
-        """The one-sentence method printed under the table: window, cohort, freshness."""
+        """The one-sentence method printed under the table: window, cohort, order, date."""
         return (
             f"Every original Form D (no amendments, no pooled funds) filed {self.filed_from} "
             f"to {self.filed_to} by a company with a tell account page and a trusted link to "
             "the issuer (an exact CIK, a name match that passed the Form D guards, or a "
-            "reviewer's link), with no funding headline in tell's news data from "
-            f"{PRESS_LOOKBACK_DAYS} days before the filing through {self.as_of}; the list "
-            "changes as news arrives."
+            f"reviewer's link), newest first, as of {self.as_of}."
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -328,7 +322,7 @@ class RoundsData:
             "filed_from": self.filed_from.isoformat(),
             "filed_to": self.filed_to.isoformat(),
             "as_of": self.as_of.isoformat(),
-            "rounds": [
+            "filings": [
                 {
                     "domain": r.domain,
                     "name": r.name,
@@ -338,7 +332,7 @@ class RoundsData:
                     "amount_sold_usd": r.amount_sold_usd,
                     "url": r.url,
                 }
-                for r in self.rounds
+                for r in self.filings
             ],
             "method": self.method,
         }
@@ -402,7 +396,7 @@ def _monitored() -> Any:
 
 
 def top_hiring(session: Session, week: IsoWeek, limit: int = TOP_N) -> list[HiringRow]:
-    """Top companies by summed sales ``hiring_velocity`` magnitude in ``week``."""
+    """Top companies by summed sales ``hiring_velocity`` magnitude in ``week``, no opt-outs."""
     stmt = (
         select(EventRow, Company.domain, Company.name)
         .join(Company, Company.id == EventRow.company_id)
@@ -411,6 +405,7 @@ def top_hiring(session: Session, week: IsoWeek, limit: int = TOP_N) -> list[Hiri
             EventRow.payload.contains({"role_family": SALES_FAMILY}),
             EventRow.occurred_at >= week.start,
             EventRow.occurred_at < week.end,
+            Company.public_opt_out.is_(False),
         )
         .order_by(EventRow.occurred_at, EventRow.event_id)
     )
@@ -434,7 +429,7 @@ def top_hiring(session: Session, week: IsoWeek, limit: int = TOP_N) -> list[Hiri
 
 
 def top_funding(session: Session, week: IsoWeek, limit: int = TOP_N) -> list[FundingRow]:
-    """Top new Form D filings of monitored companies in ``week`` by offering amount."""
+    """Top new Form D filings of monitored companies in ``week`` by amount, no opt-outs."""
     stmt = (
         select(EventRow, Company.domain, Company.name)
         .join(Company, Company.id == EventRow.company_id)
@@ -443,6 +438,7 @@ def top_funding(session: Session, week: IsoWeek, limit: int = TOP_N) -> list[Fun
             EventRow.occurred_at >= week.start,
             EventRow.occurred_at < week.end,
             _monitored(),
+            Company.public_opt_out.is_(False),
         )
         .order_by(EventRow.event_id)
     )
@@ -504,25 +500,6 @@ def _vouched_ciks(session: Session, company_ids: Collection[int]) -> dict[int, s
     return vouched
 
 
-def _press(
-    session: Session, company_ids: Collection[int], since: datetime, until: datetime
-) -> dict[int, list[datetime]]:
-    """``{company_id: [occurred_at]}`` of the companies' ``news_funding`` events in the span."""
-    if not company_ids:
-        return {}
-    stmt = select(EventRow.company_id, EventRow.occurred_at).where(
-        EventRow.type == NEWS_FUNDING,
-        EventRow.company_id.in_(sorted(company_ids)),
-        EventRow.occurred_at >= since,
-        EventRow.occurred_at <= until,
-    )
-    press: dict[int, list[datetime]] = defaultdict(list)
-    for company_id, occurred_at in session.execute(stmt):
-        if company_id is not None:  # always: the query selects by company id
-            press[company_id].append(occurred_at)
-    return press
-
-
 def _original_operating_filing(row: EventRow) -> bool:
     """An original Form D (not an amendment) of an operating company with an EDGAR receipt."""
     payload = row.payload or {}
@@ -534,20 +511,21 @@ def _original_operating_filing(row: EventRow) -> bool:
     return not fund_signals(issuer)
 
 
-def rounds_not_announced(
+def form_d_filings(
     session: Session, week: IsoWeek, *, now: datetime, published: Collection[int]
-) -> RoundsData:
-    """Original Form D filings of ``week``'s 14-day window with no funding headline by ``now``.
+) -> FilingsData:
+    """Original Form D filings of ``week``'s 14-day window by companies with a public page.
 
     ``published`` holds the ids of the companies that have an account page (the site's
-    :func:`tell.publish.site.published_company_ids`); ``now`` is the publish instant and
-    must be timezone-aware. See the module docstring for every rule. Reads only.
+    :func:`tell.publish.site.published_company_ids`); a company that opted out of the public
+    site is left out even when its id is there. ``now`` is the publish instant and must be
+    timezone-aware. See the module docstring for every rule. Reads only.
     """
     if now.tzinfo is None or now.utcoffset() is None:
         msg = f"now must be a timezone-aware datetime, got naive {now!r}"
         raise ValueError(msg)
     pages = set(published)
-    start, end = rounds_window(week)
+    start, end = filings_window(week)
     stmt = (
         select(EventRow, Company, EventRow.payload["cik"].astext)
         .join(Company, Company.id == EventRow.company_id)
@@ -557,6 +535,7 @@ def rounds_not_announced(
             EventRow.occurred_at >= start,
             EventRow.occurred_at < end,
             Company.source != MANUAL_SOURCE,
+            Company.public_opt_out.is_(False),
         )
         .order_by(EventRow.event_id)
     )
@@ -578,24 +557,13 @@ def rounds_not_announced(
             and (company.cik_source in TRUSTED_CIK_SOURCES or cik in vouched.get(company.id, ()))
         )
 
-    linked = [(row, company) for row, company, cik in candidates if trusted(row, company, cik)]
-    press = _press(
-        session,
-        {company.id for _, company in linked},
-        start - timedelta(days=PRESS_LOOKBACK_DAYS),
-        now,
-    )
-    rounds: list[RoundRow] = []
-    for row, company in linked:
-        filed_on = row.occurred_at.astimezone(UTC).date()
-        floor = datetime.combine(filed_on, time(0), tzinfo=UTC) - timedelta(
-            days=PRESS_LOOKBACK_DAYS
-        )
-        if any(at >= floor for at in press.get(company.id, ())):
+    filings: list[FilingRow] = []
+    for row, company, cik in candidates:
+        if not trusted(row, company, cik):
             continue
         payload = row.payload or {}
-        rounds.append(
-            RoundRow(
+        filings.append(
+            FilingRow(
                 domain=company.domain,
                 name=company.name or company.domain,
                 date_filed=_day(payload.get("date_filed"), row.occurred_at),
@@ -605,9 +573,9 @@ def rounds_not_announced(
                 url=row.url,
             )
         )
-    rounds.sort(key=lambda r: (r.domain, r.url))
-    rounds.sort(key=lambda r: r.date_filed, reverse=True)
-    return RoundsData(week=week, now=now, rounds=rounds)
+    filings.sort(key=lambda r: (r.domain, r.url))
+    filings.sort(key=lambda r: r.date_filed, reverse=True)
+    return FilingsData(week=week, now=now, filings=filings)
 
 
 def coverage(session: Session, week: IsoWeek) -> Coverage:

@@ -34,6 +34,7 @@ from tell.publish.json_api import (
     validate_watchlist_json,
     validate_weekly_json,
 )
+from tell.publish.opt_out import opt_out_link
 from tell.publish.site import environment, page_context
 from tell.signals.scoring import build_signals, score_companies, score_instant
 from tests.publish import scenario as sc
@@ -322,6 +323,7 @@ def test_company_json_through_a_watchlist_with_a_decayed_signal(db_session: Sess
             bars=[],
             long_open=[],
             feedback="https://forms.example/feedback",
+            opt_out=opt_out_link(obj["domain"]),
         )
     )
     assert "launch decayed to zero on 2026-09-26" in html

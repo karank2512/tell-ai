@@ -7,10 +7,14 @@ Commands (``DIR`` is the ``tell-data`` checkout):
   ``events/YYYY/MM/DD.jsonl``, write today's board snapshots, prune snapshots past 90 days.
 * ``csv --watchlist NAME --out FILE [--as-of DATE]``: the CSV with receipts for one watchlist.
 * ``weekly [--week current|YYYY-Www] --out DIR``: the weekly page, ``latest.json`` and the
-  edition's rounds filed, not announced (``rounds-not-announced.html`` and its JSON) only.
+  edition's Form D filings (``form-d-filings.html`` and its JSON) only.
 * ``health --out DIR``: ``health.html`` and ``api/v0/health.json`` only.
 * ``notify --slack [--force] [--private-dir DIR]``: per-event Slack nudges on every call, then
   the digest (sends only on the digest run unless forced); ADR 0036.
+* ``opt-out add DOMAIN`` / ``opt-out remove DOMAIN`` / ``opt-out list``: leave a company off
+  the public site from the next publish on, put it back, or list who opted out (ADR 0044,
+  :mod:`tell.publish.opt_out`). ``add`` and ``remove`` exit 1 for a domain no company has.
+  The request and how it was verified stay on the GitHub issue; nothing else is recorded.
 
 ``tell publish --out DIR`` with no command runs ``data`` then ``site`` (the nightly step
 in ``ingest.yml``). ``data`` and ``site`` are recorded as ``runs`` rows with source
@@ -29,7 +33,7 @@ import typer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from tell.collectors.base import finish_run, start_run, utcnow
+from tell.collectors.base import finish_run, iso_utc, start_run, utcnow
 from tell.config import get_settings
 from tell.db import session_scope
 from tell.intake.reader import DEFAULT_PRIVATE_DIR
@@ -50,17 +54,24 @@ from tell.publish.nudge import (
     load_private_webhooks,
     send_nudges,
 )
+from tell.publish.opt_out import (
+    OptOutChange,
+    add_opt_out,
+    normalize_domain,
+    opted_out,
+    remove_opt_out,
+)
 from tell.publish.site import (
     environment,
     page_context,
     published_company_ids,
     render_site,
     weekly_view,
+    write_filings,
     write_json,
-    write_rounds,
 )
 from tell.publish.slack import send_digests
-from tell.publish.weekly import build_weekly, resolve_week, rounds_not_announced
+from tell.publish.weekly import build_weekly, form_d_filings, resolve_week
 from tell.signals.profiles import DEFAULT_PROFILE_NAME, ProfileNotFoundError
 
 PUBLISH_SOURCE = "publish"
@@ -70,6 +81,13 @@ app = typer.Typer(
     help="Publish tell-data: JSONL events, snapshots, the static site, CSV, Slack (spec section 9).",
     add_completion=False,
 )
+opt_out_app = typer.Typer(
+    name="opt-out",
+    help="Companies that asked to be left off the public site (ADR 0044).",
+    no_args_is_help=True,
+    add_completion=False,
+)
+app.add_typer(opt_out_app, name="opt-out")
 
 OutDir = Annotated[Path, typer.Option("--out", file_okay=False, help="The tell-data checkout.")]
 AsOfOption = Annotated[
@@ -131,6 +149,7 @@ def _run_site(session: Session, out: Path, as_of: date, profile: str) -> dict[st
         "weekly": result.weekly,
         "validated": result.validated,
         "stale_sources": result.stale_sources,
+        "archive_scrubbed": result.scrubbed,
     }
 
 
@@ -222,7 +241,7 @@ def weekly_command(
         str, typer.Option("--week", help="'current' (last complete ISO week) or YYYY-Www.")
     ] = "current",
 ) -> None:
-    """Render one weekly page, api/v0/weekly/latest.json and the rounds not announced."""
+    """Render one weekly page, api/v0/weekly/latest.json and the edition's Form D filings."""
     now = utcnow()
     try:
         chosen = resolve_week(week, now)
@@ -237,12 +256,12 @@ def weekly_command(
         validate_weekly_json(obj)
         write_json(site / "api" / "v0" / "weekly" / "latest.json", obj)
         published = published_company_ids(session, now.date())
-        rounds = rounds_not_announced(session, chosen, now=now, published=published)
-        rounds_page = write_rounds(site, env, rounds, as_of=now.date(), sha=sha)
+        filings = form_d_filings(session, chosen, now=now, published=published)
+        filings_page = write_filings(site, env, filings, as_of=now.date(), sha=sha)
         html = env.get_template("weekly.html").render(
             **page_context(now.date(), sha, chosen.label, "../"),
             w=weekly_view(data, set()),
-            rounds=rounds_page,
+            digest=filings_page,
         )
         path = site / "weekly" / f"{chosen.label}.html"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -252,7 +271,7 @@ def weekly_command(
                 "week": chosen.label,
                 "path": str(path),
                 "top_hiring": len(data.top_hiring),
-                "rounds_not_announced": len(rounds.rounds),
+                "form_d_filings": len(filings.filings),
             }
         )
 
@@ -334,6 +353,51 @@ def notify_command(
         attempted = [o for o in (outcome, nudges) if o.sent or o.errors]
         if attempted and all(o.sent == 0 for o in attempted):
             raise typer.Exit(code=1)
+
+
+DomainArgument = Annotated[
+    str, typer.Argument(help="The company's domain as the opt-out issue names it, e.g. acme.com.")
+]
+
+
+def _opt_out(action: str, domain: str) -> None:
+    now = utcnow()
+    change = add_opt_out if action == "add" else remove_opt_out
+    with session_scope() as session:
+        try:
+            result: OptOutChange = change(session, domain, now=now)
+        except LookupError as exc:
+            _echo({"action": action, "domain": normalize_domain(domain), "error": str(exc)})
+            raise typer.Exit(code=1) from None
+        _echo({"action": action, **result.as_record()})
+
+
+@opt_out_app.command("add")
+def opt_out_add_command(domain: DomainArgument) -> None:
+    """Leave DOMAIN's company off the public site from the next publish on."""
+    _opt_out("add", domain)
+
+
+@opt_out_app.command("remove")
+def opt_out_remove_command(domain: DomainArgument) -> None:
+    """Put DOMAIN's company back on the public site from the next publish on."""
+    _opt_out("remove", domain)
+
+
+@opt_out_app.command("list")
+def opt_out_list_command() -> None:
+    """Every company that opted out of the public site, as one JSON line."""
+    with session_scope() as session:
+        rows = [
+            {
+                "domain": company.domain,
+                "public_opted_out_at": iso_utc(company.public_opted_out_at)
+                if company.public_opted_out_at is not None
+                else None,
+            }
+            for company in opted_out(session)
+        ]
+        _echo({"action": "list", "count": len(rows), "opted_out": rows})
 
 
 if __name__ == "__main__":  # pragma: no cover

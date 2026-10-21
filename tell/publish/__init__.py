@@ -4,8 +4,10 @@
   (append-only, also the 180-day prune archive) and ``postings/snapshots/`` (90 days).
 * :mod:`tell.publish.json_api` builds and validates the static JSON API (``api/v0``).
 * :mod:`tell.publish.health` computes run-health per source (``health.json`` / ``.html``).
-* :mod:`tell.publish.weekly` gathers the weekly page's top lists and coverage numbers.
+* :mod:`tell.publish.weekly` gathers the weekly page's top lists, coverage numbers and the
+  edition's Form D filings.
 * :mod:`tell.publish.site` renders the GitHub Pages tree (``site/``) with Jinja.
+* :mod:`tell.publish.opt_out` records the companies that asked to be left off the site.
 * :mod:`tell.publish.slack` builds and sends the Block Kit digest.
 * :mod:`tell.publish.csv_export` writes the "send me 50 domains" CSV with receipts.
 * :mod:`tell.publish.cli` is the ``tell publish`` typer sub-app.

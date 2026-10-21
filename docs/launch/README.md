@@ -10,6 +10,7 @@ Drafts of the launch copy from SPEC section 15.1-15.4, plus how to fill them. **
 | [delivery-message.md](delivery-message.md) | 15.2 | The message that goes with the scored CSV |
 | [linkedin-post.md](linkedin-post.md) | 15.3 | The launch post (week 8) |
 | [show-hn.md](show-hn.md) | 15.4 | Show HN title and text, with posting rules |
+| [weekly-filings-post.md](weekly-filings-post.md) | none (ADR 0044) | The weekly LinkedIn and X posts for the Form D filings page, with their rules |
 | [numbers.yaml](numbers.yaml) | 13 | Maps every placeholder to a report file and field |
 
 ## Placeholders
