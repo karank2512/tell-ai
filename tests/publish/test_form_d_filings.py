@@ -1,14 +1,17 @@
-"""Rounds filed, not announced (ADR 0042): which filings are listed, in what order, and how.
+"""Form D filings (ADR 0042's cohort, ADR 0044's framing): which filings are listed, how.
 
 Every row here is hand-authored: synthetic companies on ``.example`` domains, made-up CIKs and
 accession numbers, ``sec.gov`` receipt URLs of the collector's shape, and no person's name.
 The publish instant is Monday 2026-10-19 06:23 UTC, when ``weekly.yml`` publishes edition
 2026-W42 (2026-10-12 to 2026-10-18); the list covers filings dated 2026-10-05 to 2026-10-18.
+News is never read: a filing is listed whether or not a funding headline exists, and nothing
+in the page or the JSON says which (ADR 0044).
 """
 
 from __future__ import annotations
 
 import itertools
+import json
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -21,18 +24,24 @@ from sqlalchemy.orm import Session
 from tell.backtest import speed_vs_press as svp
 from tell.models import Company, EventRow
 from tell.publish.json_api import (
-    ROUNDS_SCHEMA,
-    build_rounds_json,
-    validate_rounds_json,
+    FILINGS_SCHEMA,
+    build_filings_json,
+    validate_filings_json,
     validate_site_tree,
 )
-from tell.publish.site import environment, page_context, rounds_view, write_rounds
+from tell.publish.site import (
+    RETIRED_FILES,
+    environment,
+    filings_view,
+    page_context,
+    write_filings,
+)
 from tell.publish.weekly import (
+    FilingRow,
+    FilingsData,
     IsoWeek,
-    RoundRow,
-    RoundsData,
-    rounds_not_announced,
-    rounds_window,
+    filings_window,
+    form_d_filings,
     trusted_match,
 )
 
@@ -73,7 +82,7 @@ def _event(
     url: str,
 ) -> EventRow:
     row = EventRow(
-        event_id=f"rounds-test-{next(_ids)}",
+        event_id=f"filings-test-{next(_ids)}",
         company_id=owner.id if owner is not None else None,
         source=source,
         type=type_,
@@ -82,7 +91,7 @@ def _event(
         magnitude=Decimal(1),
         url=url,
         payload=payload,
-        run_id="rounds-test",
+        run_id="filings-test",
     )
     session.add(row)
     session.flush()
@@ -142,19 +151,19 @@ def _at(day: str, hour: int = 9) -> datetime:
 
 
 def _domains(session: Session, published: set[int], now: datetime = NOW) -> list[str]:
-    data = rounds_not_announced(session, WEEK, now=now, published=published)
-    return [r.domain for r in data.rounds]
+    data = form_d_filings(session, WEEK, now=now, published=published)
+    return [r.domain for r in data.filings]
 
 
 # --- the window --------------------------------------------------------------------------------
 
 
 def test_window_is_the_edition_week_and_the_week_before() -> None:
-    assert rounds_window(WEEK) == (
+    assert filings_window(WEEK) == (
         datetime(2026, 10, 5, tzinfo=UTC),
         datetime(2026, 10, 19, tzinfo=UTC),
     )
-    data = RoundsData(week=WEEK, now=NOW, rounds=[])
+    data = FilingsData(week=WEEK, now=NOW, filings=[])
     assert (data.filed_from, data.filed_to, data.as_of) == (
         date(2026, 10, 5),
         date(2026, 10, 18),
@@ -166,40 +175,39 @@ def test_window_is_the_edition_week_and_the_week_before() -> None:
 
 
 @pytest.mark.db
-def test_list_keeps_unannounced_rounds_newest_first(db_session: Session) -> None:
+def test_list_has_every_original_filing_newest_first_press_or_not(db_session: Session) -> None:
     s = db_session
     kept: list[Company] = []
 
-    # Kept: no press at all; the newest filing.
+    # No press at all; the newest filing.
     alpha = _company(s, "alpha.example")
     _filing(s, alpha, date(2026, 10, 16))
-    # Kept: the only funding headline is 24 days before the filing (before the window).
+    # A funding headline 24 days before the filing.
     bravo = _company(s, "bravo.example")
     _filing(s, bravo, date(2026, 10, 14), match={"rule": "R0", "confidence": 0.99})
     _news(s, bravo, _at("2026-09-20"))
-    # Excluded: press inside the window, after the filing.
+    # A funding headline after the filing: still listed, the list does not read news.
     charlie = _company(s, "charlie.example")
     _filing(s, charlie, date(2026, 10, 13))
     _news(s, charlie, _at("2026-10-15"))
-    # Excluded: press exactly 14 days before the filing (the window's first day).
+    # A funding headline 14 days before the filing; ties on the filing date sort by domain.
     delta = _company(s, "delta.example")
     _filing(s, delta, date(2026, 10, 9))
     _news(s, delta, _at("2026-09-25", 0))
-    # Kept: press 15 days before the filing; ties on the filing date sort by domain.
     echo = _company(s, "echo.example")
     _filing(s, echo, date(2026, 10, 9))
     _news(s, echo, _at("2026-09-24", 23))
     foxtrot = _company(s, "foxtrot.example")
     _filing(s, foxtrot, date(2026, 10, 9), amount=None, sold=None)
-    # Kept: a funding headline after the publish instant is not yet known.
+    # A funding headline after the publish instant.
     golf = _company(s, "golf.example")
     _filing(s, golf, date(2026, 10, 12))
     _news(s, golf, NOW + timedelta(hours=3))
-    # Kept: a launch headline is not a funding announcement.
+    # A launch headline.
     hotel = _company(s, "hotel.example")
     _filing(s, hotel, date(2026, 10, 7))
     _news(s, hotel, _at("2026-10-08"), type_="news_launch")
-    kept += [alpha, bravo, echo, foxtrot, golf, hotel]
+    kept += [alpha, bravo, charlie, delta, echo, foxtrot, golf, hotel]
 
     # Excluded: amendments, as a flagged form_d_filed and as the amendment event type.
     india = _company(s, "india.example")
@@ -227,23 +235,30 @@ def test_list_keeps_unannounced_rounds_newest_first(db_session: Session) -> None
     # Excluded: a receipt that is not an EDGAR filing.
     oscar = _company(s, "oscar.example")
     _filing(s, oscar, date(2026, 10, 15)).url = "https://mirror.example/filing"
+    # Excluded: a company that opted out of the public site, even with its id in `published`.
+    papa = _company(s, "papa.example")
+    _filing(s, papa, date(2026, 10, 15))
+    papa.public_opt_out = True
+    papa.public_opted_out_at = NOW - timedelta(days=1)
     s.flush()
 
-    published = {c.id for c in [*kept, charlie, delta, india, juliet, lima, mike, november, oscar]}
-    data = rounds_not_announced(s, WEEK, now=NOW, published=published)
-    assert [r.domain for r in data.rounds] == [
+    published = {c.id for c in [*kept, india, juliet, lima, mike, november, oscar, papa]}
+    data = form_d_filings(s, WEEK, now=NOW, published=published)
+    assert [r.domain for r in data.filings] == [
         "alpha.example",
         "bravo.example",
+        "charlie.example",
         "golf.example",
+        "delta.example",
         "echo.example",
         "foxtrot.example",
         "hotel.example",
     ]
-    assert [r.date_filed for r in data.rounds] == sorted(
-        (r.date_filed for r in data.rounds), reverse=True
+    assert [r.date_filed for r in data.filings] == sorted(
+        (r.date_filed for r in data.filings), reverse=True
     )
-    first = data.rounds[0]
-    assert first == RoundRow(
+    first = data.filings[0]
+    assert first == FilingRow(
         domain="alpha.example",
         name="Alpha Labs",
         date_filed="2026-10-16",
@@ -253,15 +268,19 @@ def test_list_keeps_unannounced_rounds_newest_first(db_session: Session) -> None
         url=first.url,
     )
     assert first.url.startswith("https://www.sec.gov/Archives/edgar/data/1/")
-    foxtrot_row = next(r for r in data.rounds if r.domain == "foxtrot.example")
+    foxtrot_row = next(r for r in data.filings if r.domain == "foxtrot.example")
     assert (foxtrot_row.amount_usd, foxtrot_row.amount_sold_usd) == (None, None)
 
-    # Reads only, so a second read is identical; news arriving later removes the row.
-    assert rounds_not_announced(s, WEEK, now=NOW, published=published) == data
+    # Reads only, so a second read is identical; a headline arriving later changes nothing.
+    assert form_d_filings(s, WEEK, now=NOW, published=published) == data
     _news(s, alpha, NOW + timedelta(hours=1))
-    later = NOW + timedelta(days=1)
-    assert "alpha.example" not in _domains(s, published, later)
-    assert "golf.example" not in _domains(s, published, later)  # its headline is known now
+    later = form_d_filings(s, WEEK, now=NOW + timedelta(days=1), published=published)
+    assert later.filings == data.filings
+    # Taking the opt-out back lists the company again.
+    papa.public_opt_out = False
+    papa.public_opted_out_at = None
+    s.flush()
+    assert "papa.example" in _domains(s, published)
 
 
 @pytest.mark.db
@@ -297,7 +316,7 @@ def test_cik_links_need_a_trusted_source_or_a_trusted_link(db_session: Session) 
 @pytest.mark.db
 def test_naive_publish_instant_is_refused(db_session: Session) -> None:
     with pytest.raises(ValueError, match="timezone-aware"):
-        rounds_not_announced(db_session, WEEK, now=NOW.replace(tzinfo=None), published=())
+        form_d_filings(db_session, WEEK, now=NOW.replace(tzinfo=None), published=())
 
 
 # --- the trusted-link rule is the speed-vs-press cohort's ---------------------------------------
@@ -393,12 +412,21 @@ def test_cik_rule_agrees_with_speed_vs_press(
 
 # --- JSON and HTML -------------------------------------------------------------------------------
 
+PRESS_WORDS = ("press", "news", "headline", "announc", "stealth")
+"""Nothing public about this list may say whether a funding headline exists (ADR 0044)."""
+OPT_OUT_LINE = (
+    "A company that would rather not appear on this site can ask to be removed: "
+    '<a href="https://github.com/karank2512/tell-ai/issues/new?template=opt-out.md">'
+    "open a GitHub issue</a> on karank2512/tell-ai titled 'Opt out: &lt;domain&gt;'. "
+    "The next publish removes it."
+)
 
-def _data(*rows: RoundRow) -> RoundsData:
-    return RoundsData(week=WEEK, now=NOW, rounds=list(rows))
+
+def _data(*rows: FilingRow) -> FilingsData:
+    return FilingsData(week=WEEK, now=NOW, filings=list(rows))
 
 
-def _row(domain: str, **overrides: Any) -> RoundRow:
+def _row(domain: str, **overrides: Any) -> FilingRow:
     fields: dict[str, Any] = {
         "domain": domain,
         "name": domain.split(".", maxsplit=1)[0].title(),
@@ -409,24 +437,24 @@ def _row(domain: str, **overrides: Any) -> RoundRow:
         "url": f"https://www.sec.gov/Archives/edgar/data/1/{domain}/",
     }
     fields.update(overrides)
-    return RoundRow(**fields)
+    return FilingRow(**fields)
 
 
-def test_json_shape_validates_and_drift_fails() -> None:
-    jsonschema.Draft202012Validator.check_schema(ROUNDS_SCHEMA)
-    obj = build_rounds_json(_data(_row("alpha.example", amount_usd=5_000_000)), sha=None)
-    validate_rounds_json(obj)
+def test_json_shape_validates_carries_no_press_field_and_drift_fails() -> None:
+    jsonschema.Draft202012Validator.check_schema(FILINGS_SCHEMA)
+    obj = build_filings_json(_data(_row("alpha.example", amount_usd=5_000_000)), sha=None)
+    validate_filings_json(obj)
     assert list(obj) == [
         "week",
         "filed_from",
         "filed_to",
         "as_of",
-        "rounds",
+        "filings",
         "method",
         "generated_by",
     ]
     assert obj["generated_by"] == "local"
-    assert list(obj["rounds"][0]) == [
+    assert list(obj["filings"][0]) == [
         "domain",
         "name",
         "date_filed",
@@ -436,33 +464,41 @@ def test_json_shape_validates_and_drift_fails() -> None:
         "url",
     ]
     method = obj["method"]
-    assert "2026-10-05 to 2026-10-18" in method
-    assert "14 days before the filing through 2026-10-19" in method
-    assert method.endswith("the list changes as news arrives.")
+    assert method == (
+        "Every original Form D (no amendments, no pooled funds) filed 2026-10-05 to "
+        "2026-10-18 by a company with a tell account page and a trusted link to the issuer "
+        "(an exact CIK, a name match that passed the Form D guards, or a reviewer's link), "
+        "newest first, as of 2026-10-19."
+    )
     assert "%" not in method
+    text = json.dumps(obj).lower()
+    for word in PRESS_WORDS:
+        assert word not in text, word
     for broken in (
         {**obj, "extra": 1},
+        {**obj, "press_found": 0},
         {**obj, "week": "W42"},
-        {**obj, "rounds": [{**obj["rounds"][0], "url": "https://mirror.example/filing/"}]},
-        {**obj, "rounds": [{**obj["rounds"][0], "contact": "someone"}]},
-        {**obj, "rounds": [{**obj["rounds"][0], "amount_usd": -1}]},
+        {**obj, "filings": [{**obj["filings"][0], "url": "https://mirror.example/filing/"}]},
+        {**obj, "filings": [{**obj["filings"][0], "press": False}]},
+        {**obj, "filings": [{**obj["filings"][0], "contact": "someone"}]},
+        {**obj, "filings": [{**obj["filings"][0], "amount_usd": -1}]},
     ):
         with pytest.raises(jsonschema.ValidationError):
-            validate_rounds_json(broken)
+            validate_filings_json(broken)
 
 
 def test_page_shows_only_the_amounts_the_payload_states(tmp_path: Path) -> None:
     env = environment()
     site = tmp_path / "site"
-    write_rounds(site, env, _data(_row("alpha.example")), as_of=NOW.date(), sha=None)
-    page = (site / "rounds-not-announced.html").read_text()
+    write_filings(site, env, _data(_row("alpha.example")), as_of=NOW.date(), sha=None)
+    page = (site / "form-d-filings.html").read_text()
     assert "Offering" not in page
     assert "Sold" not in page
     assert '<a href="companies/alpha.example.html">Alpha</a>' in page
     assert 'href="https://www.sec.gov/Archives/edgar/data/1/alpha.example/"' in page
     assert validate_site_tree(site) == 1
 
-    view = write_rounds(
+    view = write_filings(
         site,
         env,
         _data(
@@ -473,26 +509,54 @@ def test_page_shows_only_the_amounts_the_payload_states(tmp_path: Path) -> None:
         sha=None,
     )
     assert (view["show_offering"], view["show_sold"]) == (True, True)
-    page = (site / "rounds-not-announced.html").read_text()
+    page = (site / "form-d-filings.html").read_text()
     for text in ("indefinite", "$2,750,000", "$18,000,000", "undisclosed"):
         assert text in page
 
-    write_rounds(site, env, _data(), as_of=NOW.date(), sha=None)
-    page = (site / "rounds-not-announced.html").read_text()
+    write_filings(site, env, _data(), as_of=NOW.date(), sha=None)
+    page = (site / "form-d-filings.html").read_text()
     assert "Nothing to list for this window." in page
     assert "<table" not in page
 
 
+def test_page_is_neutral_and_carries_the_opt_out_line(tmp_path: Path) -> None:
+    site = tmp_path / "site"
+    write_filings(site, environment(), _data(_row("alpha.example")), as_of=NOW.date(), sha=None)
+    page = (site / "form-d-filings.html").read_text()
+    assert "<title>Form D filings: tell 2026-W42</title>" in page
+    assert "<h1>Form D filings</h1>" in page
+    for word in PRESS_WORDS:
+        assert word not in page.lower(), word
+    footer = page.split('<footer class="foot">')[1]
+    assert f'<p class="opt-out">{OPT_OUT_LINE}</p>' in footer
+    assert "@" not in page  # no email address anywhere
+
+
+def test_writing_the_list_deletes_the_retired_files(tmp_path: Path) -> None:
+    site = tmp_path / "site"
+    for retired in RETIRED_FILES:
+        (site / retired).parent.mkdir(parents=True, exist_ok=True)
+        (site / retired).write_text("{}" if retired.endswith(".json") else "old page")
+    with pytest.raises(ValueError, match="no schema"):
+        validate_site_tree(site)  # the retired JSON has no schema: it would stop the publish
+    write_filings(site, environment(), _data(), as_of=NOW.date(), sha=None)
+    assert not any((site / retired).exists() for retired in RETIRED_FILES)
+    assert validate_site_tree(site) == 1
+    assert sorted(p.relative_to(site).as_posix() for p in site.rglob("*") if p.is_file()) == [
+        "api/v0/form-d-filings.json",
+        "form-d-filings.html",
+    ]
+
+
 def test_view_links_the_method_section() -> None:
-    view = rounds_view(_data())
+    view = filings_view(_data())
     assert view["method_url"] == (
-        "https://github.com/karank2512/tell-ai/blob/main/"
-        "docs/methods/publishing.md#5a-rounds-filed-not-announced"
+        "https://github.com/karank2512/tell-ai/blob/main/docs/methods/publishing.md#5a-form-d-filings"
     )
     html = (
         environment()
-        .get_template("rounds.html")
-        .render(**page_context(NOW.date(), None, WEEK.label, ""), rounds=view)
+        .get_template("filings.html")
+        .render(**page_context(NOW.date(), None, WEEK.label, ""), digest=view, opt_out="#")
     )
     assert "weekly/2026-W42.html" in html
     assert "Method</a>: Every original Form D" in html

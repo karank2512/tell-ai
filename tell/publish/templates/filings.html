@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Form D filings: tell {{ digest.week }}{% endblock %}
+{% block content %}
+<h1>Form D filings</h1>
+<p class="muted">Weekly edition {{ digest.week }}: original Form D filings dated {{ digest.filed_from }} to {{ digest.filed_to }}, as of {{ digest.as_of }}. Every row links its filing on sec.gov.</p>
+{% include "filings_table.html" %}
+<p>The full edition: <a href="weekly/{{ digest.week }}.html">tell weekly {{ digest.week }}</a>. JSON: <a href="api/v0/form-d-filings.json">api/v0/form-d-filings.json</a>.</p>
+{% endblock %}
+{% block footnote %}{% include "opt_out.html" %}{% endblock %}

@@ -5,12 +5,12 @@
     index.html                       this week's top movers, weekly excerpt, methods, repo, health
     companies/{domain}.html          account page per published company
     weekly/{ISO-week}.html           the current weekly edition (the last complete ISO week)
-    rounds-not-announced.html        the edition's rounds filed, not announced (ADR 0042)
+    form-d-filings.html              the edition's Form D filings (ADR 0042, ADR 0044)
     health.html                      run-health, red banner when a source is stale
     style.css
     api/v0/companies/{domain}.json   the section 9 contract
     api/v0/weekly/latest.json        the current weekly edition
-    api/v0/rounds-not-announced.json the edition's rounds filed, not announced
+    api/v0/form-d-filings.json       the edition's Form D filings
     api/v0/watchlists/{slug}.json    public watchlists only
     api/v0/health.json
 
@@ -18,10 +18,14 @@ Published companies
 ===================
 
 Every company the ``default`` profile scores (spec section 8) that has at least one
-signal starting in the last :data:`SIZE_BUDGET_DAYS` (180) days: the spec section 14
-size budget prunes account pages of companies with no signal in 180 days. Pages and JSON
-files of companies that drop out are deleted, as are JSON files of watchlists that are no
-longer public; earlier weekly pages are kept (they are the archive).
+signal starting in the last :data:`SIZE_BUDGET_DAYS` (180) days and has not opted out of
+the public site (``companies.public_opt_out``, ADR 0044): the spec section 14 size budget
+prunes account pages of companies with no signal in 180 days. Pages and JSON files of
+companies that drop out (either way) are deleted, as are JSON files of watchlists that are
+no longer public; earlier weekly pages are kept (they are the archive), except that the
+rows they show for an opted-out company are removed (:func:`scrub_archive`). The files
+the retired "Rounds filed, not announced" output wrote (:data:`RETIRED_FILES`, ADR 0042)
+are deleted whenever the Form D filings are written.
 
 Account page
 ============
@@ -35,7 +39,8 @@ thumbs row per contribution linking to the feedback form prefilled with ``signal
 a prefilled GitHub issue draft, form or no form. Heat is a percentile *within a
 watchlist*, so the public page shows it only for the public watchlists that include
 the company ("heat 87 in pilot"); a company on no public watchlist shows its score
-alone (ADR 0023).
+alone (ADR 0023). The page footer says how a company asks to be removed (the opt-out
+issue, prefilled with the domain; ADR 0044), as does the Form D filings page's.
 
 Determinism
 ===========
@@ -51,13 +56,14 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
+from lxml import html as lxml_html
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -65,11 +71,11 @@ from tell.config import get_settings
 from tell.models import Company, Signal, Watchlist
 from tell.publish.health import Health, compute_health
 from tell.publish.json_api import (
+    FILINGS_FILE,
     LOCAL,
-    ROUNDS_FILE,
     build_company_json,
+    build_filings_json,
     build_health_json,
-    build_rounds_json,
     build_watchlist_json,
     build_weekly_json,
     code_commit_sha,
@@ -77,38 +83,43 @@ from tell.publish.json_api import (
     generated_by,
     prepare_companies,
     validate_company_json,
+    validate_filings_json,
     validate_health_json,
-    validate_rounds_json,
     validate_site_tree,
     validate_watchlist_json,
     validate_weekly_json,
 )
+from tell.publish.opt_out import opt_out_link, opted_out_domains
 from tell.publish.weekly import (
+    FilingsData,
     IsoWeek,
-    RoundsData,
     WeeklyData,
     build_weekly,
-    rounds_not_announced,
+    form_d_filings,
 )
 from tell.signals.profiles import DEFAULT_PROFILE_NAME, Profile, get_profile
 from tell.signals.scoring import ScoreResult, score_companies, score_instant
 
 __all__ = [
+    "FILINGS_METHOD_DOC",
+    "FILINGS_PAGE",
     "METHOD_PAGES",
-    "ROUNDS_METHOD_DOC",
-    "ROUNDS_PAGE",
+    "RETIRED_FILES",
+    "RETIRED_JSON_LINK",
+    "RETIRED_SECTION_ID",
     "SIZE_BUDGET_DAYS",
     "TEMPLATE_DIR",
     "TOP_MOVERS",
     "SiteResult",
     "environment",
+    "filings_view",
     "page_context",
     "published_company_ids",
     "render_site",
-    "rounds_view",
+    "scrub_archive",
     "weekly_view",
+    "write_filings",
     "write_json",
-    "write_rounds",
 ]
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
@@ -117,10 +128,21 @@ TOP_MOVERS = 10
 WEEKLY_EXCERPT = 5
 MOVER_WINDOW = timedelta(days=7)
 
-ROUNDS_PAGE = "rounds-not-announced.html"
-"""The edition's rounds filed, not announced, at the site root (ADR 0042)."""
-ROUNDS_METHOD_DOC = "docs/methods/publishing.md#5a-rounds-filed-not-announced"
-"""Where the rounds list's method sentence links (path in the code repo)."""
+FILINGS_PAGE = "form-d-filings.html"
+"""The edition's Form D filings, at the site root (ADR 0042, ADR 0044)."""
+FILINGS_METHOD_DOC = "docs/methods/publishing.md#5a-form-d-filings"
+"""Where the Form D filings list's method sentence links (path in the code repo)."""
+RETIRED_FILES: tuple[str, ...] = ("rounds-not-announced.html", "api/v0/rounds-not-announced.json")
+"""What "Rounds filed, not announced" (ADR 0042) published before ADR 0044 renamed and
+reframed it, relative to ``site/``: deleted whenever the Form D filings are written. The JSON
+would otherwise fail :func:`tell.publish.json_api.validate_site_tree` (no schema)."""
+RETIRED_SECTION_ID = "rounds-not-announced"
+"""The ``id`` of that list's section heading in a weekly page rendered before ADR 0044."""
+RETIRED_JSON_LINK = (
+    ' and <a href="../api/v0/rounds-not-announced.json">api/v0/rounds-not-announced.json</a>'
+    " (its rounds filed, not announced)."
+)
+"""The end of that weekly page's JSON line, exactly as ADR 0042's template rendered it."""
 
 METHOD_PAGES: tuple[tuple[str, str], ...] = (
     ("Signals, decay and scoring", "docs/methods/scoring.md"),
@@ -142,6 +164,8 @@ class SiteResult:
     weekly: str
     validated: int
     stale_sources: list[str] = field(default_factory=list)
+    scrubbed: list[str] = field(default_factory=list)
+    """Archived weekly editions rewritten by :func:`scrub_archive`, by ISO week."""
 
 
 # --- rendering helpers ------------------------------------------------------------------------
@@ -204,11 +228,20 @@ def _remove_others(directory: Path, suffix: str, keep: Iterable[str]) -> list[st
 
 
 def published_company_ids(session: Session, as_of: date) -> list[int]:
-    """Companies with a signal starting in the 180 days to ``as_of`` (the size budget)."""
+    """Companies with a signal starting in the 180 days to ``as_of`` (the size budget).
+
+    A company that opted out of the public site (``companies.public_opt_out``, ADR 0044) is
+    never published, whatever its signals.
+    """
     t = score_instant(as_of)
     stmt = (
         select(Signal.company_id)
-        .where(Signal.starts_at <= t, Signal.starts_at > t - timedelta(days=SIZE_BUDGET_DAYS))
+        .join(Company, Company.id == Signal.company_id)
+        .where(
+            Signal.starts_at <= t,
+            Signal.starts_at > t - timedelta(days=SIZE_BUDGET_DAYS),
+            Company.public_opt_out.is_(False),
+        )
         .distinct()
         .order_by(Signal.company_id)
     )
@@ -281,44 +314,114 @@ def weekly_view(data: WeeklyData, published: set[str]) -> dict[str, Any]:
     return view
 
 
-def rounds_view(data: RoundsData) -> dict[str, Any]:
-    """The rounds partial's view: the JSON shape, formatted amounts and the method link.
+def filings_view(data: FilingsData) -> dict[str, Any]:
+    """The Form D filings partial's view: the JSON shape, formatted amounts, the method link.
 
     An amount column is shown only when at least one row's payload states that amount (an
     indefinite offering counts and reads "indefinite"); a row without it reads "undisclosed".
     """
     view = data.to_dict()
-    for row in view["rounds"]:
+    for row in view["filings"]:
         indefinite = row["amount_usd"] is None and row["amount_indefinite"]
         row["amount_text"] = "indefinite" if indefinite else _usd(row["amount_usd"])
         row["sold_text"] = _usd(row["amount_sold_usd"])
     view["show_offering"] = any(
-        r["amount_usd"] is not None or r["amount_indefinite"] for r in view["rounds"]
+        r["amount_usd"] is not None or r["amount_indefinite"] for r in view["filings"]
     )
-    view["show_sold"] = any(r["amount_sold_usd"] is not None for r in view["rounds"])
+    view["show_sold"] = any(r["amount_sold_usd"] is not None for r in view["filings"])
     repo = get_settings().tell_repo_url.rstrip("/")
-    view["method_url"] = f"{repo}/blob/main/{ROUNDS_METHOD_DOC}"
+    view["method_url"] = f"{repo}/blob/main/{FILINGS_METHOD_DOC}"
     return view
 
 
-def write_rounds(
-    site: Path, env: Environment, data: RoundsData, *, as_of: date, sha: str | None
+def write_filings(
+    site: Path, env: Environment, data: FilingsData, *, as_of: date, sha: str | None
 ) -> dict[str, Any]:
-    """Write ``api/v0/rounds-not-announced.json`` (validated first) and its page.
+    """Write ``api/v0/form-d-filings.json`` (validated first) and its page.
 
-    Returns the view the weekly page includes for the same list.
+    Deletes the :data:`RETIRED_FILES` when present. Returns the view the weekly page
+    includes for the same list.
     """
-    obj = build_rounds_json(data, sha=sha)
-    validate_rounds_json(obj)
-    write_json(site / "api" / "v0" / ROUNDS_FILE, obj)
-    view = rounds_view(data)
+    obj = build_filings_json(data, sha=sha)
+    validate_filings_json(obj)
+    write_json(site / "api" / "v0" / FILINGS_FILE, obj)
+    view = filings_view(data)
     _write(
-        site / ROUNDS_PAGE,
-        env.get_template("rounds.html").render(
-            **page_context(as_of, sha, data.week.label, ""), rounds=view
+        site / FILINGS_PAGE,
+        env.get_template("filings.html").render(
+            **page_context(as_of, sha, data.week.label, ""),
+            digest=view,
+            opt_out=opt_out_link(),
         ),
     )
+    for retired in RETIRED_FILES:
+        (site / retired).unlink(missing_ok=True)
     return view
+
+
+def _scrubbed(text: str, domains: Collection[str]) -> str | None:
+    """``text`` (a weekly page) without the rows of ``domains`` and the retired section.
+
+    A row is the ``<li>`` or ``<tr>`` around a ``muted`` element whose whole text is one of
+    the domains (every list on the weekly page prints the domain that way). The retired
+    section is the heading :data:`RETIRED_SECTION_ID` and everything up to the next ``<h2>``,
+    plus the :data:`RETIRED_JSON_LINK` clause. ``None`` when there is nothing to remove.
+    """
+    retired_link = RETIRED_JSON_LINK in text
+    doc = lxml_html.document_fromstring(text.replace(RETIRED_JSON_LINK, "."))
+    doomed: list[lxml_html.HtmlElement] = []
+    for heading in doc.iter("h2"):
+        if heading.get("id") != RETIRED_SECTION_ID:
+            continue
+        doomed.append(heading)
+        sibling = heading.getnext()
+        while isinstance(sibling, lxml_html.HtmlElement) and sibling.tag != "h2":
+            doomed.append(sibling)
+            sibling = sibling.getnext()
+    for element in doc.iter("span", "td"):
+        if not isinstance(element, lxml_html.HtmlElement):
+            continue
+        if "muted" not in (element.get("class") or "").split():
+            continue
+        if element.text_content().strip() not in domains:
+            continue
+        row = next(element.iterancestors("li", "tr"), None)
+        if isinstance(row, lxml_html.HtmlElement):
+            doomed.append(row)
+    if not doomed and not retired_link:
+        return None
+    for element in doomed:
+        if element.getparent() is not None:  # a row listed twice is dropped once
+            element.drop_tree()
+    body = str(lxml_html.tostring(doc, encoding="unicode", doctype="<!doctype html>"))
+    return body if body.endswith("\n") else body + "\n"
+
+
+def scrub_archive(weekly_dir: Path, current: str, domains: Collection[str]) -> list[str]:
+    """Remove opted-out companies' rows from the archived weekly pages (ADR 0044).
+
+    An archived edition (every ``weekly/*.html`` but ``current``) is never rendered again, so
+    a company that opted out after it was published would stay named there. Each page that
+    shows one of ``domains`` in a list row, or still carries the retired "Rounds filed, not
+    announced" section, is rewritten without them; everything else on the page says what it
+    said (heading counts included, character references may be re-encoded). Returns the ISO
+    weeks rewritten.
+    """
+    rewritten: list[str] = []
+    if not weekly_dir.is_dir():
+        return rewritten
+    for path in sorted(weekly_dir.glob("*.html")):
+        if path.stem == current:
+            continue
+        text = path.read_text(encoding="utf-8")
+        retired = f'id="{RETIRED_SECTION_ID}"' in text or RETIRED_JSON_LINK in text
+        if not retired and not any(domain in text for domain in domains):
+            continue
+        scrubbed = _scrubbed(text, domains)
+        if scrubbed is not None:
+            path.write_text(scrubbed, encoding="utf-8")
+            rewritten.append(path.stem)
+    return rewritten
 
 
 def _movers(
@@ -455,6 +558,7 @@ def render_site(
             feedback=feedback_link(
                 signal_id=None, domain=company.domain, verdict="page", issue_only=True
             ),
+            opt_out=opt_out_link(company.domain),
         )
         _write(site / "companies" / f"{company.domain}.html", page)
         published.append(company.domain)
@@ -468,14 +572,15 @@ def render_site(
     validate_weekly_json(weekly_obj)
     write_json(api / "weekly" / "latest.json", weekly_obj)
     weekly_page = weekly_view(weekly, set(published))
-    rounds = rounds_not_announced(session, week, now=now, published=companies.keys())
-    rounds_page = write_rounds(site, env, rounds, as_of=as_of, sha=commit)
+    filings = form_d_filings(session, week, now=now, published=companies.keys())
+    filings_page = write_filings(site, env, filings, as_of=as_of, sha=commit)
     _write(
         site / "weekly" / f"{week.label}.html",
         env.get_template("weekly.html").render(
-            **page_context(as_of, commit, week.label, "../"), w=weekly_page, rounds=rounds_page
+            **page_context(as_of, commit, week.label, "../"), w=weekly_page, digest=filings_page
         ),
     )
+    scrubbed = scrub_archive(site / "weekly", week.label, opted_out_domains(session))
 
     report = health or compute_health(session, now)
     health_obj = build_health_json(report, sha=commit)
@@ -513,4 +618,5 @@ def render_site(
         weekly=week.label,
         validated=validated,
         stale_sources=report.stale_sources,
+        scrubbed=scrubbed,
     )

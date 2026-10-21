@@ -36,6 +36,9 @@ and the ``issuer_discovery`` table (migration ``0009``,
 from and what issuer-first discovery found per Form D issuer. The ``nudges`` table
 (migration ``0010``, ``docs/decisions/0036-per-event-slack-nudges.md``) records which
 ``score_crossed_threshold`` event has been nudged to which watchlist's own Slack webhook.
+``companies.public_opt_out`` / ``companies.public_opted_out_at`` (migration ``0014``,
+``docs/decisions/0044-public-site-form-d-digest-and-opt-out.md``) mark a company that asked
+to be left off the public site.
 """
 
 from __future__ import annotations
@@ -279,6 +282,13 @@ class Company(Base):
     cik_source: Mapped[str | None] = mapped_column(Text)
     """The trusted path that set ``cik`` (:data:`CIK_SOURCES`), or ``NULL`` when unknown
     (migration 0009, ADR 0035). Only a CIK with a ``cik_source`` feeds rule R0."""
+    public_opt_out: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    """The company asked to be left off the public site (migration 0014, ADR 0044): no account
+    page, no ``api/v0`` file and no row in a public list. Private outputs ignore it."""
+    public_opted_out_at: Mapped[datetime | None] = mapped_column(_timestamptz())
+    """When the opt-out was recorded; ``NULL`` while the company has not opted out."""
 
 
 class CompanyAlias(Base):

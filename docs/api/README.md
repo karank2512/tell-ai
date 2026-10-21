@@ -11,12 +11,15 @@ Base URL: `https://karank2512.github.io/tell-data` (`TELL_BASE_URL`).
 | --- | --- | --- |
 | `GET /api/v0/companies/{domain}.json` | The per-domain object below | [`company.schema.json`](company.schema.json) |
 | `GET /api/v0/weekly/latest.json` | The current weekly edition's top lists and coverage | `WEEKLY_SCHEMA` in `tell/publish/json_api.py` |
-| `GET /api/v0/rounds-not-announced.json` | The current edition's original Form D filings with no funding headline yet (rounds filed, not announced), newest first, each with its EDGAR filing URL | `ROUNDS_SCHEMA` in `tell/publish/json_api.py` |
+| `GET /api/v0/form-d-filings.json` | The current edition's Form D filings: every original Form D of the last two weeks by a company with an account page, newest first, each with its EDGAR filing URL | `FILINGS_SCHEMA` in `tell/publish/json_api.py` |
 | `GET /api/v0/watchlists/{slug}.json` | A public watchlist: its companies, highest score first, each with `heat` | `WATCHLIST_SCHEMA` (each company: `company.schema.json`) |
 | `GET /api/v0/health.json` | Run-health per source | `HEALTH_SCHEMA` |
 
-A domain with no file is either unknown to tell or has had no signal for 180 days (the
-size budget, see `docs/methods/publishing.md`); both mean "nothing to report".
+A domain with no file is unknown to tell, has had no signal for 180 days (the size budget,
+see `docs/methods/publishing.md`), or belongs to a company that asked to be left off the
+public site (an issue titled `Opt out: <domain>`, ADR 0044); all three mean "nothing to
+report". An opted-out company is also absent from `weekly/latest.json`,
+`form-d-filings.json` and every public watchlist.
 
 ## The per-domain object
 
@@ -57,15 +60,16 @@ size budget, see `docs/methods/publishing.md`); both mean "nothing to report".
 | `why_not_higher[]` | Signals whose contribution decayed to zero in the last 30 days (extension to the spec example). |
 
 Conventions: dates are ISO 8601 calendar dates (`YYYY-MM-DD`, UTC); wherever an amount
-appears (weekly `top_funding[].amount_usd`, `rounds[].amount_usd`) it is an integer number of
-US dollars, `null` when undisclosed (`rounds[].amount_indefinite` is `true` when the filing
+appears (weekly `top_funding[].amount_usd`, `filings[].amount_usd`) it is an integer number of
+US dollars, `null` when undisclosed (`filings[].amount_indefinite` is `true` when the filing
 states an indefinite offering); no field ever holds a person's name, email or phone.
 
-`rounds-not-announced.json` holds `week`, `filed_from` and `filed_to` (the 14 days ending
-with the edition's week), `as_of` (the day press was last read), `rounds[]` (`domain`, `name`,
+`form-d-filings.json` holds `week`, `filed_from` and `filed_to` (the 14 days ending with the
+edition's week), `as_of` (the day the list was read), `filings[]` (`domain`, `name`,
 `date_filed`, `amount_usd`, `amount_indefinite`, `amount_sold_usd`, `url` on
-`www.sec.gov`), `method` (the one-sentence method) and `generated_by`. Rows drop off as
-funding headlines arrive; the rule is in `docs/methods/publishing.md` section 5a and ADR 0042.
+`www.sec.gov`), `method` (the one-sentence method) and `generated_by`. No key says anything
+about press. The rule is in `docs/methods/publishing.md` section 5a, ADR 0042 and ADR 0044;
+the file replaces `rounds-not-announced.json`, which the first publish after ADR 0044 deletes.
 
 ## Clay recipe (spec section 10)
 
@@ -74,8 +78,9 @@ funding headlines arrive; the rule is in `docs/methods/publishing.md` section 5a
    no authentication, no headers.
 3. Map output columns: `score`, `contributions[0].summary`, `contributions[0].url` (and
    `sources.ats` to see coverage at a glance).
-4. A 404 means no signal in the last 180 days, or a domain tell does not watch yet: ask for
-   it through the "Watch these domains" issue form or the intake form.
+4. A 404 means no signal in the last 180 days, a domain tell does not watch yet (ask for it
+   through the "Watch these domains" issue form or the intake form), or a company that opted
+   out of the public site.
 
 GitHub Pages sends CORS-friendly static responses and caches for 10 minutes, which is fine
 for data that changes four times a day.

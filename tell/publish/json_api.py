@@ -24,8 +24,8 @@ Validation
 ==========
 
 :func:`validate_company_json` checks one object against the company schema; the weekly,
-rounds, watchlist and health files have their own (smaller) schemas here
-(:data:`WEEKLY_SCHEMA`, :data:`ROUNDS_SCHEMA`, :data:`WATCHLIST_SCHEMA`,
+Form D filings, watchlist and health files have their own (smaller) schemas here
+(:data:`WEEKLY_SCHEMA`, :data:`FILINGS_SCHEMA`, :data:`WATCHLIST_SCHEMA`,
 :data:`HEALTH_SCHEMA`). The site generator validates every object before writing it and
 :func:`validate_site_tree` re-validates every file under ``site/api/v0`` before a push; both
 raise on the first failure.
@@ -65,7 +65,7 @@ from tell.models import (
     WatchlistItem,
 )
 from tell.publish.health import Health
-from tell.publish.weekly import RoundsData, WeeklyData, velocity_postings
+from tell.publish.weekly import FilingsData, WeeklyData, velocity_postings
 from tell.signals.profiles import Profile, get_profile
 from tell.signals.scoring import (
     ScoreResult,
@@ -79,18 +79,18 @@ from tell.signals.velocity import HIRING_VELOCITY, LongOpenRole, long_open_roles
 
 __all__ = [
     "COMPANY_SCHEMA_PATH",
+    "FILINGS_FILE",
+    "FILINGS_SCHEMA",
     "HEALTH_SCHEMA",
     "LOCAL",
-    "ROUNDS_FILE",
-    "ROUNDS_SCHEMA",
     "WATCHLIST_SCHEMA",
     "WEEKLY_SCHEMA",
     "CompanyBatch",
     "CompanyFacts",
     "apportion_tenths",
     "build_company_json",
+    "build_filings_json",
     "build_health_json",
-    "build_rounds_json",
     "build_watchlist_json",
     "build_weekly_json",
     "code_commit_sha",
@@ -103,8 +103,8 @@ __all__ = [
     "prepare_companies",
     "round_half_up",
     "validate_company_json",
+    "validate_filings_json",
     "validate_health_json",
-    "validate_rounds_json",
     "validate_site_tree",
     "validate_watchlist_json",
     "validate_weekly_json",
@@ -118,8 +118,8 @@ COMPANY_SCHEMA_PATH = REPO_ROOT / "docs" / "api" / "company.schema.json"
 LOCAL = "local"
 """``generated_by`` of a build with no known commit."""
 
-ROUNDS_FILE = "rounds-not-announced.json"
-"""Rounds filed, not announced, under ``site/api/v0`` (ADR 0042)."""
+FILINGS_FILE = "form-d-filings.json"
+"""The edition's Form D filings, under ``site/api/v0`` (ADR 0042, ADR 0044)."""
 
 _DATE = {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
 _URL = {"type": "string", "minLength": 1, "pattern": "^https?://\\S+$"}
@@ -227,9 +227,9 @@ WEEKLY_SCHEMA: dict[str, Any] = {
     },
 }
 
-ROUNDS_SCHEMA: dict[str, Any] = {
+FILINGS_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "title": "tell rounds filed, not announced (api/v0/rounds-not-announced.json)",
+    "title": "tell Form D filings (api/v0/form-d-filings.json)",
     "type": "object",
     "additionalProperties": False,
     "required": [
@@ -237,7 +237,7 @@ ROUNDS_SCHEMA: dict[str, Any] = {
         "filed_from",
         "filed_to",
         "as_of",
-        "rounds",
+        "filings",
         "method",
         "generated_by",
     ],
@@ -246,7 +246,7 @@ ROUNDS_SCHEMA: dict[str, Any] = {
         "filed_from": _DATE,
         "filed_to": _DATE,
         "as_of": _DATE,
-        "rounds": {
+        "filings": {
             "type": "array",
             "items": {
                 "type": "object",
@@ -275,7 +275,8 @@ ROUNDS_SCHEMA: dict[str, Any] = {
         "generated_by": _GENERATED_BY,
     },
 }
-"""Every row is one original Form D and its receipt is the filing on sec.gov (ADR 0042)."""
+"""Every row is one original Form D and its receipt is the filing on sec.gov (ADR 0042). No
+key says anything about press: closed objects, so none can be added silently (ADR 0044)."""
 
 HEALTH_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -383,10 +384,10 @@ def validate_weekly_json(obj: Any) -> None:
     _validate(obj, WEEKLY_SCHEMA)
 
 
-def validate_rounds_json(obj: Any) -> None:
-    """Raise unless ``obj`` matches :data:`ROUNDS_SCHEMA`."""
+def validate_filings_json(obj: Any) -> None:
+    """Raise unless ``obj`` matches :data:`FILINGS_SCHEMA`."""
     _reject_non_finite(obj)
-    _validate(obj, ROUNDS_SCHEMA)
+    _validate(obj, FILINGS_SCHEMA)
 
 
 def validate_health_json(obj: Any) -> None:
@@ -424,8 +425,8 @@ def validate_site_tree(site_dir: Path) -> int:
                 validate_watchlist_json(obj)
             elif rel.startswith("weekly/"):
                 validate_weekly_json(obj)
-            elif rel == ROUNDS_FILE:
-                validate_rounds_json(obj)
+            elif rel == FILINGS_FILE:
+                validate_filings_json(obj)
             elif rel == "health.json":
                 validate_health_json(obj)
             else:
@@ -728,11 +729,13 @@ def watchlist_profile(watchlist: Watchlist, profiles: Mapping[str, Profile] | No
 
 
 def _watchlist_members(session: Session, watchlist: Watchlist) -> list[Company]:
+    """The members a published watchlist shows: every company on it that has not opted out
+    of the public site (ADR 0044), so heat is a percentile among the members shown."""
     return list(
         session.scalars(
             select(Company)
             .join(WatchlistItem, WatchlistItem.company_id == Company.id)
-            .where(WatchlistItem.watchlist_id == watchlist.id)
+            .where(WatchlistItem.watchlist_id == watchlist.id, Company.public_opt_out.is_(False))
             .order_by(Company.domain)
         )
     )
@@ -838,7 +841,7 @@ def build_watchlist_json(
 
     Raises ``ValueError`` for a private watchlist or one without a slug: only lists
     marked public are ever published (spec section 9, ADR 0022). ``owner`` is never
-    included.
+    included, nor is a member that opted out of the public site (ADR 0044).
     """
     if not watchlist.is_public or not watchlist.slug:
         msg = f"watchlist {watchlist.id} is not public (or has no slug); refusing to publish"
@@ -881,8 +884,8 @@ def build_weekly_json(data: WeeklyData, *, sha: str | None = None) -> dict[str, 
     return {**data.to_dict(), "generated_by": generated_by(sha)}
 
 
-def build_rounds_json(data: RoundsData, *, sha: str | None = None) -> dict[str, Any]:
-    """``api/v0/rounds-not-announced.json``: the edition's rounds filed, not announced."""
+def build_filings_json(data: FilingsData, *, sha: str | None = None) -> dict[str, Any]:
+    """``api/v0/form-d-filings.json``: the edition's Form D filings."""
     return {**data.to_dict(), "generated_by": generated_by(sha)}
 
 

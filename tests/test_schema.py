@@ -9,7 +9,8 @@ the FastAPI v1 ``api_keys`` / ``api_usage`` tables (migration ``0007``, ADR 0024
 the YC directory columns ``companies.yc_status`` / ``companies.yc_batch`` (migration
 ``0008``, ADR 0034) and the issuer-first columns ``companies.source`` /
 ``companies.cik_source`` plus the ``issuer_discovery`` table (migration ``0009``, ADR 0035),
-and the ``nudges`` table (migration ``0010``, ADR 0036).
+and the ``nudges`` table (migration ``0010``, ADR 0036), and the public-site opt-out columns
+``companies.public_opt_out`` / ``companies.public_opted_out_at`` (migration ``0014``, ADR 0044).
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ from tests.conftest import alembic_config
 
 pytestmark = pytest.mark.db
 
-HEAD_REVISION = "0013"
+HEAD_REVISION = "0014"
 
 # --- the spec, hardcoded -----------------------------------------------------------------
 
@@ -52,6 +53,8 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
         "yc_batch",  # ADR 0034, migration 0008
         "source",  # ADR 0035, migration 0009
         "cik_source",  # ADR 0035, migration 0009
+        "public_opt_out",  # ADR 0044, migration 0014
+        "public_opted_out_at",  # ADR 0044, migration 0014
     ],
     "company_aliases": ["company_id", "alias", "source"],
     "ats_boards": [
@@ -311,6 +314,7 @@ EXPECTED_NULLABLE: dict[str, set[str]] = {
         "yc_status",
         "yc_batch",
         "cik_source",
+        "public_opted_out_at",
     },
     "company_aliases": set(),
     "ats_boards": {
@@ -370,6 +374,7 @@ EXPECTED_SERVER_DEFAULTS: dict[tuple[str, str], str] = {
     ("api_keys", "daily_quota"): "1000",
     ("api_usage", "calls"): "0",
     ("companies", "source"): "'yc'",
+    ("companies", "public_opt_out"): "false",
     ("issuer_discovery", "attempts"): "0",
     ("issuer_discovery", "created_at"): "now()",
 }
@@ -404,6 +409,8 @@ EXPECTED_TYPES: dict[tuple[str, str], str] = {
     ("api_usage", "calls"): "INTEGER",
     ("companies", "source"): "TEXT",
     ("companies", "cik_source"): "TEXT",
+    ("companies", "public_opt_out"): "BOOLEAN",
+    ("companies", "public_opted_out_at"): "TIMESTAMP WITH TIME ZONE",
     ("issuer_discovery", "cik"): "TEXT",
     ("issuer_discovery", "evidence"): "JSONB",
     ("issuer_discovery", "attempts"): "INTEGER",

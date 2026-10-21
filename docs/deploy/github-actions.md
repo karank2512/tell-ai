@@ -185,9 +185,9 @@ cross-check.
 Mondays at 06:23 UTC, before the 08:17 ingest run:
 
 1. `tell weekly --week current --out tell-data`: the edition for the last complete ISO
-   week (`site/weekly/<YYYY-Www>.html`, `site/api/v0/weekly/latest.json`) and its rounds
-   filed, not announced (`site/rounds-not-announced.html`,
-   `site/api/v0/rounds-not-announced.json`; ADR 0042).
+   week (`site/weekly/<YYYY-Www>.html`, `site/api/v0/weekly/latest.json`) and its Form D
+   filings (`site/form-d-filings.html`, `site/api/v0/form-d-filings.json`; ADR 0042, ADR
+   0044).
 2. `tell backtest refresh --out tell-data/site/methods`: the dated methods reports. This
    reads the Wayback cache only and never fetches: the runner has no `tell-private`
    checkout (the cache lives in `tell-private/cache/wayback`), so the 13.2 Wayback
