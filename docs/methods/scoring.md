@@ -41,6 +41,14 @@ constraint, so `ON CONFLICT DO NOTHING` alone would duplicate them; `build_signa
 existing keys of the candidate events first and skips them. A rerun inserts zero rows
 (`test_build_signals_is_idempotent_including_null_role_family`).
 
+**What a build reads.** Only what can still change (ADR 0045). A build reads events with no
+signal under the key they would derive and that can derive one at all. Of each it fetches
+only the payload keys derivation uses. It also reads the amount fields of each existing
+`funding` signal's filing for the amendment check below. An event that arrives late, is linked
+late, or was dated in the future at the last run is picked up on the first run that finds it
+eligible. The result is the same as re-deriving every event from scratch
+(`tests/signals/test_incremental_build.py`).
+
 **Not signals.** `news_funding` headlines (the spec fires `funding` on Form D only, the filing is
 the receipt); Form D amendments (`D/A` merges into the original event's payload upstream and
 never creates a second event; an unlinked `D/A` is stored as `form_d_amendment`, which no

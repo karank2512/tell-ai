@@ -39,6 +39,12 @@ changed the offering amount, the next build rewrites the existing ``funding`` si
 agrees with the receipt and with a rebuild from events (ADR 0021 item 8). There is never
 a second funding signal for one filing (spec section 5 rule 4).
 
+A build reads only what can still change (ADR 0045): events that have no signal under
+the key they would derive (an anti-join on ``signals``), with just the payload keys in
+:data:`DERIVATION_KEYS`, and three payload fields per existing ``funding`` signal for
+the amendment check. It never re-reads the full payload history, and its result is the
+same as re-deriving every eligible event from scratch.
+
 Scoring
 =======
 
@@ -93,7 +99,8 @@ from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import ColumnElement, case, func, literal, select, update
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 from tell.collectors.base import (
@@ -117,6 +124,7 @@ from tell.signals.velocity import HIRING_VELOCITY, open_postings, open_postings_
 
 __all__ = [
     "CROSSING_COOLDOWN_DAYS",
+    "DERIVATION_KEYS",
     "EXPIRY_HALF_LIVES",
     "FORM_8K_FILED",
     "FORM_D_FILED",
@@ -202,7 +210,8 @@ _DAY = timedelta(days=1)
 _SECONDS_PER_DAY = 86400.0
 
 _Derived = tuple[str, str | None, float]
-_Deriver = Callable[[EventRow, Mapping[str, Any]], _Derived | None]
+_Deriver = Callable[[Decimal, Mapping[str, Any]], _Derived | None]
+"""``(event magnitude, payload) -> (signal_type, role_family, magnitude)`` or ``None``."""
 
 
 # --- shapes ---------------------------------------------------------------------------------
@@ -290,18 +299,18 @@ def _offering_amount(payload: Mapping[str, Any]) -> float | None:
     return None
 
 
-def _derive_velocity(row: EventRow, payload: Mapping[str, Any]) -> _Derived | None:
+def _derive_velocity(magnitude: Decimal, payload: Mapping[str, Any]) -> _Derived | None:
     family = payload.get("role_family")
-    return (HIRING_VELOCITY, str(family), float(row.magnitude)) if family else None
+    return (HIRING_VELOCITY, str(family), float(magnitude)) if family else None
 
 
-def _derive_funding(_row: EventRow, payload: Mapping[str, Any]) -> _Derived | None:
+def _derive_funding(_magnitude: Decimal, payload: Mapping[str, Any]) -> _Derived | None:
     if payload.get("is_amendment") is True:
         return None
     return FUNDING, None, funding_magnitude(_offering_amount(payload))
 
 
-def _derive_8k(_row: EventRow, payload: Mapping[str, Any]) -> _Derived | None:
+def _derive_8k(_magnitude: Decimal, payload: Mapping[str, Any]) -> _Derived | None:
     items = payload.get("items")
     flagged = payload.get("item_5_02") is True or (
         isinstance(items, list) and "5.02" in [str(i) for i in items]
@@ -309,16 +318,16 @@ def _derive_8k(_row: EventRow, payload: Mapping[str, Any]) -> _Derived | None:
     return (LEADERSHIP, None, 1.0) if flagged else None
 
 
-def _derive_release(_row: EventRow, payload: Mapping[str, Any]) -> _Derived | None:
+def _derive_release(_magnitude: Decimal, payload: Mapping[str, Any]) -> _Derived | None:
     return (LAUNCH, None, 1.0) if payload.get("is_flagship") is True else None
 
 
-def _derive_tech(_row: EventRow, payload: Mapping[str, Any]) -> _Derived | None:
+def _derive_tech(_magnitude: Decimal, payload: Mapping[str, Any]) -> _Derived | None:
     return None if payload.get(FIRST_POLL_KEY) is True else (TECH_ADOPTION, None, 1.0)
 
 
 def _derive_unit(signal_type: str) -> _Deriver:
-    def derive(_row: EventRow, _payload: Mapping[str, Any]) -> _Derived | None:
+    def derive(_magnitude: Decimal, _payload: Mapping[str, Any]) -> _Derived | None:
         return signal_type, None, 1.0
 
     return derive
@@ -335,101 +344,256 @@ _DERIVERS: dict[str, _Deriver] = {
     TECH_MENTIONED_FIRST_TIME: _derive_tech,
 }
 
+_SIGNAL_TYPE_OF: dict[str, str] = {
+    HIRING_VELOCITY: HIRING_VELOCITY,
+    FORM_D_FILED: FUNDING,
+    NEWS_LEADERSHIP: LEADERSHIP,
+    FORM_8K_FILED: LEADERSHIP,
+    NEWS_LAUNCH: LAUNCH,
+    GITHUB_RELEASE: LAUNCH,
+    NEWS_EXPANSION: EXPANSION,
+    TECH_MENTIONED_FIRST_TIME: TECH_ADOPTION,
+}
+"""The only ``signal_type`` each event type can derive (a function of the type alone)."""
 
-def _derive(row: EventRow) -> _Derived | None:
+_FUNDING_AMOUNT_KEYS: tuple[str, ...] = ("total_offering_amount", "totalOfferingAmount")
+"""Payload keys :func:`_offering_amount` reads, in order."""
+
+DERIVATION_KEYS: tuple[str, ...] = (
+    "role_family",
+    "is_amendment",
+    *_FUNDING_AMOUNT_KEYS,
+    "items",
+    "item_5_02",
+    "is_flagship",
+    FIRST_POLL_KEY,
+    "keyword",
+)
+"""Every payload key signal derivation and weighting read (the derivers above, plus
+``keyword`` for :meth:`Profile.weight_for` on ``tech_adoption``). :func:`build_signals`
+fetches only these from Postgres, never the whole payload; a deriver that starts reading
+another key must add it here (``tests/signals/test_incremental_build.py`` pins the build to a
+full-payload reference on the same events)."""
+
+
+def _derive(event_type: str, magnitude: Decimal, payload: Mapping[str, Any]) -> _Derived | None:
     """``(signal_type, role_family, magnitude)`` for an event, or ``None`` when it yields none."""
-    deriver = _DERIVERS.get(row.type)
-    return deriver(row, row.payload or {}) if deriver is not None else None
+    deriver = _DERIVERS.get(event_type)
+    return deriver(magnitude, payload) if deriver is not None else None
+
+
+def _projected(values: Sequence[Any]) -> dict[str, Any]:
+    """The payload subset from one row of ``payload -> key`` columns (absent keys left out).
+
+    Every deriver reads the payload with ``.get``, so an absent key and a JSON ``null``
+    (both ``None`` here) are the same to it.
+    """
+    return {k: v for k, v in zip(DERIVATION_KEYS, values, strict=True) if v is not None}
 
 
 _SignalKey = tuple[str, str, str | None]
 
 
-def _existing_signals(
-    session: Session, event_ids: Sequence[str]
-) -> dict[_SignalKey, tuple[int, Decimal]]:
-    """``{(event_id, signal_type, role_family): (id, magnitude)}`` for rows already present."""
-    rows: dict[_SignalKey, tuple[int, Decimal]] = {}
+def _existing_signals(session: Session, event_ids: Sequence[str]) -> set[_SignalKey]:
+    """``(event_id, signal_type, role_family)`` of the rows already present for ``event_ids``."""
+    keys: set[_SignalKey] = set()
     for start in range(0, len(event_ids), 500):
         chunk = event_ids[start : start + 500]
-        stmt = select(
-            Signal.event_id, Signal.signal_type, Signal.role_family, Signal.id, Signal.magnitude
-        ).where(Signal.event_id.in_(chunk))
-        for event_id, signal_type, family, signal_id, magnitude in session.execute(stmt):
-            rows[(str(event_id), str(signal_type), family)] = (int(signal_id), Decimal(magnitude))
-    return rows
+        stmt = select(Signal.event_id, Signal.signal_type, Signal.role_family).where(
+            Signal.event_id.in_(chunk)
+        )
+        for event_id, signal_type, family in session.execute(stmt):
+            keys.add((str(event_id), str(signal_type), family))
+    return keys
 
 
 def _decimal(value: float) -> Decimal:
     return Decimal(repr(float(value)))
 
 
+def _signal_missing() -> ColumnElement[bool]:
+    """No ``signals`` row has the key this event would derive (``NOT EXISTS``).
+
+    The key is ``(event_id, signal_type, role_family)``. ``signal_type`` is a function of
+    the event type alone (:data:`_SIGNAL_TYPE_OF`); ``role_family`` is the payload's
+    ``role_family`` for ``hiring_velocity`` and NULL for every other type. A velocity
+    event whose ``role_family`` is not a JSON string never matches here and is always a
+    candidate; the exact check in Python then decides. So the filter can only let extra
+    events through, never hide one whose key is absent.
+    """
+    mapped = case(
+        *(
+            (EventRow.type == event_type, signal_type)
+            for event_type, signal_type in _SIGNAL_TYPE_OF.items()
+        ),
+        else_=None,
+    )
+    family = EventRow.payload["role_family"]
+    same_family = case(
+        (
+            EventRow.type == HIRING_VELOCITY,
+            (func.jsonb_typeof(family) == "string") & (Signal.role_family == family.astext),
+        ),
+        else_=Signal.role_family.is_(None),
+    )
+    present = (
+        select(Signal.id)
+        .where(Signal.event_id == EventRow.event_id, Signal.signal_type == mapped, same_family)
+        .exists()
+    )
+    return ~present
+
+
+def _may_derive() -> ColumnElement[bool]:
+    """False only for events whose deriver certainly returns ``None`` (a SQL mirror).
+
+    Each clause mirrors one deriver's ``is True`` test on a JSON flag, which holds exactly
+    when the payload value is JSON ``true``: a first-poll tech baseline, a non-flagship
+    release and a ``form_d_filed`` flagged as an amendment derive nothing. An 8-K can
+    derive only when ``item_5_02`` is ``true`` or ``items`` holds ``5.02`` as a string or
+    a number (``str(i) == "5.02"`` matches nothing else). Every other type is kept. An
+    event this lets through that derives nothing is simply skipped in Python, so the
+    filter only has to never drop one that would derive.
+    """
+    true = literal(True, JSONB)
+    payload = EventRow.payload
+    return case(
+        (
+            EventRow.type == TECH_MENTIONED_FIRST_TIME,
+            payload[FIRST_POLL_KEY].is_distinct_from(true),
+        ),
+        (EventRow.type == GITHUB_RELEASE, payload["is_flagship"] == true),
+        (EventRow.type == FORM_D_FILED, payload["is_amendment"].is_distinct_from(true)),
+        (
+            EventRow.type == FORM_8K_FILED,
+            (payload["item_5_02"] == true)
+            | payload["items"].contains(literal(["5.02"], JSONB))
+            | payload["items"].contains(literal([5.02], JSONB)),
+        ),
+        else_=literal(True),
+    )
+
+
+def _amended_funding(session: Session, now: datetime) -> list[dict[str, Any]]:
+    """``[{id, magnitude}]`` for funding signals whose event payload now derives another magnitude.
+
+    Reads, per existing ``funding`` signal of a linked ``form_d_filed`` event that occurred
+    at or before ``now``, its id, stored magnitude and the three payload fields the funding
+    derivation looks at: a few dozen bytes per filing instead of its whole payload.
+    """
+    stmt = (
+        select(
+            Signal.id,
+            Signal.magnitude,
+            EventRow.payload["is_amendment"],
+            *(EventRow.payload[key] for key in _FUNDING_AMOUNT_KEYS),
+        )
+        .join(EventRow, EventRow.event_id == Signal.event_id)
+        .where(
+            Signal.signal_type == FUNDING,
+            Signal.role_family.is_(None),
+            EventRow.type == FORM_D_FILED,
+            EventRow.company_id.is_not(None),
+            EventRow.occurred_at <= now,
+        )
+        .order_by(Signal.id)
+    )
+    changes: list[dict[str, Any]] = []
+    for signal_id, stored, is_amendment, *amounts in session.execute(stmt):
+        payload = {
+            k: v
+            for k, v in zip(
+                ("is_amendment", *_FUNDING_AMOUNT_KEYS), (is_amendment, *amounts), strict=True
+            )
+            if v is not None
+        }
+        derived = _derive_funding(Decimal(0), payload)
+        if derived is None:
+            continue
+        magnitude = _decimal(derived[2])
+        if Decimal(stored) != magnitude:
+            changes.append({"id": int(signal_id), "magnitude": magnitude})
+    return changes
+
+
 def build_signals(session: Session, *, now: datetime, profile: Profile | None = None) -> int:
     """Create ``signals`` rows from events (see the module table). Returns rows inserted.
 
-    Reads every event of a signal-bearing type that is linked to a company and
-    occurred at or before ``now``; skips keys already present. An existing ``funding``
-    signal whose event payload now derives a different magnitude (a Form D amendment
-    changed the offering amount) has its ``magnitude`` rewritten in place; nothing
-    else on the row changes and such updates are not counted in the return value.
+    Considers every event of a signal-bearing type that is linked to a company and
+    occurred at or before ``now``. Two narrow reads replace a scan of those events'
+    full payloads (ADR 0045):
+
+    * **New signals.** Only events with no ``signals`` row under the key they would
+      derive (an anti-join, :func:`_signal_missing`) and that can derive one at all
+      (:func:`_may_derive`) are read, and of each only the payload keys in
+      :data:`DERIVATION_KEYS`. An event that arrived late, was linked
+      to a company after the last run, or was dated in the future then is picked up on
+      the first run that sees it eligible. Keys already present are skipped.
+    * **Amended funding.** An existing ``funding`` signal whose event payload now
+      derives a different magnitude (a Form D amendment changed the offering amount)
+      has its ``magnitude`` rewritten in place; nothing else on the row changes and such
+      updates are not counted in the return value.
+
+    The result is the same as re-deriving from every eligible event's full payload.
     ``weight`` and ``half_life_days`` are the ``default`` profile's (``profile``
     overrides it, for tests). Flushes; never commits.
     """
     _require_aware(now, "now")
     stamp = profile or default_profile()
     stmt = (
-        select(EventRow)
+        select(
+            EventRow.event_id,
+            EventRow.type,
+            EventRow.company_id,
+            EventRow.occurred_at,
+            EventRow.magnitude,
+            *(EventRow.payload[key] for key in DERIVATION_KEYS),
+        )
         .where(
             EventRow.type.in_(SIGNAL_EVENT_TYPES),
             EventRow.company_id.is_not(None),
             EventRow.occurred_at <= now,
+            _may_derive(),
+            _signal_missing(),
         )
         .order_by(EventRow.occurred_at, EventRow.event_id)
     )
-    rows = list(session.scalars(stmt))
-    if not rows:
-        return 0
-    existing = _existing_signals(session, [r.event_id for r in rows])
+    rows = session.execute(stmt).all()
+    existing = _existing_signals(session, [str(r[0]) for r in rows])
     values: list[dict[str, Any]] = []
-    amended: list[dict[str, Any]] = []
-    for row in rows:
-        derived = _derive(row)
-        if derived is None or row.company_id is None:
+    for event_id, event_type, company_id, occurred_at, event_magnitude, *projected in rows:
+        payload = _projected(projected)
+        derived = _derive(str(event_type), Decimal(event_magnitude), payload)
+        if derived is None or company_id is None:
             continue
         signal_type, family, magnitude = derived
-        key = (row.event_id, signal_type, family)
-        present = existing.get(key)
-        if present is not None:
-            signal_id, stored = present
-            # Only funding re-derives: its event payload is the one that changes after the
-            # fact (D/A amounts merge into the original filing, spec section 5 rule 4).
-            if signal_type == FUNDING and stored != _decimal(magnitude):
-                amended.append({"id": signal_id, "magnitude": _decimal(magnitude)})
+        key = (str(event_id), signal_type, family)
+        if key in existing:
             continue
-        existing[key] = (0, _decimal(magnitude))
+        existing.add(key)
         view = SignalView(
             id=0,
-            company_id=row.company_id,
-            event_id=row.event_id,
+            company_id=int(company_id),
+            event_id=str(event_id),
             signal_type=signal_type,
             role_family=family,
             magnitude=_decimal(magnitude),
             half_life_days=stamp.half_life_days[signal_type],
-            starts_at=row.occurred_at,
-            url=row.url,
-            occurred_at=row.occurred_at,
-            payload=row.payload or {},
+            starts_at=occurred_at,
+            url="",
+            occurred_at=occurred_at,
+            payload=payload,
         )
         values.append(
             {
-                "company_id": row.company_id,
-                "event_id": row.event_id,
+                "company_id": int(company_id),
+                "event_id": str(event_id),
                 "signal_type": signal_type,
                 "role_family": family,
                 "weight": _decimal(stamp.weight_for(view, keyword=view.keyword)),
                 "magnitude": _decimal(magnitude),
                 "half_life_days": stamp.half_life_days[signal_type],
-                "starts_at": row.occurred_at,
+                "starts_at": occurred_at,
             }
         )
     inserted = 0
@@ -440,13 +604,14 @@ def build_signals(session: Session, *, now: datetime, profile: Profile | None = 
             values[start : start + 500],
             conflict_columns=["event_id", "signal_type", "role_family"],
         )
-    for change in amended:  # rare (one per amended filing); ORM update keeps loaded rows in sync
+    # Only funding re-derives: its event payload is the one that changes after the fact
+    # (D/A amounts merge into the original filing, spec section 5 rule 4).
+    for change in _amended_funding(session, now):  # rare: one per amended filing
         session.execute(
             update(Signal)
             .where(Signal.id == change["id"])
             .values(magnitude=change["magnitude"])
-            # RETURNING-based sync: O(matched rows), not a scan of the identity map, which
-            # holds every event build_signals loaded.
+            # RETURNING-based sync: O(matched rows), not a scan of the identity map.
             .execution_options(synchronize_session="fetch")
         )
     session.flush()
