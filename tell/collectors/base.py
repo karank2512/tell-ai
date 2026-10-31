@@ -153,6 +153,7 @@ __all__ = [
     "CollectorSpec",
     "Event",
     "ObservedPosting",
+    "PostingDates",
     "RunFixture",
     "RunResult",
     "WriteStats",
@@ -721,12 +722,25 @@ class _Reconciled:
     description is dated to (``posted_at`` for a new posting, else ``now``)."""
 
 
-def stale_weight(posting: Posting, now: datetime) -> float:
+class PostingDates(Protocol):
+    """What :func:`stale_weight` reads of a posting: a :class:`Posting` row, or a lighter
+    shape holding just these two columns (``tell.signals.velocity`` projects them so a
+    weight never loads a whole row)."""
+
+    @property
+    def posted_at(self) -> datetime | None: ...
+
+    @property
+    def first_seen_at(self) -> datetime: ...
+
+
+def stale_weight(posting: PostingDates, now: datetime) -> float:
     """Weight of an open posting in any magnitude it feeds (spec section 7, stale requisitions).
 
     Age is ``now - posted_at`` (``first_seen_at`` when the provider gave no date):
     ``1.0`` up to and including 90 days, :data:`STALE_WEIGHT` (``0.25``) beyond 90
-    days, ``0.0`` (excluded) beyond 180 days.
+    days, ``0.0`` (excluded) beyond 180 days. Reads only ``posted_at`` and
+    ``first_seen_at`` (:class:`PostingDates`).
     """
     _require_aware(now, "now")
     age = now - (posting.posted_at or posting.first_seen_at)
