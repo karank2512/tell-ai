@@ -137,6 +137,22 @@ _HISTORY = BASE_WINDOWS * WINDOW + WINDOW + SAME_REQUISITION_WINDOW
 """Event history one evaluation needs: the base windows, the current window and 30 days
 before them for the same-requisition rule."""
 
+_COUNTED_KEYS: tuple[str, ...] = (
+    "is_intern",
+    "repost_of_external_id",
+    "title",
+    "posted_at",
+    "posting_external_id",
+    "vendor",
+    "board_identifier",
+    "fingerprint",
+    FIRST_POLL_KEY,
+)
+"""Every ``job_opened`` payload key :func:`_counted` reads. :meth:`_Series.load` fetches
+only these from Postgres (``payload -> key``, as ``build_signals`` does under ADR 0045),
+never the whole payload; a key read here but missing from the list would come back as
+absent, so add it here when :func:`_counted` starts reading one."""
+
 BOARD_URL_TEMPLATES: dict[str, str] = {
     "greenhouse": "https://boards.greenhouse.io/{identifier}",
     "lever": "https://jobs.lever.co/{identifier}",
@@ -311,7 +327,11 @@ class _Series:
         """Load events in ``(start - history, end]`` and postings open at any time since."""
         since = start - _HISTORY
         stmt = (
-            select(EventRow.occurred_at, EventRow.url, EventRow.payload)
+            select(
+                EventRow.occurred_at,
+                EventRow.url,
+                *(EventRow.payload[key] for key in _COUNTED_KEYS),
+            )
             .where(
                 EventRow.type == JOB_OPENED,
                 EventRow.company_id == company_id,
@@ -321,7 +341,12 @@ class _Series:
             )
             .order_by(EventRow.occurred_at, EventRow.event_id)
         )
-        items = [_counted(row[0], row[1], row[2]) for row in session.execute(stmt)]
+        # _counted reads the payload with .get, so an absent key and a JSON null (both
+        # None here) are the same to it.
+        items = [
+            _counted(occurred_at, url, dict(zip(_COUNTED_KEYS, projected, strict=True)))
+            for occurred_at, url, *projected in session.execute(stmt)
+        ]
         counted = _net_new(item for item in items if item is not None)
         postings_stmt = (
             select(Posting.posted_at, Posting.first_seen_at, Posting.closed_at)
