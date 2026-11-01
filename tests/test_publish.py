@@ -284,7 +284,9 @@ def test_form_d_filings_files(db_session: Session, scenario: sc.Scenario, tmp_pa
         assert word not in text.lower(), word
     for private in ("Pilot list", "Private list", "pilot", "team-a", "team-b", "heat"):
         assert private not in text
-    assert not list(site.rglob("rounds-not-announced*"))
+    # The retired name survives only as the root redirect stub; its JSON is gone.
+    assert list(site.rglob("rounds-not-announced*")) == [site / site_module.RETIRED_PAGE]
+    assert (site / site_module.RETIRED_PAGE).read_text() == site_module.RETIRED_PAGE_STUB
 
 
 def test_opt_out_line_on_every_account_page_and_nowhere_else(

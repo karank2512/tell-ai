@@ -44,9 +44,15 @@
      `NEWS_FUNDING`, `PRESS_LOOKBACK_DAYS` and the `_press` helper are deleted; nothing else
      called them. `as_of` stays: the day the list was read.
    - The retired output leaves the site on the first publish. Every write of the digest
-     deletes `rounds-not-announced.html` and `api/v0/rounds-not-announced.json`; the JSON
-     would otherwise stop the publish, because `validate_site_tree` rejects a file it has no
-     schema for. An archived weekly page that still carries the old section loses it, along
+     deletes `api/v0/rounds-not-announced.json` (it would otherwise stop the publish, because
+     `validate_site_tree` rejects a file it has no schema for; a 404 is honest for a removed
+     endpoint) and writes `rounds-not-announced.html` as a redirect stub to
+     `form-d-filings.html` (amended 2026-11-01: the first cut deleted it too, and the old
+     URL, linked from the README and indexed, returned 404 since 2026-10-21). GitHub Pages serves
+     static files only, so the stub is an instant meta refresh, `content="0; url=
+     form-d-filings.html"`, which Google documents as a permanent redirect its crawler
+     follows, plus an absolute canonical link to the new page, a plain link in the body, and
+     no script. An archived weekly page that still carries the old section loses it, along
      with its JSON-link clause (the archive step in 4). Only `weekly/2026-W42.html` can carry
      it, and only if this lands after that edition is archived on Monday 2026-10-26.
 2. **What stays private.** The "filed, not announced" read keeps its value where only the
