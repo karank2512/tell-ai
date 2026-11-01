@@ -146,8 +146,10 @@ announced"). Code: `form_d_filings` in `tell/publish/weekly.py`; schema
 - **Where and when.** The section in `weekly/{ISO-week}.html`, the page
   `form-d-filings.html` and `api/v0/form-d-filings.json`, written by `tell weekly` on Monday
   and by every `tell publish` after an ingest, so links made and opt-outs recorded during the
-  week after the edition show on the next render. A filing stays listed for two editions. Writing the list deletes the files of the retired "Rounds filed, not announced"
-  output (`rounds-not-announced.html`, `api/v0/rounds-not-announced.json`).
+  week after the edition show on the next render. A filing stays listed for two editions. Writing the list also handles the files of the
+  retired "Rounds filed, not announced" output: `rounds-not-announced.html` is rewritten as a
+  redirect stub to `form-d-filings.html` (an instant meta refresh and a canonical link, so the
+  old URL answers instead of 404ing) and `api/v0/rounds-not-announced.json` is deleted.
 
 ## 6. Run-health
 

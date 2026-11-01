@@ -6,6 +6,7 @@
     companies/{domain}.html          account page per published company
     weekly/{ISO-week}.html           the current weekly edition (the last complete ISO week)
     form-d-filings.html              the edition's Form D filings (ADR 0042, ADR 0044)
+    rounds-not-announced.html        a redirect stub to form-d-filings.html (the retired name)
     health.html                      run-health, red banner when a source is stale
     style.css
     api/v0/companies/{domain}.json   the section 9 contract
@@ -25,7 +26,8 @@ companies that drop out (either way) are deleted, as are JSON files of watchlist
 no longer public; earlier weekly pages are kept (they are the archive), except that the
 rows they show for an opted-out company are removed (:func:`scrub_archive`). The files
 the retired "Rounds filed, not announced" output wrote (:data:`RETIRED_FILES`, ADR 0042)
-are deleted whenever the Form D filings are written.
+are handled whenever the Form D filings are written: the page is replaced by a redirect stub
+to ``form-d-filings.html`` (:data:`RETIRED_PAGE_STUB`), the JSON is deleted.
 
 Account page
 ============
@@ -105,7 +107,11 @@ __all__ = [
     "FILINGS_PAGE",
     "METHOD_PAGES",
     "RETIRED_FILES",
+    "RETIRED_JSON",
     "RETIRED_JSON_LINK",
+    "RETIRED_PAGE",
+    "RETIRED_PAGE_CANONICAL",
+    "RETIRED_PAGE_STUB",
     "RETIRED_SECTION_ID",
     "SIZE_BUDGET_DAYS",
     "TEMPLATE_DIR",
@@ -132,10 +138,35 @@ FILINGS_PAGE = "form-d-filings.html"
 """The edition's Form D filings, at the site root (ADR 0042, ADR 0044)."""
 FILINGS_METHOD_DOC = "docs/methods/publishing.md#5a-form-d-filings"
 """Where the Form D filings list's method sentence links (path in the code repo)."""
-RETIRED_FILES: tuple[str, ...] = ("rounds-not-announced.html", "api/v0/rounds-not-announced.json")
+RETIRED_PAGE = "rounds-not-announced.html"
+RETIRED_JSON = "api/v0/rounds-not-announced.json"
+RETIRED_FILES: tuple[str, ...] = (RETIRED_PAGE, RETIRED_JSON)
 """What "Rounds filed, not announced" (ADR 0042) published before ADR 0044 renamed and
-reframed it, relative to ``site/``: deleted whenever the Form D filings are written. The JSON
-would otherwise fail :func:`tell.publish.json_api.validate_site_tree` (no schema)."""
+reframed it, relative to ``site/``. Whenever the Form D filings are written the page is
+rewritten as :data:`RETIRED_PAGE_STUB` and the JSON is deleted: the JSON would otherwise fail
+:func:`tell.publish.json_api.validate_site_tree` (no schema), and a 404 is honest for a
+removed endpoint."""
+RETIRED_PAGE_CANONICAL = "https://karankapur.com/tell-data/form-d-filings.html"
+"""Where the stub at :data:`RETIRED_PAGE` sends a crawler: the live site's Form D filings page
+(the site's custom domain, not ``TELL_BASE_URL``'s GitHub Pages default)."""
+RETIRED_PAGE_STUB = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="0; url={FILINGS_PAGE}">
+<link rel="canonical" href="{RETIRED_PAGE_CANONICAL}">
+<title>Moved: Form D filings</title>
+</head>
+<body>
+<p>This page moved to <a href="{FILINGS_PAGE}">Form D filings</a>.</p>
+</body>
+</html>
+"""
+"""The redirect stub left at :data:`RETIRED_PAGE` so the old URL does not 404. GitHub Pages
+serves static files only, so there is no server-side redirect; an instant (``0``) meta
+refresh is what Google documents as a permanent redirect its crawler follows, and the
+canonical link names the destination outright. Relative refresh target, absolute canonical,
+no script, no third-party request."""
 RETIRED_SECTION_ID = "rounds-not-announced"
 """The ``id`` of that list's section heading in a weekly page rendered before ADR 0044."""
 RETIRED_JSON_LINK = (
@@ -339,8 +370,9 @@ def write_filings(
 ) -> dict[str, Any]:
     """Write ``api/v0/form-d-filings.json`` (validated first) and its page.
 
-    Deletes the :data:`RETIRED_FILES` when present. Returns the view the weekly page
-    includes for the same list.
+    Leaves the redirect stub :data:`RETIRED_PAGE_STUB` at :data:`RETIRED_PAGE` and deletes
+    :data:`RETIRED_JSON` when present. Returns the view the weekly page includes for the same
+    list.
     """
     obj = build_filings_json(data, sha=sha)
     validate_filings_json(obj)
@@ -354,8 +386,11 @@ def write_filings(
             opt_out=opt_out_link(),
         ),
     )
-    for retired in RETIRED_FILES:
-        (site / retired).unlink(missing_ok=True)
+    # The retired page keeps answering (a stub that forwards to the new page; the old URL was
+    # linked from the README and indexed); the retired JSON goes, its 404 marks a removed
+    # endpoint and validate_site_tree would reject it anyway.
+    _write(site / RETIRED_PAGE, RETIRED_PAGE_STUB)
+    (site / RETIRED_JSON).unlink(missing_ok=True)
     return view
 
 

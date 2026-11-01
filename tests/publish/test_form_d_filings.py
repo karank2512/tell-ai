@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import re
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -31,6 +32,9 @@ from tell.publish.json_api import (
 )
 from tell.publish.site import (
     RETIRED_FILES,
+    RETIRED_JSON,
+    RETIRED_PAGE,
+    RETIRED_PAGE_STUB,
     environment,
     filings_view,
     page_context,
@@ -532,7 +536,9 @@ def test_page_is_neutral_and_carries_the_opt_out_line(tmp_path: Path) -> None:
     assert "@" not in page  # no email address anywhere
 
 
-def test_writing_the_list_deletes_the_retired_files(tmp_path: Path) -> None:
+def test_writing_the_list_redirects_the_retired_page_and_deletes_the_retired_json(
+    tmp_path: Path,
+) -> None:
     site = tmp_path / "site"
     for retired in RETIRED_FILES:
         (site / retired).parent.mkdir(parents=True, exist_ok=True)
@@ -540,12 +546,30 @@ def test_writing_the_list_deletes_the_retired_files(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="no schema"):
         validate_site_tree(site)  # the retired JSON has no schema: it would stop the publish
     write_filings(site, environment(), _data(), as_of=NOW.date(), sha=None)
-    assert not any((site / retired).exists() for retired in RETIRED_FILES)
+    assert not (site / RETIRED_JSON).exists()
+    stub = (site / RETIRED_PAGE).read_text()
+    assert stub == RETIRED_PAGE_STUB
+    assert stub.startswith("<!doctype html>")
+    assert '<meta http-equiv="refresh" content="0; url=form-d-filings.html">' in stub
+    assert (
+        '<link rel="canonical" href="https://karankapur.com/tell-data/form-d-filings.html">' in stub
+    )
+    assert '<a href="form-d-filings.html">' in stub
+    assert "<script" not in stub
+    assert re.findall(r"https?://\S+", stub) == [
+        'https://karankapur.com/tell-data/form-d-filings.html">'
+    ]  # the canonical is the only absolute URL: no third-party request
     assert validate_site_tree(site) == 1
     assert sorted(p.relative_to(site).as_posix() for p in site.rglob("*") if p.is_file()) == [
         "api/v0/form-d-filings.json",
         "form-d-filings.html",
+        "rounds-not-announced.html",
     ]
+
+    # Every write leaves the same stub, also when the retired page was never there.
+    fresh = tmp_path / "fresh"
+    write_filings(fresh, environment(), _data(), as_of=NOW.date(), sha=None)
+    assert (fresh / RETIRED_PAGE).read_text() == RETIRED_PAGE_STUB
 
 
 def test_view_links_the_method_section() -> None:
