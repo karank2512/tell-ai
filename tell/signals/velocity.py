@@ -137,6 +137,22 @@ _HISTORY = BASE_WINDOWS * WINDOW + WINDOW + SAME_REQUISITION_WINDOW
 """Event history one evaluation needs: the base windows, the current window and 30 days
 before them for the same-requisition rule."""
 
+_COUNTED_KEYS: tuple[str, ...] = (
+    "is_intern",
+    "repost_of_external_id",
+    "title",
+    "posted_at",
+    "posting_external_id",
+    "vendor",
+    "board_identifier",
+    "fingerprint",
+    FIRST_POLL_KEY,
+)
+"""Every ``job_opened`` payload key :func:`_counted` reads. :meth:`_Series.load` fetches
+only these from Postgres (``payload -> key``, as ``build_signals`` does under ADR 0045),
+never the whole payload; a key read here but missing from the list would come back as
+absent, so add it here when :func:`_counted` starts reading one."""
+
 BOARD_URL_TEMPLATES: dict[str, str] = {
     "greenhouse": "https://boards.greenhouse.io/{identifier}",
     "lever": "https://jobs.lever.co/{identifier}",
@@ -203,6 +219,30 @@ class LongOpenRole:
     days_open: int
     weight: float
     """0.25 (stale) or 0.0 (over 180 days, excluded from every magnitude)."""
+
+
+@dataclass(frozen=True, slots=True)
+class _OpenPosting:
+    """The ``postings`` columns :func:`_open_weight` reads, and nothing else.
+
+    The loaders below select these columns instead of whole :class:`Posting` rows
+    (title, description hashes, markers and the rest never reach Python): less read
+    transfer per run, and no ORM instance that could lazy-load a column later.
+    """
+
+    posted_at: datetime | None
+    first_seen_at: datetime
+    closed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class _OpenRole(_OpenPosting):
+    """:class:`_OpenPosting` plus the columns :func:`_long_open` copies onto a
+    :class:`LongOpenRole`."""
+
+    title: str
+    url: str
+    external_id: str
 
 
 # --- helpers ----------------------------------------------------------------------------------
@@ -278,7 +318,7 @@ class _Series:
     company_id: int
     family: str
     counted: list[CountedPosting]
-    postings: list[Posting]
+    postings: list[_OpenPosting]
 
     @classmethod
     def load(
@@ -287,7 +327,11 @@ class _Series:
         """Load events in ``(start - history, end]`` and postings open at any time since."""
         since = start - _HISTORY
         stmt = (
-            select(EventRow.occurred_at, EventRow.url, EventRow.payload)
+            select(
+                EventRow.occurred_at,
+                EventRow.url,
+                *(EventRow.payload[key] for key in _COUNTED_KEYS),
+            )
             .where(
                 EventRow.type == JOB_OPENED,
                 EventRow.company_id == company_id,
@@ -297,17 +341,23 @@ class _Series:
             )
             .order_by(EventRow.occurred_at, EventRow.event_id)
         )
-        items = [_counted(row[0], row[1], row[2]) for row in session.execute(stmt)]
+        # _counted reads the payload with .get, so an absent key and a JSON null (both
+        # None here) are the same to it.
+        items = [
+            _counted(occurred_at, url, dict(zip(_COUNTED_KEYS, projected, strict=True)))
+            for occurred_at, url, *projected in session.execute(stmt)
+        ]
         counted = _net_new(item for item in items if item is not None)
         postings_stmt = (
-            select(Posting)
+            select(Posting.posted_at, Posting.first_seen_at, Posting.closed_at)
             .join(AtsBoard, AtsBoard.id == Posting.board_id)
             .where(
                 AtsBoard.company_id == company_id,
                 (Posting.closed_at.is_(None)) | (Posting.closed_at > start),
             )
         )
-        return cls(company_id, family, counted, list(session.scalars(postings_stmt)))
+        postings = [_OpenPosting(*row) for row in session.execute(postings_stmt)]
+        return cls(company_id, family, counted, postings)
 
     def new7(self, t: datetime) -> int:
         return len(_in_window(self.counted, t))
@@ -360,7 +410,7 @@ class _Series:
         return start, True
 
 
-def _open_weight(postings: Iterable[Posting], t: datetime) -> float:
+def _open_weight(postings: Iterable[_OpenPosting], t: datetime) -> float:
     return sum(
         stale_weight(p, t)
         for p in postings
@@ -392,23 +442,36 @@ _IN_CHUNK = 500
 
 def _postings_by_company(
     session: Session, company_ids: Iterable[int], *criteria: Any
-) -> tuple[list[int], dict[int, list[Posting]]]:
-    """``(sorted ids, {company_id: [Posting]})`` for every board of ``company_ids``.
+) -> tuple[list[int], dict[int, list[_OpenRole]]]:
+    """``(sorted ids, {company_id: [_OpenRole]})`` for every board of ``company_ids``.
 
-    One query per :data:`_IN_CHUNK` companies instead of one per company.
+    One query per :data:`_IN_CHUNK` companies instead of one per company, selecting
+    only the six columns :func:`_open_weight` and :func:`_long_open` read.
     """
     ids = sorted(set(company_ids))
-    found: dict[int, list[Posting]] = {}
+    found: dict[int, list[_OpenRole]] = {}
     for start in range(0, len(ids), _IN_CHUNK):
         stmt = (
-            select(Posting, AtsBoard.company_id)
+            select(
+                Posting.posted_at,
+                Posting.first_seen_at,
+                Posting.closed_at,
+                Posting.title,
+                Posting.url,
+                Posting.external_id,
+                AtsBoard.company_id,
+            )
             .join(AtsBoard, AtsBoard.id == Posting.board_id)
             .where(AtsBoard.company_id.in_(ids[start : start + _IN_CHUNK]), *criteria)
             .order_by(Posting.id)
         )
-        for posting, company_id in session.execute(stmt):
+        for posted_at, first_seen_at, closed_at, title, url, external_id, cid in session.execute(
+            stmt
+        ):
             # Never NULL here: the IN filter only matches boards that have a company.
-            found.setdefault(cast("int", company_id), []).append(posting)
+            found.setdefault(cast("int", cid), []).append(
+                _OpenRole(posted_at, first_seen_at, closed_at, title, url, external_id)
+            )
     return ids, found
 
 
@@ -427,7 +490,7 @@ def open_postings(session: Session, company_id: int, t: datetime) -> float:
     return open_postings_many(session, [company_id], t)[company_id]
 
 
-def _long_open(postings: Iterable[Posting], now: datetime) -> list[LongOpenRole]:
+def _long_open(postings: Iterable[_OpenRole], now: datetime) -> list[LongOpenRole]:
     roles = []
     for posting in postings:
         age = now - (posting.posted_at or posting.first_seen_at)
