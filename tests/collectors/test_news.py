@@ -377,6 +377,7 @@ def test_ingest_end_to_end_then_rerun_inserts_nothing(
     assert run.notes["polled"] == {str(company.id): "2026-10-05T12:00:00+00:00"}
     assert run.notes["blocked"] is False
     assert run.notes["no_feed"] == []
+    assert "stopped" not in run.notes
     feed = db_session.scalars(select(CompanyFeed)).one()
     assert (feed.feed_url, feed.discovered_from, feed.status) == (ATOM, BLOG, "active")
     assert (feed.etag, feed.last_modified) == ('"v1"', "Sun, 04 Oct 2026 16:00:00 GMT")
@@ -448,6 +449,8 @@ def test_block_stops_the_run_without_retry(
     assert run.notes is not None
     assert run.notes["blocked"] is True
     assert run.notes["blocked_by"] == {"status": status, "url": GNEWS, "company_id": first.id}
+    assert run.notes["stopped"] == {"reason": "blocked", "company_id": first.id, "position": 1}
+    assert run.notes["unanswered"] == 0
     assert run.notes["polled"] == {}
     assert run.notes["polled_count"] == 0
     assert run.notes["deferred"] == 1
@@ -488,6 +491,11 @@ def test_block_after_some_polls_keeps_them_and_fails(
     assert run.notes["polled"] == {str(first.id): "2026-10-05T12:00:00+00:00"}
     assert run.notes["polled_count"] == 1
     assert run.notes["deferred"] == 1
+    assert run.notes["stopped"] == {
+        "reason": "blocked",
+        "company_id": second.id,
+        "position": 2,
+    }
     # The blocked run's polls still count for the rotation.
     assert last_polled(db_session, NOW + timedelta(hours=1)) == {first.id: NOW}
 
@@ -517,6 +525,8 @@ def test_other_errors_count_and_the_run_continues(
     assert run.errors == 3
     assert run.notes is not None
     assert run.notes["polled"] == {}
+    assert run.notes["unanswered"] == 3
+    assert "stopped" not in run.notes
     assert sorted(run.notes["no_feed"]) == sorted([first.id, second.id, third.id])
 
 
@@ -536,6 +546,7 @@ def test_contract_drift_fails_the_run(db_session: Session, client: httpx.Client)
     assert run.status == "failed"
     assert run.notes is not None
     assert run.notes["drift"].startswith("google_news:")
+    assert run.notes["stopped"] == {"reason": "drift", "company_id": company.id, "position": 1}
     assert _count(db_session, EventRow) == 0
     assert not is_block_only_failure(run)  # a contract failure is a real error
 
@@ -1172,6 +1183,11 @@ def test_request_cap_stops_the_run_cleanly_and_defers_the_rest(
     assert run.notes["google_requests"] == 2
     assert run.notes["request_cap_reached"] is True
     assert run.notes["deferred"] == 1
+    assert run.notes["stopped"] == {
+        "reason": "request_cap",
+        "company_id": companies[2].id,
+        "position": 3,
+    }
     assert run.notes["polled_count"] == 2
     assert run.notes["budget_exhausted"] is False
 
@@ -1197,6 +1213,11 @@ def test_max_companies_caps_the_run_and_defers_the_rest(
     assert run.notes is not None
     assert run.notes["selected"] == 3
     assert run.notes["deferred"] == 1
+    assert run.notes["stopped"] == {
+        "reason": "company_cap",
+        "company_id": companies[2].id,
+        "position": 3,
+    }
     assert run.notes["polled_count"] == 2
     assert run.notes["budget_exhausted"] is False
 
@@ -1221,6 +1242,11 @@ def test_wall_clock_budget_stops_cleanly(db_session: Session, client: httpx.Clie
     assert run.notes is not None
     assert run.notes["budget_exhausted"] is True
     assert run.notes["deferred"] == 1
+    assert run.notes["stopped"] == {
+        "reason": "budget",
+        "company_id": companies[2].id,
+        "position": 3,
+    }
     assert run.notes["polled"] == {
         str(companies[0].id): "2026-10-05T12:00:00+00:00",
         str(companies[1].id): "2026-10-05T12:00:00+00:00",

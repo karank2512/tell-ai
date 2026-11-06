@@ -19,6 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- News run coverage is visible without a database query. A news run that stopped short of
+  its due list records `stopped` in `runs.notes`: `reason` (`blocked`, `drift`,
+  `request_cap`, `budget` or `company_cap`) with the `company_id` and 1-based `position`
+  in the run's due list (the company a Google News block or a contract drift stopped at,
+  or the next company a cap or the run budget did not start), and companies whose Google
+  News query failed without a block are counted in `unanswered`. `tell runlog --source
+  news` adds `companies_due`, `companies_polled`, `companies_deferred`,
+  `companies_unanswered` and `stopped` to its JSON line, which `ingest.yml` already
+  appends to the step summary, and the Slack digest adds a `news: X of Y due companies
+  polled` line (with the unanswered count and where collection stopped, when they apply)
+  when the latest news run finished in the last 24 hours. Existing notes keys (`selected`,
+  `polled`, `polled_count`, `deferred`, `blocked`, `blocked_by`) and every run status rule
+  are unchanged; no provider, rate, cap or retry behaviour changes.
 - Root `NOTICE` file: `tell`, Copyright 2026 Karan Kapur, per Apache-2.0 section 4(d). It reinforces the copyright line `LICENSE` already carries; `LICENSE` is unchanged.
 - Public-site opt-out (ADR 0044, proposed): a company asks through a GitHub issue titled `Opt out: <domain>` (`.github/ISSUE_TEMPLATE/opt-out.md`, linked from the footer of every account page and of the Form D filings page), the operator records it with `tell publish opt-out add DOMAIN` (also `remove DOMAIN` and `list`, one JSON line each; migration 0014 adds `companies.public_opt_out` and `companies.public_opted_out_at`), and the next publish leaves the company off the site: no account page and no `api/v0/companies/<domain>.json` (the files earlier publishes wrote are deleted by the size budget's clean-up), no row in the weekly top lists, the Form D filings, the top movers or a public watchlist (heat is then a percentile among the members shown), and its rows removed from archived weekly pages (`scrub_archive`). The Slack nudges and digests, the HubSpot push, the CSV, the v1 API, the coverage and health counts and the tell-data event log are unchanged.
 - Rounds filed, not announced (ADR 0042, proposed): the weekly edition gains a list of every original Form D (no amendment, no pooled fund) filed in the 14 days ending with its week by a company with a public account page and a link the speed-vs-press cohort trusts (R0-R4 with no guard failure, a reviewer's link, or a trusted CIK), with no `news_funding` event from 14 days before the filing through the publish instant: company (linked to its account page), domain, filing date, offering and sold amounts only as the payload states them, and the EDGAR filing as the receipt, newest first, under one sentence of method and no percentage. It is also published alone as `rounds-not-announced.html` and `api/v0/rounds-not-announced.json` (`ROUNDS_SCHEMA`, validated like the other `api/v0` files); `tell weekly` and every `tell publish` write it, so rows drop off as headlines arrive; companies with `source = 'manual'` (intake lists, review verdicts, domains added by hand) never appear; `api/v0/weekly/latest.json` is unchanged. Docs: `docs/methods/publishing.md` 5a, `docs/api/README.md`.

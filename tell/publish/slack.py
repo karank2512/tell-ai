@@ -5,7 +5,9 @@ Message shape (:func:`build_digest_blocks`):
 1. a red ``Stale sources`` line first when any source has no successful run in 24 hours
    (spec section 12 "Alerts");
 2. header ``tell · {watchlist} · {date}``;
-3. context ``{n} new signals · {m} accounts crossed the threshold · freshness p95 {h}h``;
+3. context ``{n} new signals · {m} accounts crossed the threshold · freshness p95 {h}h``,
+   then a news coverage line (``news: X of Y due companies polled``, plus where collection
+   stopped when it stopped short) when the latest news run finished in the last 24 hours;
 4. one section per account that crossed the threshold, at most 10, highest score first:
    ``*{name}* ({domain}) · score {score}``, one bullet per contribution with its receipt
    as a link, then ``Why now:`` one sentence from the top two contributions;
@@ -67,6 +69,7 @@ __all__ = [
     "escape",
     "link",
     "new_signals_count",
+    "news_coverage",
     "post_blocks",
     "receipt_section",
     "send_digests",
@@ -177,8 +180,13 @@ def build_digest_blocks(  # noqa: PLR0917 - the positional order is the document
     *,
     weekly_url: str | None = None,
     intake_url: str | None = None,
+    news_coverage: str | None = None,
 ) -> list[dict[str, Any]]:
-    """The Block Kit ``blocks`` of one digest message (see the module docstring)."""
+    """The Block Kit ``blocks`` of one digest message (see the module docstring).
+
+    ``news_coverage`` (:func:`news_coverage`) adds the news coverage line; ``None``
+    (no fresh news run) leaves the message unchanged.
+    """
     base = pages_base_url.rstrip("/")
     blocks: list[dict[str, Any]] = []
     if stale_sources:
@@ -205,6 +213,10 @@ def build_digest_blocks(  # noqa: PLR0917 - the positional order is the document
         f" · freshness p95 {_hours(freshness_p95_h)}"
     )
     blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": context}]})
+    if news_coverage:
+        blocks.append(
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": escape(news_coverage)}]}
+        )
     shown = ranked[:MAX_ACCOUNTS]
     if shown:
         blocks.append({"type": "divider"})
@@ -310,6 +322,55 @@ def new_signals_count(session: Session, company_ids: Sequence[int], now: datetim
 # --- timing and sending ---------------------------------------------------------------------------
 
 
+def news_coverage(session: Session, now: datetime, *, window: timedelta = _WINDOW) -> str | None:
+    """One line on the latest news run's coverage, or ``None`` when there is none fresh.
+
+    Read from the run's ``runs.notes``: companies due (``selected``) and polled
+    (``polled_count``), companies whose query failed without a block (``unanswered``,
+    only on runs that record it), plus where and why collection stopped (``stopped``)
+    when it stopped short of the due list. ``None`` when no news run exists or the
+    latest one finished more than ``window`` ago; the digest's stale-sources line
+    reports that.
+    """
+    run = session.scalars(
+        select(Run)
+        .where(Run.source == "news")
+        .order_by(Run.started_at.desc(), Run.run_id.desc())
+        .limit(1)
+    ).first()
+    if run is None or run.finished_at is None or run.finished_at < now - window:
+        return None
+    notes = run.notes or {}
+    if "selected" not in notes:
+        return None
+    due = int(notes.get("selected") or 0)
+    polled = int(notes.get("polled_count") or 0)
+    text = f"news: {polled} of {due} due companies polled"
+    if "unanswered" in notes and int(notes.get("unanswered") or 0) > 0:
+        text += f" · {int(notes['unanswered'])} unanswered (query errors)"
+    stopped = notes.get("stopped")
+    if isinstance(stopped, Mapping) and "reason" in stopped:
+        position = stopped.get("position")
+        reason = stopped["reason"]
+        if reason == "blocked":
+            blocked_by = notes.get("blocked_by")
+            status = blocked_by.get("status") if isinstance(blocked_by, Mapping) else None
+            suffix = "" if status is None else f" ({status})"
+            detail = f"Google News block{suffix} at company #{position}"
+        elif reason == "drift":
+            detail = f"feed contract drift at company #{position}"
+        elif reason == "request_cap":
+            detail = f"request cap before company #{position}"
+        elif reason == "budget":
+            detail = f"run budget before company #{position}"
+        elif reason == "company_cap":
+            detail = f"company cap before company #{position}"
+        else:  # a future reason this version does not know: repeat it, do not guess
+            detail = f"{reason} at company #{position}"
+        text += f" · stopped: {detail}"
+    return text
+
+
 def should_send_now(session: Session, now: datetime, tz: str, hour: int) -> bool:
     """True on the first run at or after ``hour`` local time with no digest sent that local day."""
     if now.tzinfo is None or now.utcoffset() is None:
@@ -389,6 +450,7 @@ def send_digests(
     if not force and not should_send_now(session, now, zone, at):
         return DigestOutcome(sent=0, errors=0, skipped="not the digest run")
     health = compute_health(session, now)
+    coverage = news_coverage(session, now)
     local_day = now.astimezone(ZoneInfo(zone)).date()
     watchlists = list(session.scalars(select(Watchlist).order_by(Watchlist.id)))
     run_id = start_run(session, DIGEST_SOURCE, now=now)
@@ -410,6 +472,7 @@ def send_digests(
             health.freshness_p95_h,
             settings.tell_base_url,
             health.stale_sources,
+            news_coverage=coverage,
         )
         text = f"tell · {watchlist.name} · {local_day.isoformat()}: {len(crossed)} accounts crossed"
         status = post_blocks(destination, text, blocks, client=client, sleep=pause)
