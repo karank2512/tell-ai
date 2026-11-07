@@ -190,8 +190,9 @@ cases with placeholder names.
   exception closes the run `failed` with `notes.error`, keeping what was committed.
 - **No retries anywhere** (`max_attempts=1`). A 429 or 503 from Google News is a block: the
   run stops at once, nothing else is requested, and the run finishes **`failed`** with one
-  error and `runs.notes` `"blocked": true`, `blocked_by {status, url, company_id}` and
-  `polled_count` (how many companies were polled before the block). Failing the run is what
+  error and `runs.notes` `"blocked": true`, `blocked_by {status, url, company_id}`,
+  `polled_count` (how many companies were polled before the block) and `stopped`
+  (`reason` `blocked`, the company and its 1-based position in the run's due list). Failing the run is what
   lets the SPEC section 11 dead-man (`tell deadman`, no successful run in 24 hours) notice a
   block that persists; a single block is followed by the next scheduled run as usual. The
   companies polled before the block keep their `polled` timestamps, so the next run does not
@@ -200,7 +201,8 @@ cases with placeholder names.
   true, no `notes.drift`, no `notes.error`), so one 429/503 no longer turns the scheduled
   ingest job red; the run row stays `failed`, and `tell deadman` still alarms when news has
   no `ok` run in 24 hours. A contract failure (`drift`) or a crash (`error`) still exits 1. Other Google News failures (other 4xx/5xx, transport errors) count as
-  an error for that company, which is not marked polled, and the run continues.
+  an error for that company, which is not marked polled and is counted in
+  `notes.unanswered`; the run continues.
 - Rotation (PLAN Phase 4, SPEC section 11), read from `runs.notes["polled"]`
   (`{company_id: timestamp}`) of the news runs started in the last 7 days, whatever their
   status:
@@ -229,7 +231,16 @@ cases with placeholder names.
   A run that hits either limit stops cleanly, keeps everything it wrote and finishes `ok`;
   `runs.notes` has `selected` (companies due), `deferred` (due but not reached),
   `google_requests` (sent this run), `request_cap_reached`, `budget_exhausted` (the wall
-  clock ran out) and `polled_count`. The limits are `collect()` / `ingest()` arguments
+  clock ran out) and `polled_count`. Companies whose Google News query failed without a
+  block are `unanswered` (neither polled nor deferred; the run continues). A run that
+  stopped short of its due list also has
+  `stopped`: `reason` (`blocked`, `drift`, `request_cap`, `budget` or `company_cap`),
+  the `company_id` and its 1-based `position` in the due list (the company a block or a
+  contract drift stopped at, or the next company a cap or the budget did not start).
+  `tell runlog --source news` repeats these as `companies_due`, `companies_polled`,
+  `companies_deferred`, `companies_unanswered` and `stopped`, and the Slack digest
+  carries a `news: X of Y due companies polled` line when the latest news run is
+  fresh. The limits are `collect()` / `ingest()` arguments
   (`max_requests`, `max_companies`, `budget`), not settings.
 - Every request sends `User-Agent: tell/0.1 (+https://github.com/karank2512/tell-ai)`.
 

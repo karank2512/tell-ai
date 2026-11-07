@@ -3,7 +3,10 @@
 ``tell runlog --source X`` prints :func:`run_line` of the source's latest run: the
 spec section 1 JSON line (``run_id, source, started_at, finished_at, fetched,
 inserted, skipped, errors``) plus ``status``; ``ingest.yml`` appends it to the step
-summary.
+summary. A news run's line adds its coverage: ``companies_due``,
+``companies_polled``, ``companies_deferred``, ``companies_unanswered`` (Google News
+query failures, only on runs that record it) and, when collection stopped short of
+the due list, ``stopped`` (``reason``, ``company_id``, ``position``).
 
 ``tell runlog --week`` prints :func:`ops_line`, the spec section 12 / 13.4 operations
 line, over the trailing 7 days:
@@ -85,8 +88,12 @@ _WEEK_S = timedelta(days=7).total_seconds()
 
 
 def run_line(run: Run) -> dict[str, Any]:
-    """The run's JSON log line (spec section 1 keys) plus its ``status``."""
-    return {
+    """The run's JSON log line (spec section 1 keys) plus its ``status``.
+
+    A ``news`` run's line adds its coverage from ``runs.notes`` so the workflow step
+    summary shows how much of the day the run covered without a database query.
+    """
+    line: dict[str, Any] = {
         "run_id": run.run_id,
         "source": run.source,
         "started_at": iso_utc(run.started_at),
@@ -97,6 +104,17 @@ def run_line(run: Run) -> dict[str, Any]:
         "errors": int(run.errors or 0),
         "status": run.status,
     }
+    notes = run.notes or {}
+    if run.source == "news" and "selected" in notes:
+        line["companies_due"] = int(notes.get("selected") or 0)
+        line["companies_polled"] = int(notes.get("polled_count") or 0)
+        line["companies_deferred"] = int(notes.get("deferred") or 0)
+        if "unanswered" in notes:
+            line["companies_unanswered"] = int(notes.get("unanswered") or 0)
+        stopped = notes.get("stopped")
+        if stopped is not None:
+            line["stopped"] = stopped
+    return line
 
 
 def latest_run(session: Session, source: str) -> Run | None:

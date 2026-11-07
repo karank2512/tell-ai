@@ -38,6 +38,31 @@ def test_run_line_has_spec_keys_and_status(db_session: Session) -> None:
     assert running["finished_at"] is None
 
 
+def test_run_line_adds_news_coverage_from_notes(db_session: Session) -> None:
+    run = add_run(db_session, "news", NOW - HOUR)
+    run.notes = {
+        "selected": 907,
+        "polled_count": 173,
+        "deferred": 729,
+        "unanswered": 4,
+        "stopped": {"reason": "blocked", "company_id": 42, "position": 178},
+    }
+    line = runlog.run_line(run)
+    assert line["companies_due"] == 907
+    assert line["companies_polled"] == 173
+    assert line["companies_deferred"] == 729
+    assert line["companies_unanswered"] == 4
+    assert line["stopped"] == {"reason": "blocked", "company_id": 42, "position": 178}
+    complete = add_run(db_session, "news", NOW)
+    complete.notes = {"selected": 907, "polled_count": 907, "deferred": 0}
+    full = runlog.run_line(complete)
+    assert full["companies_due"] == 907
+    assert "stopped" not in full
+    assert "companies_unanswered" not in full  # only runs that record it carry it
+    other = runlog.run_line(add_run(db_session, "edgar", NOW))
+    assert "companies_due" not in other
+
+
 def test_latest_run(db_session: Session) -> None:
     assert runlog.latest_run(db_session, "greenhouse") is None
     add_run(db_session, "greenhouse", NOW - 7 * HOUR)

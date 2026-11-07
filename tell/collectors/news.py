@@ -60,7 +60,13 @@ then the active companies, then the long tail; least recently polled first withi
 each group), :data:`MAX_GOOGLE_REQUESTS` (600) Google News requests and
 :data:`RUN_BUDGET` of wall-clock time. A run that hits any of them stops cleanly, keeps
 what it wrote, finishes ``ok`` and says so in ``runs.notes`` (``deferred``,
-``request_cap_reached``, ``budget_exhausted``).
+``request_cap_reached``, ``budget_exhausted``). Where and why a run stopped short of its
+due list is ``runs.notes["stopped"]``: ``{"reason", "company_id", "position"}`` --
+``blocked`` or a contract ``drift`` at the company that stopped the run, ``request_cap``,
+``budget`` or ``company_cap`` at the next company it did not start; ``position`` is that
+company's 1-based place in the due list. A company whose Google News query fails for any
+other reason is counted in ``runs.notes["unanswered"]`` and is neither ``polled`` nor
+``deferred``; the run continues.
 
 Cohort runs (SPEC 13.1): ``when_days`` widens the Google News window (``when:120d``)
 and ``cohort="formd"`` polls the companies linked to a ``form_d_filed`` event in the
@@ -517,6 +523,8 @@ class NewsRunResult:
     budget_exhausted: bool = False
     google_requests: int = 0
     request_cap_reached: bool = False
+    stopped: dict[str, Any] | None = None
+    unanswered: int = 0
     when_days: int = DEFAULT_WHEN_DAYS
     cohort: str | None = None
     cohort_size: int | None = None
@@ -541,12 +549,15 @@ class NewsRunResult:
             "deferred": self.deferred,
             "budget_exhausted": self.budget_exhausted,
             "google_requests": self.google_requests,
+            "unanswered": self.unanswered,
             "request_cap_reached": self.request_cap_reached,
             "blocked": self.blocked is not None,
             "when_days": self.when_days,
             "site": dict(self.site),
             "site_workers": self.site_workers,
         }
+        if self.stopped is not None:
+            notes["stopped"] = dict(self.stopped)
         if self.cohort is not None:
             notes["cohort"] = self.cohort
             notes["cohort_size"] = self.cohort_size
@@ -992,14 +1003,17 @@ def _poll_google_news(run: _Run, company: Company) -> bool:
         if status in BLOCK_STATUSES:
             raise _BlockedError(url, status) from exc
         run.result.errors += 1
+        run.result.unanswered += 1
         _logger.warning("news: company %s query failed (%s)", company.id, status)
         return False
     except httpx.HTTPError as exc:
         run.result.errors += 1
+        run.result.unanswered += 1
         _logger.warning("news: company %s query failed: %s", company.id, type(exc).__name__)
         return False
     if response.status_code != 200:
         run.result.errors += 1
+        run.result.unanswered += 1
         _logger.warning("news: company %s query answered %s", company.id, response.status_code)
         return False
     items, _ = parse_feed_items(response.content)
@@ -1228,9 +1242,19 @@ def _poll_companies(
     for company in queue:
         if out_of_time():
             run.result.budget_exhausted = True
+            run.result.stopped = {
+                "reason": "budget",
+                "company_id": company.id,
+                "position": attempted + 1,
+            }
             break
         if run.result.google_requests >= max_requests:
             run.result.request_cap_reached = True
+            run.result.stopped = {
+                "reason": "request_cap",
+                "company_id": company.id,
+                "position": attempted + 1,
+            }
             break
         attempted += 1
         try:
@@ -1241,11 +1265,21 @@ def _poll_companies(
                 "url": blocked.url,
                 "company_id": company.id,
             }
+            run.result.stopped = {
+                "reason": "blocked",
+                "company_id": company.id,
+                "position": attempted,
+            }
             _logger.warning("news: blocked (%s); stopping this run", blocked.status)
             break
         except ValidationError as exc:
             run.result.errors += 1
             run.result.drift = f"google_news: {exc.error_count()} validation errors"
+            run.result.stopped = {
+                "reason": "drift",
+                "company_id": company.id,
+                "position": attempted,
+            }
             _logger.error("news: Google News response failed the contract: %s", exc)
             break
         if answered:
@@ -1372,6 +1406,12 @@ def collect(
                 run.result.google_requests,
             )
         run.result.deferred = len(companies) - attempted
+        if run.result.stopped is None and len(companies) > len(queue):
+            run.result.stopped = {
+                "reason": "company_cap",
+                "company_id": companies[len(queue)].id,
+                "position": len(queue) + 1,
+            }
         _settle(run, pending, keep=0)
         _checkpoint(run, notes=True)
     finally:

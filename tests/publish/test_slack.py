@@ -24,6 +24,7 @@ from tell.publish.slack import (
     build_digest_blocks,
     crossed_accounts,
     new_signals_count,
+    news_coverage,
     send_digests,
     should_send_now,
 )
@@ -63,6 +64,18 @@ def _account(n: int, score: float) -> CrossedAccount:
 
 
 # --- blocks --------------------------------------------------------------------------------------
+
+
+def test_digest_blocks_news_coverage_line() -> None:
+    coverage = "news: 173 of 902 due companies polled · stopped: Google News block (503) at #174"
+    blocks = build_digest_blocks("L", date(2026, 10, 6), [], 0, 1.0, BASE, [])
+    without = [el["text"] for b in blocks if b["type"] == "context" for el in b["elements"]]
+    assert not any("due companies polled" in text for text in without)
+    blocks = build_digest_blocks(
+        "L", date(2026, 10, 6), [], 0, 1.0, BASE, [], news_coverage=coverage
+    )
+    with_ = [el["text"] for b in blocks if b["type"] == "context" for el in b["elements"]]
+    assert any("173 of 902 due companies polled" in text for text in with_)
 
 
 def test_digest_blocks_shape() -> None:
@@ -198,6 +211,79 @@ def test_crossed_accounts_and_new_signals_from_the_scenario(db_session: Session)
     db_session.add(empty)
     db_session.flush()
     assert crossed_accounts(db_session, empty, sc.NOW) == []
+
+
+@pytest.mark.db
+def test_news_coverage_from_the_latest_fresh_news_run(db_session: Session) -> None:
+    now = datetime(2026, 10, 6, 20, 30, tzinfo=UTC)
+    assert news_coverage(db_session, now) is None
+    db_session.add(
+        Run(
+            run_id="news-old",
+            source="news",
+            started_at=now - timedelta(days=2),
+            finished_at=now - timedelta(days=2) + timedelta(minutes=10),
+            status="ok",
+            notes={"selected": 900, "polled_count": 900, "deferred": 0},
+        )
+    )
+    db_session.flush()
+    assert news_coverage(db_session, now) is None  # stale: the red line reports it
+    db_session.add(
+        Run(
+            run_id="news-blocked",
+            source="news",
+            started_at=now - timedelta(hours=2),
+            finished_at=now - timedelta(hours=2) + timedelta(minutes=10),
+            status="failed",
+            notes={
+                "selected": 902,
+                "polled_count": 170,
+                "deferred": 729,
+                "unanswered": 2,
+                "blocked": True,
+                "blocked_by": {"status": 503, "url": "https://news.google.com/x", "company_id": 9},
+                "stopped": {"reason": "blocked", "company_id": 9, "position": 173},
+            },
+        )
+    )
+    db_session.flush()
+    assert news_coverage(db_session, now) == (
+        "news: 170 of 902 due companies polled · 2 unanswered (query errors)"
+        " · stopped: Google News block (503) at company #173"
+    )
+    db_session.add(
+        Run(
+            run_id="news-complete",
+            source="news",
+            started_at=now - timedelta(hours=1),
+            finished_at=now - timedelta(hours=1) + timedelta(minutes=20),
+            status="ok",
+            notes={"selected": 902, "polled_count": 902, "deferred": 0},
+        )
+    )
+    db_session.flush()
+    assert news_coverage(db_session, now) == "news: 902 of 902 due companies polled"
+    db_session.add(
+        Run(
+            run_id="news-future-stop",
+            source="news",
+            started_at=now - timedelta(minutes=30),
+            finished_at=now - timedelta(minutes=30) + timedelta(minutes=20),
+            status="ok",
+            notes={
+                "selected": 902,
+                "polled_count": 100,
+                "deferred": 802,
+                "stopped": {"reason": "some_future_reason", "company_id": 7, "position": 101},
+            },
+        )
+    )
+    db_session.flush()
+    # An unknown stop reason is repeated as recorded, never read as a known one.
+    assert news_coverage(db_session, now) == (
+        "news: 100 of 902 due companies polled · stopped: some_future_reason at company #101"
+    )
 
 
 def _digest_runs(session: Session) -> list[Run]:
