@@ -24,7 +24,7 @@ Standing checks on every PR: CI green; no new paid service; `CHANGELOG.md` line 
 
 ## Hard constraints
 
-- Python >=3.12, managed with uv. Coverage floors: 90 for `collectors/`, `resolve/`, `signals/`; 80 overall.
+- Python >=3.12, managed with uv. Coverage floors: 90 for `collectors/`, `discovery/`, `resolve/`, `signals/`; 80 overall (enforced by `scripts/check_coverage.py`).
 - No PII: no column, fixture, log line or payload holds a person's name, email or phone (e.g. never store Form D `relatedPersonsList`).
 - Do not add dependencies to `pyproject.toml` outside Phase 0; report the need instead.
 
@@ -37,14 +37,14 @@ Standing checks on every PR: CI green; no new paid service; `CHANGELOG.md` line 
 
 ## Running tests
 
-- `make test` runs the full suite (pytest with coverage). Also: `make dev`, `make migrate`, `make refresh-fixtures` (the only target allowed to touch the network).
+- `make test` runs the full suite (pytest with coverage). Also: `make dev`, `make migrate`. `make refresh-fixtures` only prints the supervised manual re-recording procedure; it does not record fixtures or call the network.
 - `export UV_PROJECT_ENVIRONMENT=$HOME/.venvs/tell` when calling `uv run` directly from this checkout (it lives under iCloud-synced `~/Desktop`; `make` sets it for you, see ADR 0011).
 - Gates before finishing: `ruff check`, `ruff format --check`, `mypy --strict tell/`, `make test`.
 
 ## Fixtures
 
-- Live under `tests/fixtures/<source>/`; each source has at least `normal`, `empty_board`, and a `drift` case that omits a field so the contract test fails loudly.
-- Hand-trimmed to under 50 KB and scrubbed of anything personal. Recorded once via `make refresh-fixtures`, then frozen.
+- Live under `tests/fixtures/<source>/`; collector fixtures cover normal, empty and drift cases (a drift case omits a field so the contract test fails loudly). ATS boards use `empty_board`; EDGAR, GitHub and news use `empty`. The shared collector contract test (`tests/test_contracts.py`) reads `normal*.json` and `empty*.json`, requires at least one matching parsing fixture and requires `drift.json`. Discovery fixtures such as `issuer_sites/` use their own layout.
+- Hand-trimmed to under 50 KB and scrubbed of anything personal. Fixture origins vary: some were recorded from live responses, others hand-crafted or derived. Keep them frozen and follow each source's fixture documentation and contract tests. `docs/CUTOVER_CHECKLIST.md` step 5 covers the supervised EDGAR procedure only; other source refreshes need a source-specific plan and review, not an assumed automated recorder.
 - Public gold-set sample: `tests/fixtures/gold_sample.csv` (50 rows). The full gold set lives in `tell-private`.
 
 ## Collector discovery contract
