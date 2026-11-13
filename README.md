@@ -1,5 +1,8 @@
 # tell
 
+> **D5 evidence policy, 13 November 2026:** [Approved policy](docs/methods/d5-evidence-thresholds.md) governs signal-quality and outreach-outcome claims and weight-change proposals, superseding any weaker feedback/reweight bar below. Tier 1: internal counts from the first logged attempt, with unknowns and silence separate. Tier 2: 100 distinct rated signals from 5+ raters before signal-precision claims; separately, 100 tracked attempts across 5 users before any offline baseline comparison. Tier 3: 300 distinct labelled examples per profile plus a held-out set meeting Tier 2 before any weight-change proposal, always through a reviewed PR. Below these bars, report what was logged, never "the signal works"; above them, say "among contacted accounts", not causation. These are prerequisites for review, not automatic claims. The separate Stage 1 outcome prototype remains synthetic-only and rejects real data; real-data enablement needs a separate owner decision and reviewed implementation. Unrelated lead-time and entity-resolver evaluation policies are unchanged.
+
+
 [![ci](https://github.com/karank2512/tell-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/karank2512/tell-ai/actions/workflows/ci.yml)
 [![license: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 

@@ -1,5 +1,8 @@
 # Tell — 0-to-1 Open-Source Build Plan
 
+> **D5 evidence policy, 13 November 2026:** [Approved policy](methods/d5-evidence-thresholds.md) governs signal-quality and outreach-outcome claims and weight-change proposals, superseding any weaker feedback/reweight bar below. Tier 1: internal counts from the first logged attempt, with unknowns and silence separate. Tier 2: 100 distinct rated signals from 5+ raters before signal-precision claims; separately, 100 tracked attempts across 5 users before any offline baseline comparison. Tier 3: 300 distinct labelled examples per profile plus a held-out set meeting Tier 2 before any weight-change proposal, always through a reviewed PR. Below these bars, report what was logged, never "the signal works"; above them, say "among contacted accounts", not causation. These are prerequisites for review, not automatic claims. The separate Stage 1 outcome prototype remains synthetic-only and rejects real data; real-data enablement needs a separate owner decision and reviewed implementation. Unrelated lead-time and entity-resolver evaluation policies are unchanged.
+
+
 Normative reference: `docs/SPEC.md` (the Build spec). Business context: the business plan, kept in the private repo at `tell-private/docs/BUSINESS_PLAN.md` (not published). Section numbers below (§) refer to the Build spec.
 
 ## Decisions locked (recorded in `docs/decisions/`)

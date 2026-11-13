@@ -1,5 +1,8 @@
 # Feedback form (Google Form) and the nightly reader
 
+> **D5 evidence policy, 13 November 2026:** [Approved policy](../methods/d5-evidence-thresholds.md) governs signal-quality and outreach-outcome claims and weight-change proposals, superseding any weaker feedback/reweight bar below. Tier 1: internal counts from the first logged attempt, with unknowns and silence separate. Tier 2: 100 distinct rated signals from 5+ raters before signal-precision claims; separately, 100 tracked attempts across 5 users before any offline baseline comparison. Tier 3: 300 distinct labelled examples per profile plus a held-out set meeting Tier 2 before any weight-change proposal, always through a reviewed PR. Below these bars, report what was logged, never "the signal works"; above them, say "among contacted accounts", not causation. These are prerequisites for review, not automatic claims. The separate Stage 1 outcome prototype remains synthetic-only and rejects real data; real-data enablement needs a separate owner decision and reviewed implementation. Unrelated lead-time and entity-resolver evaluation policies are unchanged.
+
+
 ADR 0039; SPEC section 8 (the feedback loop) and section 9 (the thumbs row). Until the v1
 API is deployed, a rating is a click on a prefilled Google Form link: from a Slack nudge
 (`useful` / `not useful`), from the account page's thumbs row, or from the CSV's
