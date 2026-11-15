@@ -463,9 +463,7 @@ its condition has held, and quote numbers only from dated reports in
   set `TELL_RUN_MANUAL` on a schedule ([docs/methods/README.md](methods/README.md#manual-interventions-and-weeks-unattended),
   ADR 0028).
 - [ ] Standing care: rotate `TELL_DATA_PUSH_TOKEN` before it expires; watch the Neon
-  compute-hours graph once a month; if GitHub ever emails a "scheduled workflow will be
-  disabled" warning, `gh workflow enable ingest.yml -R karank2512/tell-ai` (the weekly
-  `keepalive` job should make this unnecessary, ADR 0026).
+  compute-hours graph once a month; if GitHub emails a schedule-disable warning, record the cause and request owner review. Do not automatically re-enable a workflow or undo a source-safety pause. The reviewed keepalive candidate is read-only, not inactivity recovery; collector-level exclusion and coherent downstream eligibility must be complete before a separate owner resume decision.
 
 ## Known follow-ups, not blocking cutover
 

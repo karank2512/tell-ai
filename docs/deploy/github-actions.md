@@ -32,7 +32,7 @@ the repo; `.env.example` lists every variable with a comment.
 | `SLACK_WEEKLY_WEBHOOK_URL` | optional | weekly | Incoming webhook of the private channel; the step is skipped when unset |
 
 `GITHUB_TOKEN` is provided by Actions; every workflow pins it to `contents: read` and
-grants more only where one job needs it (`actions: write` for the weekly keepalive,
+grants more only where one job needs it (`actions: read` plus `contents: read` for the weekly schedule-state audit,
 `id-token: write` for the PyPI publish job and the MCP Registry job, `pull-requests: read` for gitleaks).
 
 **Variables**
@@ -63,8 +63,7 @@ scheduled run goes live by itself, with no edit or re-enable. A `workflow_dispat
 behaves the same way. With `DATABASE_URL` set but `TELL_DATA_PUSH_TOKEN` or the
 `TELL_DATA_REPO` variable missing, collection, resolve, score and the dead-man still run
 and every `tell-data` step (checkout, publish, prune, commit, digest, weekly page) is
-skipped with a warning. The weekly `keepalive` job is not gated: it needs no secret and is
-what keeps the schedules enabled until cutover.
+skipped with a warning. The weekly `keepalive` job is not gated on data preflight: it only reads schedule states. It never re-enables a workflow. It cannot run when its own workflow is disabled.
 
 ## ingest.yml, step by step
 
@@ -198,8 +197,7 @@ Mondays at 06:23 UTC, before the 08:17 ingest run:
 5. If `SLACK_WEEKLY_WEBHOOK_URL` is set, a plain-text summary (top hiring, top Form D,
    coverage, the operations line, the page link) to the private channel, for turning into
    the LinkedIn post.
-6. **keepalive**: re-enables `ingest.yml`, `weekly.yml` and `ci.yml` through the API (see
-   below).
+6. **keepalive**: read-only audit of `ingest.yml`, `weekly.yml` and `ci.yml`; no enable call. This is not dependable inactivity monitoring when weekly itself is disabled.
 
 **The weekly workflow never commits to this repo.** The owner does not want
 `github-actions` (or any bot) to appear as a contributor of `tell-ai`, so refreshed reports
@@ -221,18 +219,13 @@ Use **Run workflow** with **week** = `YYYY-Www` to rebuild a past edition.
 GitHub disables a public repository's scheduled workflows after 60 days without activity
 in **that** repository. The ingest commits land in `tell-data`, so they keep `tell-data`
 active but do nothing for the schedules in `tell-ai`, contrary to what SPEC section 11
-assumes. Two things keep the schedules alive:
+assumes. Automatic workflow recovery is disabled in the source-safety review candidate.
 
-- **keepalive** (`weekly.yml`): every Monday it calls
-  `PUT /repos/{repo}/actions/workflows/{file}/enable` for the three scheduled workflows,
-  using the job's own `GITHUB_TOKEN` with `actions: write`. Re-enabling resets the
-  inactivity timer without a commit (ADR 0026).
-- Any push to `tell-ai` by a maintainer also counts as activity.
+- The `keepalive` job only reads states with `actions: read`. It does not reset the inactivity timer or issue enable requests, including for `disabled_inactivity`.
+- A maintainer push still counts as repository activity. This candidate sets up no new monitoring.
+- The weekly-contained audit cannot detect total inactivity disablement, because it will not run when weekly is disabled.
 
-If a schedule is ever disabled anyway (GitHub emails a warning a week before), re-enable
-it under Actions -> the workflow -> "Enable workflow", or with
-`gh workflow enable ingest.yml`. The daily `tell-data` commit still matters: it is the
-published record and it is what triggers the Pages deploy.
+A disabled workflow requires an owner decision, not an automatic recovery. Before any manual enable, confirm why it is paused, check source eligibility, review the complete collector/score/export/API/descendant/archive gates and obtain the owner's explicit resume decision. Do not use an old runbook command to undo a source-safety pause. Existing tell-data commits and history are unchanged.
 
 ## GitHub Pages on tell-data
 
