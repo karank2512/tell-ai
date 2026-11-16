@@ -160,21 +160,17 @@ jobs:
 
   # GitHub disables a public repo's scheduled workflows after 60 days without activity in
   # *this* repo; the tell-data commits do not count, because they land in another repo.
-  # Re-enabling through the API resets that timer without a commit, so no bot ever becomes
-  # a contributor here (ADR 0026). Deliberately not gated on preflight: it needs no
-  # secret, and it is what keeps the schedules enabled until cutover, so the cron goes live
-  # by itself once the secrets exist.
+  # Read-only audit only. Automatic re-enabling is disabled, including inactivity recovery.
+  # This job remains independent of data preflight; it does not authorize source use.
   keepalive:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      actions: write
+      actions: read
+      contents: read
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Re-enable the scheduled workflows
-        run: |
-          for wf in ingest.yml weekly.yml ci.yml; do
-            gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${wf}/enable"
-            echo "re-enabled ${wf}"
-          done
+      - uses: actions/checkout@v7
+      - name: Audit schedule states without re-enabling
+        run: bash scripts/keepalive-workflows.sh

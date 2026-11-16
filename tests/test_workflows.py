@@ -744,13 +744,16 @@ def test_publish_mcp_registry_listing() -> None:
     assert "--token" not in text
 
 
-def test_weekly_keepalive_reenables_scheduled_workflows() -> None:
-    """ADR 0026: the 60-day inactivity timer is reset through the API, never by a commit."""
+def test_weekly_keepalive_only_audits_schedule_states() -> None:
+    """Source-safety review: even inactivity recovery must not race a manual pause."""
     keepalive = _load("weekly.yml")["jobs"]["keepalive"]
-    assert keepalive["permissions"] == {"actions": "write"}
-    script = str(keepalive["steps"][0]["run"])
-    assert "/enable" in script
-    for name in ("ingest.yml", "weekly.yml"):
+    assert keepalive["permissions"] == {"actions": "read", "contents": "read"}
+    assert keepalive["steps"][0]["uses"] == "actions/checkout@v7"
+    assert keepalive["steps"][1]["run"] == "bash scripts/keepalive-workflows.sh"
+    script = (REPO_ROOT / "scripts" / "keepalive-workflows.sh").read_text()
+    assert "/enable" not in script
+    assert "-X PUT" not in script
+    for name in ("ingest.yml", "weekly.yml", "ci.yml"):
         assert name in script
     assert "git " not in script
 
