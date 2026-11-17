@@ -323,9 +323,7 @@ NONFINITE = [math.nan, math.inf, -math.inf]
 """NaN compares false with everything and ``inf - inf`` is NaN: both once cleared a crossing."""
 
 
-def _lineage(
-    crossed: object, stored: Any, decisions: dict[int, Decision] | None = None
-) -> Reason:
+def _lineage(crossed: object, stored: Any, decisions: dict[int, Decision] | None = None) -> Reason:
     decisions = {1: CLEAN, 2: CLEAN} if decisions is None else decisions
     payload = _crossing(score=crossed, top=[{"signal_id": 1}])
     # ``stored`` is Any on purpose: non-float stored scores are among the inputs under test.
