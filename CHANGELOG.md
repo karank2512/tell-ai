@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Review candidate, not wired: `tell/ops/source_eligibility.py` decides per stored row whether news-derived data may feed outputs (Google News always excluded, company feeds only with a recorded per-feed permit, unknown provenance and incomplete crossing lineage fail closed) and keeps that separate from retention (excluded rows are held, never archived publicly or deleted). Nothing calls it yet; no score, weight, threshold, collector or prune behavior changes. Design and owner choices: `docs/review/source-exclusion-retention-design.md`.
 - News run coverage is visible without a database query. A news run that stopped short of
   its due list records `stopped` in `runs.notes`: `reason` (`blocked`, `drift`,
   `request_cap`, `budget` or `company_cap`) with the `company_id` and 1-based `position`
