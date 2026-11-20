@@ -22,7 +22,7 @@ from tell.models import Run
 from tell.publish import cli
 from tests.publish import scenario as sc
 
-pytestmark = pytest.mark.db
+pytestmark = [pytest.mark.db, pytest.mark.usefixtures("wired_outputs")]
 
 runner = CliRunner()
 WEBHOOK = "https://hooks.slack.invalid/services/T1/B1/Z1"
@@ -77,7 +77,10 @@ def test_publish_out_runs_data_then_site(bound: Engine, tmp_path: Path) -> None:
 def test_each_command(bound: Engine, tmp_path: Path) -> None:
     site = _ok(["site", "--out", str(tmp_path), "--as-of", sc.AS_OF.isoformat()])
     assert site["validated"] == 8
-    data = _ok(["data", "--out", str(tmp_path), "--day", "2026-10-05"])
+    # 2026-10-05 holds only the (Google News) news fixture rows: all held, none written.
+    held_day = _ok(["data", "--out", str(tmp_path), "--day", "2026-10-05"])
+    assert held_day["events_written"] == 0
+    data = _ok(["data", "--out", str(tmp_path), "--day", "2026-10-02"])
     assert data["events_written"] > 0
     assert list((tmp_path / "events" / "2026" / "10").glob("*.jsonl"))
     csv_path = tmp_path / "pilot.csv"

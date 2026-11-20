@@ -349,8 +349,9 @@ def test_resolve_score_publish_order_and_policy() -> None:
     notify = steps[_index(steps, "uv run tell notify --slack")]
     assert notify["env"]["SLACK_WEBHOOK_URL"] == "${{ secrets.SLACK_WEBHOOK_URL }}"
     # ADR 0036: nudges need only the database, so the step is not gated on tell-data, and
-    # it reads the per-watchlist webhooks from the read-only tell-private checkout.
-    assert "if" not in notify
+    # it reads the per-watchlist webhooks from the read-only tell-private checkout. It is
+    # gated only on OUTPUTS (never on a collect_only manual run).
+    assert notify["if"] == "env.OUTPUTS == 'true'"
     assert str(notify["run"]).strip() == "uv run tell notify --slack --private-dir tell-private"
     # The dead-man must be the last step so it judges the whole run.
     assert _index(steps, "uv run tell deadman") == len(steps) - 1
@@ -810,3 +811,253 @@ def test_tell_private_intake_workflow() -> None:
     )
     text = TEMPLATE_WORKFLOWS["tell-private-intake.yml"].read_text(encoding="utf-8")
     assert "tell-data" not in text  # nothing public is written by this job
+
+
+# --- collect_only / full dispatch mode (source exclusion, first slice) --------------------
+#
+# actionlint is not installed here, so the conditions are evaluated statically by a small
+# evaluator for the subset of GitHub expression syntax these steps use (``||``, ``&&``,
+# ``!``, ``==``, ``!=``, parentheses, string/bool literals, dotted context lookups and the
+# status functions). Comparisons follow GitHub's rules for the cases used: strings compare
+# case-insensitively, a missing value is null and null equals only null or ''.
+
+_TOKEN = re.compile(
+    r"\s*(?:(?P<op>\|\||&&|==|!=|!|\(|\))|'(?P<str>(?:[^']|'')*)'|(?P<name>[A-Za-z_][\w.-]*)(?P<call>\(\))?)"
+)
+
+
+def _tokens(expr: str) -> list[tuple[str, Any]]:
+    expr = expr.strip()
+    if expr.startswith("${{") and expr.endswith("}}"):
+        expr = expr[3:-2]
+    out: list[tuple[str, Any]] = []
+    pos = 0
+    expr = expr.strip()
+    while pos < len(expr):
+        match = _TOKEN.match(expr, pos)
+        assert match is not None, f"cannot parse {expr[pos:]!r}"
+        assert match.end() > pos, f"cannot parse {expr[pos:]!r}"
+        pos = match.end()
+        if match.group("op"):
+            out.append(("op", match.group("op")))
+        elif match.group("str") is not None:
+            out.append(("lit", match.group("str").replace("''", "'")))
+        elif match.group("call"):
+            out.append(("call", match.group("name")))
+        else:
+            out.append(("name", match.group("name")))
+        while pos < len(expr) and expr[pos].isspace():
+            pos += 1
+    return out
+
+
+def _eq(a: Any, b: Any) -> bool:
+    if a is None or b is None:
+        return (a in (None, "")) and (b in (None, ""))
+    if isinstance(a, bool) or isinstance(b, bool):
+        return str(a).lower() == str(b).lower()
+    return str(a).lower() == str(b).lower()
+
+
+def _truthy(value: Any) -> bool:
+    return value not in (None, False, "", 0)
+
+
+def _evaluate(expr: str, ctx: dict[str, Any], status: dict[str, bool] | None = None) -> Any:
+    """Evaluate one GitHub Actions expression against ``ctx`` (dotted lookups)."""
+    toks = _tokens(expr)
+    funcs = {"always": True, "success": True, "cancelled": False, "failure": False}
+    funcs |= status or {}
+    pos = 0
+
+    def peek() -> tuple[str, Any] | None:
+        return toks[pos] if pos < len(toks) else None
+
+    def take() -> tuple[str, Any]:
+        nonlocal pos
+        pos += 1
+        return toks[pos - 1]
+
+    def primary() -> Any:
+        kind, value = take()
+        if kind == "op" and value == "(":
+            inner = or_()
+            assert take() == ("op", ")")
+            return inner
+        if kind == "op" and value == "!":
+            return not _truthy(primary())
+        if kind == "lit":
+            return value
+        if kind == "call":
+            return funcs[value]
+        if value in ("true", "false"):
+            return value == "true"
+        node: Any = ctx
+        for part in value.split("."):
+            node = node.get(part) if isinstance(node, dict) else None
+        return node
+
+    def comparison() -> Any:
+        left = primary()
+        nxt = peek()
+        if nxt in (("op", "=="), ("op", "!=")):
+            take()
+            right = primary()
+            return _eq(left, right) if nxt[1] == "==" else not _eq(left, right)
+        return left
+
+    def and_() -> Any:
+        left = comparison()
+        while peek() == ("op", "&&"):
+            take()
+            right = comparison()
+            left = right if _truthy(left) else left
+        return left
+
+    def or_() -> Any:
+        left = and_()
+        while peek() == ("op", "||"):
+            take()
+            right = and_()
+            left = left if _truthy(left) else right
+        return left
+
+    result = or_()
+    assert pos == len(toks), f"trailing tokens in {expr!r}"
+    return result
+
+
+def _env_string(value: Any) -> str:
+    """How an expression result lands in an ``env:`` value."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return "" if value is None else str(value)
+
+
+def test_expression_evaluator_self_check() -> None:
+    ctx = {"github": {"event_name": "schedule"}, "inputs": {}, "env": {"X": "true"}}
+    assert _evaluate("github.event_name == 'schedule' || inputs.mode == 'full'", ctx) is True
+    assert _evaluate("inputs.mode == 'full'", ctx) is False
+    assert _evaluate("inputs.mode == ''", ctx) is True  # null equals ''
+    assert _evaluate("env.X == 'TRUE' && !cancelled()", ctx) is True
+    assert _evaluate("${{ !cancelled() }}", ctx, {"cancelled": True}) is False
+    assert _evaluate("(env.X == 'false') || (env.X != 'false')", ctx) is True
+
+
+def test_ingest_dispatch_mode_input_defaults_to_collect_only() -> None:
+    inputs = _on(_load("ingest.yml"))["workflow_dispatch"]["inputs"]
+    mode = inputs["mode"]
+    assert mode["type"] == "choice"
+    assert mode["options"] == ["collect_only", "full"]
+    assert mode["default"] == "collect_only"
+    source = str(inputs["source"]["description"])
+    assert "publish always follow" not in source
+    assert "only when mode is full" in source
+
+
+_OUTPUT_STEPS = {
+    "uv run tell score --all-profiles": False,
+    "uv run tell publish --out tell-data": True,
+    "uv run tell prune --out tell-data": True,
+    "git push": True,
+    "uv run tell notify --slack": False,
+}
+"""Output steps of resolve_score_publish -> whether they also need publish_enabled."""
+
+_ALWAYS_STEPS = ("uv run tell resolve", "uv run tell deadman")
+
+
+def _dispatch_matrix() -> list[tuple[str, dict[str, Any], bool]]:
+    """(label, inputs, expected OUTPUTS) for every way the job can start."""
+    return [
+        ("schedule", {}, True),
+        ("dispatch-default", {"mode": "collect_only"}, False),  # GitHub fills the default
+        ("dispatch-collect_only", {"mode": "collect_only"}, False),
+        ("dispatch-full", {"mode": "full"}, True),
+        ("dispatch-mode-missing", {}, False),  # an older caller that sends no mode
+        ("dispatch-mode-FULL-case", {"mode": "FULL"}, True),  # GitHub compares case-blind
+        ("dispatch-source-only", {"source": "greenhouse", "mode": "collect_only"}, False),
+    ]
+
+
+@pytest.mark.parametrize("publish_enabled", ["true", "false"])
+@pytest.mark.parametrize(
+    ("label", "inputs", "outputs"), _dispatch_matrix(), ids=[m[0] for m in _dispatch_matrix()]
+)
+def test_resolve_score_publish_condition_matrix(
+    label: str, inputs: dict[str, Any], outputs: bool, publish_enabled: str
+) -> None:
+    job = _load("ingest.yml")["jobs"]["resolve_score_publish"]
+    event = "schedule" if label == "schedule" else "workflow_dispatch"
+    base = {
+        "github": {"event_name": event},
+        "inputs": inputs,
+        "needs": {
+            "preflight": {
+                "outputs": {
+                    "enabled": "true",
+                    "publish_enabled": publish_enabled,
+                    "private_enabled": "true",
+                }
+            }
+        },
+    }
+    env = {k: _env_string(_evaluate(str(v), base)) for k, v in job["env"].items()}
+    assert env["OUTPUTS"] == ("true" if outputs else "false")
+    ctx = {**base, "env": env}
+    steps = job["steps"]
+    for needle, needs_publish in _OUTPUT_STEPS.items():
+        step = steps[_index(steps, needle)]
+        runs = _truthy(_evaluate(str(step.get("if", "success()")), ctx))
+        expected = outputs and (publish_enabled == "true" or not needs_publish)
+        assert runs is expected, (label, needle, publish_enabled)
+    for needle in _ALWAYS_STEPS:
+        step = steps[_index(steps, needle)]
+        assert _truthy(_evaluate(str(step.get("if", "success()")), ctx)), (label, needle)
+
+
+def test_every_output_step_is_gated_on_outputs() -> None:
+    """No step that scores, publishes, prunes, pushes or notifies escapes the OUTPUTS gate."""
+    for job_name, job in _load("ingest.yml")["jobs"].items():
+        for step in job.get("steps", []):
+            run = str(step.get("run", ""))
+            if any(
+                word in run
+                for word in ("tell score", "tell publish", "tell prune", "git push", "tell notify")
+            ):
+                assert job_name == "resolve_score_publish", job_name
+                assert "env.OUTPUTS == 'true'" in str(step.get("if", "")), run
+
+
+@pytest.mark.parametrize(
+    ("outputs", "deadman_code", "expected_code"),
+    [("true", 1, 1), ("true", 0, 0), ("false", 1, 0), ("false", 0, 0)],
+)
+def test_deadman_writes_its_summary_but_never_reds_a_collect_only_run(
+    tmp_path: Path, outputs: str, deadman_code: int, expected_code: int
+) -> None:
+    steps = _load("ingest.yml")["jobs"]["resolve_score_publish"]["steps"]
+    script = str(steps[_index(steps, "uv run tell deadman")]["run"])
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    summary = tmp_path / "summary"
+    fake_uv = bin_dir / "uv"
+    # A stand-in for `uv run tell deadman`: writes the report, exits with the given code.
+    fake_uv.write_text(
+        f'#!/bin/bash\necho "dead-man report" >> "$GITHUB_STEP_SUMMARY"\nexit {deadman_code}\n'
+    )
+    fake_uv.chmod(0o755)
+    env = {
+        "PATH": f"{bin_dir}:/usr/bin:/bin",
+        "OUTPUTS": outputs,
+        "GITHUB_STEP_SUMMARY": str(summary),
+    }
+    done = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", script],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == expected_code, done.stdout + done.stderr
+    assert summary.read_text() == "dead-man report\n"

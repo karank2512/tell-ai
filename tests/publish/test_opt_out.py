@@ -56,6 +56,8 @@ LATER = date(2026, 10, 13)
 
 runner = CliRunner()
 
+pytestmark = pytest.mark.usefixtures("wired_outputs", "receipt_cutover")
+
 
 @pytest.fixture
 def frozen() -> Iterator[None]:

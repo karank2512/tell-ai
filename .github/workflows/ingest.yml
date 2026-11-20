@@ -18,9 +18,21 @@ on:
       source:
         description: >-
           Single source to run (greenhouse, lever, ashby, smartrecruiters, edgar, news or
-          discover). Empty runs everything. Resolve, score and publish always follow.
+          discover). Empty runs everything. Resolve always follows; score, publish, prune,
+          the tell-data push and Slack follow only when mode is full.
         required: false
         default: ""
+      mode:
+        # Safe by default: a manual run collects and resolves only. Scheduled runs keep
+        # the full pipeline (OUTPUTS below); the code backstop (WIRED in
+        # tell/ops/source_eligibility.py) still refuses publish, prune and notify.
+        description: >-
+          collect_only (default): ingest and resolve, no score, publish, prune, push or
+          Slack. full: the whole pipeline, as on the schedule.
+        type: choice
+        options: [collect_only, full]
+        required: false
+        default: collect_only
 
 # Serializes runs so two polls never race on the same board. A queued run waits; it is
 # never cancelled in favour of a newer one.
@@ -236,6 +248,10 @@ jobs:
     timeout-minutes: 45
     env:
       PUBLISH_ENABLED: ${{ needs.preflight.outputs.publish_enabled }}
+      # Whether this run may produce outputs (score, publish, prune, push, Slack): every
+      # scheduled run, and a manual run only with mode=full. Never true for a default
+      # (collect_only) manual run, whatever the secrets.
+      OUTPUTS: ${{ github.event_name == 'schedule' || inputs.mode == 'full' }}
     steps:
       - name: Check configuration
         # preflight already gates this job on DATABASE_URL. Without the tell-data token or
@@ -271,16 +287,17 @@ jobs:
       - run: uv sync --frozen
       - run: uv run tell resolve
       - run: uv run tell score --all-profiles
+        if: env.OUTPUTS == 'true'
       - run: uv run tell publish --out tell-data
-        if: needs.preflight.outputs.publish_enabled == 'true'
+        if: env.OUTPUTS == 'true' && needs.preflight.outputs.publish_enabled == 'true'
       # Idempotent and cheap, so it runs every time rather than on a monthly guard: archives
       # events older than 180 days to tell-data/events and drops old posting observations.
       # Gated with the checkout: prune deletes what it archives, so it never runs without
       # the tell-data checkout that receives the archive.
       - run: uv run tell prune --out tell-data
-        if: needs.preflight.outputs.publish_enabled == 'true'
+        if: env.OUTPUTS == 'true' && needs.preflight.outputs.publish_enabled == 'true'
       - name: Commit and push tell-data
-        if: needs.preflight.outputs.publish_enabled == 'true'
+        if: env.OUTPUTS == 'true' && needs.preflight.outputs.publish_enabled == 'true'
         # The daily commit is also what keeps this schedule alive past GitHub's 60-day
         # inactivity cutoff. Retries once over a concurrent push from weekly.yml.
         working-directory: tell-data
@@ -295,11 +312,20 @@ jobs:
         # watchlists with their own webhook in tell-private (absent when the read token is
         # not set, so none are sent), then the digest, which goes out only on the first run
         # at or after the digest hour; both decided inside the command (ADR 0036).
+        # Not on a collect_only run.
+        if: env.OUTPUTS == 'true'
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: uv run tell notify --slack --private-dir tell-private
       - name: Dead-man switch
         # Fails the job (red run + GitHub's free failure email) when any scheduled source
         # has had no successful run in 24 hours; writes the report to the step summary.
+        # On a collect_only run (one source on purpose) it writes the report but never
+        # turns the run red.
         if: ${{ !cancelled() }}
-        run: uv run tell deadman
+        run: |
+          if [ "$OUTPUTS" = true ]; then
+            uv run tell deadman
+          else
+            uv run tell deadman || echo "::notice::collect_only run: dead-man report written; not failing the run"
+          fi

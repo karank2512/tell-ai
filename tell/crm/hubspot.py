@@ -46,6 +46,7 @@ from tell.collectors.base import iso_utc
 from tell.config import get_settings
 from tell.http import RateBudget, fetch, make_client
 from tell.models import Company, Score
+from tell.ops import source_eligibility
 from tell.publish.json_api import round_half_up
 from tell.signals.profiles import Profile
 
@@ -471,7 +472,12 @@ class Receipt:
 
 
 def load_receipt(session: Session, domain: str, profile: Profile) -> Receipt:
-    """The newest ``scores`` row of ``domain`` under ``profile``; :class:`LookupError` if none."""
+    """The newest ``scores`` row of ``domain`` under ``profile``; :class:`LookupError` if none.
+
+    Source eligibility: a stored score is trusted only when its ``as_of`` is on or after
+    :data:`~tell.ops.source_eligibility.ELIGIBILITY_CUTOVER`. While that constant is
+    ``None`` (no cutover chosen) every receipt raises :class:`LookupError`: fail closed.
+    """
     company = session.scalar(select(Company).where(Company.domain == domain))
     if company is None:
         msg = f"no company with domain {domain!r}; run tell discover domain first"
@@ -484,6 +490,13 @@ def load_receipt(session: Session, domain: str, profile: Profile) -> Receipt:
     )
     if stored is None:
         msg = f"no {profile.name!r} score for {domain!r}; run tell score --all-profiles first"
+        raise LookupError(msg)
+    cutover = source_eligibility.ELIGIBILITY_CUTOVER
+    if cutover is None or stored.as_of < cutover:
+        msg = (
+            f"the {profile.name!r} score for {domain!r} predates the source-eligibility "
+            "cutover (or none is set); it cannot be used as a receipt"
+        )
         raise LookupError(msg)
     contributions = sorted(
         (dict(c) for c in stored.contributions if c.get("url")),

@@ -51,7 +51,9 @@ from sqlalchemy.orm import Session
 from tell.collectors.base import finish_run, start_run
 from tell.config import get_settings
 from tell.http import fetch
-from tell.models import Company, EventRow, Run, Score, Signal, Watchlist, WatchlistItem
+from tell.models import Company, EventRow, Run, Signal, Watchlist, WatchlistItem
+from tell.ops.lineage import signal_decisions, signal_ids_of_crossings
+from tell.ops.source_eligibility import classify_stamped_crossing
 from tell.publish.health import compute_health
 from tell.publish.json_api import intake_link, round_half_up
 from tell.publish.weekly import IsoWeek
@@ -252,7 +254,14 @@ def watchlist_members(session: Session, watchlist: Watchlist) -> list[int]:
 
 
 def crossed_accounts(session: Session, watchlist: Watchlist, now: datetime) -> list[CrossedAccount]:
-    """Accounts of ``watchlist`` with a ``score_crossed_threshold`` in the last 24 hours."""
+    """Accounts of ``watchlist`` with a clean ``score_crossed_threshold`` in the last 24 hours.
+
+    Each crossing is cleared from its own lineage stamp
+    (:func:`~tell.ops.source_eligibility.classify_stamped_crossing`): an unstamped
+    (legacy) crossing, or one with a restricted, unknown or non-finite input, is dropped.
+    The score and receipts shown come from the stamped payload, never from the ``scores``
+    row a same-day rescore may have changed.
+    """
     members = watchlist_members(session, watchlist)
     if not members:
         return []
@@ -269,24 +278,17 @@ def crossed_accounts(session: Session, watchlist: Watchlist, now: datetime) -> l
         )
         .order_by(EventRow.observed_at, EventRow.event_id)
     )
+    rows = [(event, company) for event, company in session.execute(stmt)]
+    decisions = signal_decisions(session, signal_ids_of_crossings(e.payload for e, _ in rows))
     latest: dict[int, tuple[EventRow, Company]] = {}
-    for event, company in session.execute(stmt):
-        latest[company.id] = (event, company)
+    for event, company in rows:
+        if classify_stamped_crossing(event.payload, decisions).eligible:
+            latest[company.id] = (event, company)
     accounts: list[CrossedAccount] = []
     for event, company in latest.values():
-        payload = event.payload or {}
-        as_of_text = payload.get("as_of")
-        stored = None
-        if as_of_text:
-            stored = session.get(
-                Score, (company.id, watchlist.icp_profile, date.fromisoformat(str(as_of_text)))
-            )
-        if stored is not None:
-            score_value = float(stored.score)
-            contributions = list(stored.contributions)
-        else:
-            score_value = float(payload.get("score") or event.magnitude)
-            contributions = list(payload.get("top_contributions") or [])
+        payload = event.payload
+        score_value = float(payload["score"])
+        contributions = [dict(c) for c in payload["contributions"]]
         threshold = payload.get("threshold")
         accounts.append(
             CrossedAccount(

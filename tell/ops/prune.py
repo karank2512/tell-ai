@@ -6,8 +6,12 @@ One pass, in this order, inside the caller's transaction:
    ``observed_at`` older than 180 days to its ``tell-data`` file
    ``events/YYYY/MM/DD.jsonl`` (append-only, ``fsync``-ed) and returns the ids now on
    disk. If any file cannot be read or written it raises, and nothing is deleted.
-2. **Delete archived events.** Only ids the archive returned, and only while still
-   older than the cutoff, are deleted. Events still referenced by a ``signals`` row are
+   Excluded rows (:mod:`tell.ops.source_eligibility`) are *held*: never archived, never
+   returned as archived, counted as ``events_held`` (a count only, no ids).
+2. **Delete archived events.** Only ids the archive returned, only while still older
+   than the cutoff, and only rows the SQL eligibility guard
+   (:func:`tell.ops.lineage.deletable_predicate`) allows, are deleted: an excluded row
+   can never be deleted here whatever ids are passed. Events still referenced by a ``signals`` row are
    **kept**: ``signals.event_id`` is a foreign key, and signals (with the ``scores``
    whose ``contributions`` cite them, and any ``feedback`` on them) are history that the
    size budget does not cover. Such an event is in the archive *and* in the database;
@@ -33,6 +37,7 @@ from sqlalchemy.orm import Session
 
 from tell.collectors.base import iso_utc
 from tell.models import EventRow, PostingObservation, Signal
+from tell.ops.lineage import deletable_predicate
 from tell.publish.data_repo import archive_events
 
 __all__ = [
@@ -64,7 +69,10 @@ class PruneResult:
     """Events older than the cutoff now present in the archive files."""
     events_deleted: int
     events_kept: int
-    """Archived events left in the database because a ``signals`` row references them."""
+    """Archived events left in the database (a ``signals`` row references them, or the
+    SQL eligibility guard is narrower than the classifier for them)."""
+    events_held: int = 0
+    """Old events excluded by source eligibility: not archived, not deleted (count only)."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -74,6 +82,7 @@ class PruneResult:
             "events_archived": self.events_archived,
             "events_deleted": self.events_deleted,
             "events_kept": self.events_kept,
+            "events_held": self.events_held,
         }
 
 
@@ -96,6 +105,7 @@ def _delete_archived(session: Session, ids: list[str], cutoff: datetime) -> int:
                 EventRow.event_id.in_(chunk),
                 EventRow.observed_at < cutoff,
                 EventRow.event_id.not_in(referenced),
+                deletable_predicate(),
             )
             .execution_options(synchronize_session=False)
         )
@@ -120,7 +130,8 @@ def prune(
         raise ValueError(msg)
     event_cutoff = now - event_retention
     observation_cutoff = now - observation_retention
-    archived = list(dict.fromkeys(archive_events(session, out_dir, event_cutoff)))
+    outcome = archive_events(session, out_dir, event_cutoff)
+    archived = list(dict.fromkeys(outcome.archived))
     events_deleted = _delete_archived(session, archived, event_cutoff)
     observations_deleted = _rowcount(
         session,
@@ -136,4 +147,5 @@ def prune(
         events_archived=len(archived),
         events_deleted=events_deleted,
         events_kept=len(archived) - events_deleted,
+        events_held=len(set(outcome.held)),
     )

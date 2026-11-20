@@ -22,7 +22,9 @@ from tell.collectors.base import finish_run, start_run
 from tell.config import get_settings
 from tell.db import SessionLocal
 from tell.intake.reader import PrivateWatchlist, write_private_watchlists
-from tell.models import AtsBoard, EnrichmentVerdict, EventRow, Nudge, Run, Score
+from tell.models import AtsBoard, EnrichmentVerdict, EventRow, Nudge, Run, Score, Signal
+from tell.ops.lineage import signal_decisions
+from tell.ops.source_eligibility import Reason, classify_stamped_crossing
 from tell.publish import cli
 from tell.publish.crm_push import CrmConfig, crm_line
 from tell.publish.nudge import (
@@ -45,6 +47,8 @@ FORM = "https://forms.example/f?s={signal_id}&d={domain}&v={verdict}"
 FORM_WITH_LIST = FORM + "&w={watchlist}"
 SLUG = "private-list"
 TZ = "America/Los_Angeles"
+
+pytestmark = pytest.mark.usefixtures("wired_outputs", "receipt_cutover")
 
 
 def _account(*families: str, threshold: float | None = 6.0) -> CrossedAccount:
@@ -339,12 +343,15 @@ def test_send_nudges_one_message_per_account_to_the_private_webhook_only(
 
 @pytest.mark.db
 @pytest.mark.usefixtures("frozen")
-def test_send_nudges_rates_only_what_has_a_stored_signal(
+def test_send_nudges_rate_link_only_for_a_top_signal_with_a_receipt(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # With the form configured, a crossing whose stored score lists no contribution is
-    # nudged with the account page link alone: the form needs a Signal id and the nightly
-    # reader rejects an empty one. The other crossing keeps "Rate it" for its top signal.
+    # With the form configured, Robotics' crossing keeps "Rate it" for its top signal.
+    # Bluefin's crossing is clean, stamped and eligible (its one signal is an EDGAR Form
+    # D), but that signal's receipt has no URL, so the account has nothing to show or
+    # rate: it is still nudged, with the account page link alone. The stamp is left
+    # intact (same policy_version, signal_ids, finite score and contribution); only the
+    # source event's URL is synthetic-empty, as emit_crossings would have copied it.
     monkeypatch.setenv("TELL_FEEDBACK_FORM_URL", FORM_WITH_LIST)
     monkeypatch.setenv("TELL_BASE_URL", BASE)
     get_settings.cache_clear()
@@ -353,11 +360,27 @@ def test_send_nudges_rates_only_what_has_a_stored_signal(
         select(Score).where(Score.company_id == scenario.companies[sc.ROBOTICS])
     ).one()
     bare = db_session.scalars(
-        select(Score).where(Score.company_id == scenario.companies[sc.BLUEFIN])
+        select(EventRow).where(
+            EventRow.company_id == scenario.companies[sc.BLUEFIN],
+            EventRow.type == "score_crossed_threshold",
+        )
     ).one()
     top_signal = rated.contributions[0]["signal_id"]
-    bare.contributions = []
+    receiptless = set(bare.payload["signal_ids"])
+    for source_event in db_session.scalars(
+        select(EventRow)
+        .join(Signal, Signal.event_id == EventRow.event_id)
+        .where(Signal.id.in_(receiptless))
+    ):
+        assert source_event.source == "edgar"
+        source_event.url = ""
+    bare.payload = {
+        **bare.payload,
+        "contributions": [{**c, "url": ""} for c in bare.payload["contributions"]],
+    }
     db_session.flush()
+    decisions = signal_decisions(db_session, receiptless)
+    assert classify_stamped_crossing(bare.payload, decisions).reason is Reason.LINEAGE_CLEAN
     with respx.mock(assert_all_called=True, assert_all_mocked=True) as mock:
         route = mock.post(PRIVATE).respond(200, text="ok")
         outcome = send_nudges(
@@ -378,8 +401,10 @@ def test_send_nudges_rates_only_what_has_a_stored_signal(
         account_page(sc.ROBOTICS),
         {"type": "mrkdwn", "text": rate},
     ]
-    assert "• " not in sent[sc.BLUEFIN]["blocks"][0]["text"]["text"]  # nothing to rate
+    assert "• " not in sent[sc.BLUEFIN]["blocks"][0]["text"]["text"]  # nothing to show
     assert sent[sc.BLUEFIN]["blocks"][1]["elements"] == [account_page(sc.BLUEFIN)]
+    assert "Rate it" not in json.dumps(sent[sc.BLUEFIN])
+    assert "forms.example" not in json.dumps(sent[sc.BLUEFIN])
 
 
 @pytest.mark.db
@@ -433,15 +458,51 @@ def test_failed_nudge_is_recorded_and_retried_until_the_window_closes(
 
 
 def _second_family(session: Session, company_id: int) -> None:
-    """Give the company's stored score a second family with a receipt (gate rule 1)."""
-    stored = session.scalars(
-        select(Score).where(Score.company_id == company_id).order_by(Score.as_of.desc())
-    ).first()
-    assert stored is not None
-    stored.contributions = [
-        *stored.contributions,
+    """Give the company's crossing a second family with a receipt (gate rule 1).
+
+    Source exclusion: the nudge reads the crossing's lineage stamp, not the ``scores``
+    row, so the extra family is a real eligible signal (an ATS ``hiring_velocity`` event)
+    added to the stamped ``signal_ids`` and ``contributions``.
+    """
+    event_id = f"synthetic-velocity-{company_id}"
+    when = datetime(2026, 10, 5, tzinfo=UTC)
+    session.add(
+        EventRow(
+            event_id=event_id,
+            company_id=company_id,
+            source="tell",
+            type="hiring_velocity",
+            occurred_at=when,
+            observed_at=when,
+            url="https://boards.example/jobs",
+            payload={"role_family": "sales"},
+            run_id="synthetic",
+        )
+    )
+    session.flush()
+    signal = Signal(
+        company_id=company_id,
+        event_id=event_id,
+        signal_type="hiring_velocity",
+        role_family="sales",
+        weight=1,
+        magnitude=1,
+        half_life_days=14,
+        starts_at=when,
+    )
+    session.add(signal)
+    session.flush()
+    crossing = session.scalars(
+        select(EventRow).where(
+            EventRow.company_id == company_id, EventRow.type == "score_crossed_threshold"
+        )
+    ).one()
+    payload = dict(crossing.payload)
+    payload["signal_ids"] = sorted([*payload["signal_ids"], signal.id])
+    payload["contributions"] = [
+        *payload["contributions"],
         {
-            "signal_id": 999,
+            "signal_id": signal.id,
             "signal_type": "hiring_velocity",
             "role_family": "sales",
             "contribution": 1.5,
@@ -450,6 +511,7 @@ def _second_family(session: Session, company_id: int) -> None:
             "summary": "3 new sales roles in 7 days",
         },
     ]
+    crossing.payload = payload
     session.flush()
 
 

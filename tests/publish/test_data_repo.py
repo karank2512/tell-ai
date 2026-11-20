@@ -35,8 +35,10 @@ T = datetime(2026, 10, 6, 2, 30, tzinfo=UTC)
 
 def _event(n: int, observed: datetime, *, magnitude: float = 1) -> Event:
     return Event(
-        source="synthetic",
-        type="news_launch",
+        # An independent source: rows the eligibility policy archives (an unrecognized
+        # source such as "synthetic" is now held, see test_source_exclusion_outputs.py).
+        source="greenhouse",
+        type="job_opened",
         external_id=f"e{n}",
         version="1",
         occurred_at=observed - timedelta(hours=5),
@@ -136,13 +138,13 @@ def test_archive_events_writes_old_events_to_their_day_files(
     # The nightly publish already archived day 2026-03-01 once.
     nightly = write_events_jsonl(db_session, tmp_path, old_a.date())
     cutoff = datetime(2026, 4, 1, tzinfo=UTC)
-    archived = archive_events(db_session, tmp_path, cutoff)
+    archived = archive_events(db_session, tmp_path, cutoff).archived
     ids = {e.event_id for e in (_event(1, old_a), _event(2, old_a), _event(3, old_b))}
     assert set(archived) == ids
     assert read_event_ids(events_path(tmp_path, old_a.date())) == nightly.written
     assert len(read_event_ids(events_path(tmp_path, old_b.date()))) == 1
     assert not events_path(tmp_path, DAY).exists()
-    assert set(archive_events(db_session, tmp_path, cutoff)) == ids  # rerun: same, no dupes
+    assert set(archive_events(db_session, tmp_path, cutoff).archived) == ids  # rerun: no dupes
     assert len(read_event_ids(events_path(tmp_path, old_a.date()))) == 2
     with pytest.raises(ValueError, match="timezone-aware"):
         archive_events(db_session, tmp_path, datetime(2026, 4, 1))

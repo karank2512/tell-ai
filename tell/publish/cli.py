@@ -38,6 +38,7 @@ from tell.config import get_settings
 from tell.db import session_scope
 from tell.intake.reader import DEFAULT_PRIVATE_DIR
 from tell.models import Watchlist, WatchlistItem
+from tell.ops import source_eligibility
 from tell.publish.csv_export import export_csv
 from tell.publish.data_repo import prune_snapshots, write_events_jsonl, write_snapshots
 from tell.publish.health import compute_health
@@ -93,6 +94,26 @@ OutDir = Annotated[Path, typer.Option("--out", file_okay=False, help="The tell-d
 AsOfOption = Annotated[
     str | None, typer.Option("--as-of", help="Calendar day to publish (ISO date; default today).")
 ]
+
+
+BLOCKED_EXIT_CODE = 2
+"""Exit code of an output command refused because source eligibility is not wired."""
+
+
+def require_wired(command: str) -> None:
+    """Exit 2 unless :data:`tell.ops.source_eligibility.WIRED` is ``True``.
+
+    Called first in every output command, before any database session, settings read,
+    file read or HTTP client: a refused command touches nothing. The constant is code,
+    never an environment variable, so no setting can bypass it.
+    """
+    if source_eligibility.outputs_blocked():
+        typer.echo(
+            f"error: `tell {command}` is disabled: source eligibility is not wired into "
+            "every output path yet (tell/ops/source_eligibility.py WIRED is False)",
+            err=True,
+        )
+        raise typer.Exit(code=BLOCKED_EXIT_CODE)
 
 
 def _echo(record: dict[str, Any]) -> None:
@@ -169,6 +190,7 @@ def main(
     if out is None:
         typer.echo(ctx.get_help())
         raise typer.Exit(code=0)
+    require_wired("publish")
     day = utcnow().date()
     with session_scope() as session:
         record = _run_data(session, out, day)
@@ -183,6 +205,7 @@ def site_command(
     profile: Annotated[str, typer.Option("--profile", help="ICP profile.")] = DEFAULT_PROFILE_NAME,
 ) -> None:
     """Render the static site and the api/v0 JSON under OUT/site."""
+    require_wired("publish site")
     day = _date(as_of, "--as-of")
     with session_scope() as session:
         try:
@@ -200,6 +223,7 @@ def data_command(
     ] = None,
 ) -> None:
     """Append JSONL events, write board snapshots, prune old snapshots."""
+    require_wired("publish data")
     chosen = _date(day, "--day")
     with session_scope() as session:
         _echo(_run_data(session, out, chosen))
@@ -212,6 +236,7 @@ def csv_command(
     as_of: AsOfOption = None,
 ) -> None:
     """Write the CSV with receipts for one watchlist."""
+    require_wired("publish csv")
     day = _date(as_of, "--as-of")
     with session_scope() as session:
         found = session.scalars(
@@ -242,6 +267,7 @@ def weekly_command(
     ] = "current",
 ) -> None:
     """Render one weekly page, api/v0/weekly/latest.json and the edition's Form D filings."""
+    require_wired("weekly")
     now = utcnow()
     try:
         chosen = resolve_week(week, now)
@@ -279,6 +305,7 @@ def weekly_command(
 @app.command("health")
 def health_command(out: OutDir) -> None:
     """Render health.html and api/v0/health.json."""
+    require_wired("publish health")
     now = utcnow()
     site = out / "site"
     sha = code_commit_sha()
@@ -317,8 +344,10 @@ def notify_command(
     Nudges go out on every call to the watchlists that have their own webhook in
     ``tell-private``; the digest only on the first run at or after the digest hour (or
     with ``--force``). The JSON line carries the digest counts at the top level and the
-    nudge counts under ``nudges``. Exit 1 when everything attempted failed.
+    nudge counts under ``nudges``. Exit 1 when everything attempted failed. Exit 2,
+    before reading any setting or file, while source eligibility is not wired.
     """
+    require_wired("notify")
     if not slack:
         msg = "nothing to notify: pass --slack"
         raise typer.BadParameter(msg)

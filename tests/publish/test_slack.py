@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tell.collectors.base import finish_run, start_run
-from tell.models import Run, Watchlist
+from tell.models import EventRow, Run, Watchlist
 from tell.publish.slack import (
     DIGEST_SOURCE,
     MAX_ACCOUNTS,
@@ -33,6 +33,8 @@ from tests.publish import scenario as sc
 WEBHOOK = "https://hooks.slack.invalid/services/T000/B000/XXXX"
 TZ = "America/Los_Angeles"
 BASE = "https://pages.example/tell-data"
+
+pytestmark = pytest.mark.usefixtures("wired_outputs", "receipt_cutover")
 
 
 def _account(n: int, score: float) -> CrossedAccount:
@@ -189,20 +191,37 @@ def frozen() -> Iterator[None]:
         yield
 
 
+def crossing_signal_ids(session: Session, company_id: int) -> list[int]:
+    """The stamped ``signal_ids`` of the company's one crossing."""
+    crossing = session.scalars(
+        select(EventRow).where(
+            EventRow.company_id == company_id, EventRow.type == "score_crossed_threshold"
+        )
+    ).one()
+    return list(crossing.payload["signal_ids"])
+
+
 @pytest.mark.db
 @pytest.mark.usefixtures("frozen")
 def test_crossed_accounts_and_new_signals_from_the_scenario(db_session: Session) -> None:
     scenario = sc.build(db_session)
     accounts = crossed_accounts(db_session, scenario.public, sc.NOW)
-    assert [a.domain for a in accounts] == [sc.ROBOTICS, sc.QUILLSTONE]
+    # Source exclusion: Quillstone's crossing rests on Google News rows from the news
+    # fixture, so it is restricted and dropped; Robotics' lineage is EDGAR + ATS only.
+    assert [a.domain for a in accounts] == [sc.ROBOTICS]
     robotics = accounts[0]
     assert robotics.name == "Example Robotics"
     assert robotics.score == 27.7
     assert robotics.contributions[0]["signal_type"] == "funding"
-    assert all(c["url"] for c in accounts[1].contributions)
-    assert len(accounts[1].contributions) == 5  # every contribution, from the stored score
+    assert all(c["url"] for c in robotics.contributions)
+    # Exactly one: Robotics' crossing cites a single signal (its EDGAR Form D funding),
+    # rendered from the stamped payload, not the scores row.
+    assert len(robotics.contributions) == 1
+    assert [c["signal_id"] for c in robotics.contributions] == crossing_signal_ids(
+        db_session, scenario.companies[sc.ROBOTICS]
+    )
     private = crossed_accounts(db_session, scenario.private, sc.NOW)
-    assert [a.domain for a in private] == [sc.ROBOTICS, sc.BLUEFIN]
+    assert [a.domain for a in private] == [sc.ROBOTICS, sc.BLUEFIN]  # Bluefin: EDGAR only
     assert crossed_accounts(db_session, scenario.public, sc.NOW + timedelta(days=2)) == []
     members = [scenario.companies[d] for d in (sc.ROBOTICS, sc.QUILLSTONE, sc.GREENHOUSE)]
     assert new_signals_count(db_session, members, sc.NOW) == 5  # the news observed 10-05
@@ -311,10 +330,13 @@ def test_send_digests_one_message_per_watchlist_with_a_pause(db_session: Session
         "tell · Pilot list · 2026-10-06",
         "tell · Private list · 2026-10-06",
     ]
+    # Source exclusion: Quillstone's news-derived crossing is dropped. The "new signals"
+    # count still includes the news fixture's signals: new_signals_count is not filtered
+    # yet (next slice), which is one reason WIRED stays False.
     assert bodies[0]["blocks"][2]["elements"][0]["text"].startswith(
-        "5 new signals · 2 accounts crossed the threshold · freshness p95 "
+        "5 new signals · 1 accounts crossed the threshold · freshness p95 "
     )
-    assert bodies[0]["text"] == "tell · Pilot list · 2026-10-06: 2 accounts crossed"
+    assert bodies[0]["text"] == "tell · Pilot list · 2026-10-06: 1 accounts crossed"
     (run,) = _digest_runs(db_session)
     assert (run.status, run.fetched, run.inserted, run.errors) == ("ok", 2, 2, 0)
 

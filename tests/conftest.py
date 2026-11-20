@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import secrets
 from collections.abc import Iterator
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,7 @@ import tests._ci_env  # noqa: F401  # must run before typer reads the environmen
 from tell.config import Settings, get_settings
 from tell.db import SessionLocal, make_engine
 from tell.models import Base
+from tell.ops import source_eligibility
 
 MAINTENANCE_DB = "postgres"
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -183,3 +185,19 @@ def db_session(engine: Engine) -> Iterator[Session]:
     finally:
         session.rollback()
         session.close()
+
+
+@pytest.fixture
+def wired_outputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Flip the in-process ``WIRED`` constant for tests of the output commands' behaviour.
+
+    Production code leaves it ``False`` (publish, prune and notify exit 2); a test that
+    exercises what those commands do once wired asks for this fixture explicitly.
+    """
+    monkeypatch.setattr(source_eligibility, "WIRED", True)
+
+
+@pytest.fixture
+def receipt_cutover(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Set the receipt cutover before every synthetic score so ``load_receipt`` trusts them."""
+    monkeypatch.setattr(source_eligibility, "ELIGIBILITY_CUTOVER", date(2000, 1, 1))

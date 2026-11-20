@@ -1,9 +1,12 @@
-"""Source eligibility: a pure, unwired CANDIDATE for the news source exclusion.
+"""Source eligibility: a pure CANDIDATE for the news source exclusion, partly wired.
 
-Review candidate only (``docs/review/source-exclusion-retention-design.md``). Nothing in
-``tell`` imports this module yet: no collector, scorer, publisher or prune path calls it.
-It reads nothing, writes nothing and opens no connection; every function here takes plain
-values and returns a decision.
+Review candidate (``docs/review/source-exclusion-retention-design.md``). First local
+slice: the JSONL publish/archive writer and the prune delete hold excluded rows; the
+Slack crossing list and HubSpot receipts fail closed; ``tell publish``/``prune``/
+``notify`` refuse to run while :data:`WIRED` is ``False`` (it is). Scoring inputs, the
+site, the JSON API, the weekly page and the CSV export are NOT filtered yet, which is
+why :data:`WIRED` stays ``False``. This module itself reads nothing, writes nothing and
+opens no connection; every function here takes plain values and returns a decision.
 
 It keeps four concerns apart:
 
@@ -45,9 +48,12 @@ from typing import Any, Final
 from urllib.parse import urlsplit
 
 __all__ = [
+    "ELIGIBILITY_CUTOVER",
     "INDEPENDENT_SOURCES",
     "PERMITS",
     "POLICY_VERSION",
+    "STAMP_TOP_N",
+    "WIRED",
     "ArchiveDisposition",
     "Decision",
     "ExclusionAudit",
@@ -61,10 +67,35 @@ __all__ = [
     "cached_output_trusted",
     "classify_crossing",
     "classify_event",
+    "classify_stamped_crossing",
     "eligible_signal_ids",
     "news_coverage",
     "news_fetch_plan",
+    "outputs_blocked",
+    "stamped_signal_ids",
 ]
+
+WIRED: Final[bool] = False
+"""Whether every output path (publish, prune, notify) reads only eligible rows.
+
+A code constant, never a setting: no environment variable or config file can flip it.
+While it is not ``True``, ``tell publish``, ``tell prune``, ``tell notify`` and the
+``tell weekly`` alias exit 2 before opening any database session or HTTP client
+(:func:`outputs_blocked`). Flipping it is a reviewed code change made only once the
+remaining output paths (site, JSON API, weekly page, CSV, scoring inputs) filter through
+this module; see the change summary for the next slice.
+"""
+
+STAMP_TOP_N: Final = 5
+"""Contributions copied into a stamped crossing's ``payload.contributions`` (proposed N)."""
+
+ELIGIBILITY_CUTOVER: Final[date | None] = None
+"""First scored day whose stored ``scores`` row may be shown as a receipt (HubSpot).
+
+``None`` means no cutover has been chosen, so no stored score is trusted and
+``load_receipt`` fails closed. Setting a date is the owner's reviewed choice, made only
+after scoring reads eligible signals alone.
+"""
 
 POLICY_VERSION: Final = "source-exclusion/1"
 """Stamped on every decision. A cached output made under another version (or none) is untrusted."""
@@ -317,6 +348,76 @@ def _finite(value: object) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def stamped_signal_ids(payload: object) -> tuple[int, ...] | None:
+    """The full contributor list a stamped crossing carries, or None when it is malformed.
+
+    Accepts only a non-empty list of distinct ints (bools refused). Never reads ``scores``.
+    """
+    if not isinstance(payload, Mapping):
+        return None
+    raw = payload.get("signal_ids")
+    if not isinstance(raw, list) or not raw:
+        return None
+    ids: list[int] = []
+    for item in raw:
+        if isinstance(item, bool) or not isinstance(item, int):
+            return None
+        ids.append(item)
+    if len(set(ids)) != len(ids):
+        return None
+    return tuple(ids)
+
+
+def classify_stamped_crossing(
+    payload: object, signal_decisions: Mapping[int, Decision]
+) -> Decision:
+    """Clear a crossing from its own stamp: ``policy_version``, ``signal_ids``, ``contributions``.
+
+    Unlike :func:`classify_crossing` this never reads the ``scores`` row, which a
+    same-day rescore upserts; the stamp is written once with the crossing and the event
+    is never rewritten. Clean only when: the stamp is this policy version; every cited
+    signal id is known and eligible *now*; every stamped contribution cites one of those
+    ids with a finite value; and the crossing's score is finite. An unstamped (legacy)
+    crossing is always ``lineage_incomplete``: it is dropped from outputs, not repaired.
+    """
+    ids = _intact_stamp(payload)
+    decisions = [signal_decisions.get(i) for i in ids] if ids is not None else [None]
+    if any(d is None for d in decisions):
+        return Decision(Provenance.DERIVED, Reason.LINEAGE_INCOMPLETE)
+    if any(d is not None and not d.eligible for d in decisions):
+        return Decision(Provenance.DERIVED, Reason.LINEAGE_RESTRICTED)
+    return Decision(Provenance.DERIVED, Reason.LINEAGE_CLEAN)
+
+
+def _intact_stamp(payload: object) -> tuple[int, ...] | None:
+    """The stamped ``signal_ids`` when the whole stamp is present and consistent, else None."""
+    if not isinstance(payload, Mapping):
+        return None
+    version = payload.get("policy_version")
+    ids = stamped_signal_ids(payload)
+    top = payload.get("contributions")
+    if (
+        not cached_output_trusted(version if isinstance(version, str) else None)
+        or ids is None
+        or _finite(payload.get("score")) is None
+        or not isinstance(top, list)
+        or not top
+    ):
+        return None
+    for item in top:
+        cited = _signal_id(item)
+        if cited is None or cited not in ids:
+            return None
+        if isinstance(item, Mapping) and _finite(item.get("contribution")) is None:
+            return None
+    return ids
+
+
+def outputs_blocked() -> bool:
+    """True unless :data:`WIRED` is exactly ``True`` (read at call time, never from settings)."""
+    return WIRED is not True
+
+
 def eligible_signal_ids(signal_decisions: Mapping[int, Decision]) -> frozenset[int]:
     """Signal ids a fresh score may read: those whose source event is eligible."""
     return frozenset(i for i, d in signal_decisions.items() if d.eligible)
@@ -349,8 +450,14 @@ def archive_disposition(
     """What the size-budget prune may do with one row. Exclusion never implies deletion.
 
     HOLD has no age limit. How long a held row stays, and whether it ever leaves, is the
-    owner's open retention choice; this function does not decide it.
+    owner's open retention choice; this function does not decide it. Both datetimes must
+    be timezone-aware (``ValueError`` otherwise), so a naive value can never shift a row
+    across the cutoff.
     """
+    for name, value in (("observed_at", observed_at), ("cutoff", cutoff)):
+        if value.tzinfo is None or value.utcoffset() is None:
+            msg = f"{name} must be timezone-aware, got naive {value!r}"
+            raise ValueError(msg)
     if not decision.eligible:
         return ArchiveDisposition.HOLD
     if observed_at < cutoff:

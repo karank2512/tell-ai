@@ -93,6 +93,8 @@ CONTRIBUTIONS: list[dict[str, Any]] = [
 
 runner = CliRunner()
 
+pytestmark = pytest.mark.usefixtures("receipt_cutover")
+
 
 def _fixture(name: str) -> Any:
     return json.loads((FIXTURES / name).read_text())

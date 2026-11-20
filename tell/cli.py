@@ -873,6 +873,8 @@ def prune(
     ],
 ) -> None:
     """Archive events older than 180 days to OUT/events, then delete them; drop old observations."""
+    # Before _tracked: a refused prune opens no session and records no runs row.
+    publish_cli.require_wired("prune")
 
     def work(session: Session, _run_id: str, now: datetime) -> _Outcome:
         result = prune_ops.prune(session, out, now=now)

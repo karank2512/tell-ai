@@ -55,6 +55,8 @@ WEBHOOK = "https://hooks.slack.invalid/services/T1/B1/Z1"
 HOUR = timedelta(hours=1)
 DAY = timedelta(days=1)
 
+pytestmark = pytest.mark.usefixtures("wired_outputs")
+
 
 def _invoke(args: list[str], code: int = 0) -> Result:
     result = runner.invoke(app, args)
@@ -747,6 +749,7 @@ def test_prune_archives_then_deletes(bound: Engine, tmp_path: Path) -> None:
     assert notes["events_archived"] == 2
     assert notes["events_deleted"] == 1
     assert notes["events_kept"] == 1
+    assert notes["events_held"] == 0  # source eligibility: a count only, never ids
     assert notes["observations_deleted"] == 1
     archive = events_path(tmp_path, (now - 200 * DAY).date()).read_text(encoding="utf-8")
     assert "cli-old" in archive

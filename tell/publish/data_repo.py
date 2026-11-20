@@ -23,6 +23,14 @@ The same writer is the 180-day archive the prune job (Phase 9) moves old events 
 :func:`archive_events` writes events older than a cutoff to their observed-day files and
 returns the ids that are now safely on disk, so prune deletes only those.
 
+Source eligibility (:mod:`tell.ops.source_eligibility`): both writers append only rows
+that are eligible. An excluded row (Google News, unpermitted or unknown provenance, an
+unrecognized source, a ``score_crossed_threshold`` that is unstamped or has a restricted
+contributor) is never appended to a public file and is reported as *held*: it stays in
+the database unchanged. A held row that an earlier run already wrote to a file is left
+in that file untouched (no rewrite of public history here) but is never reported as
+archived, so prune never deletes it.
+
 Snapshots
 =========
 
@@ -39,7 +47,7 @@ import os
 import re
 import shutil
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -51,10 +59,19 @@ from sqlalchemy.orm.attributes import set_committed_value
 
 from tell.collectors.base import iso_utc, utcnow
 from tell.models import AtsBoard, Company, EventRow, Posting
+from tell.ops.lineage import event_decision, signal_decisions, signal_ids_of_crossings
+from tell.ops.source_eligibility import (
+    SCORE_CROSSED_THRESHOLD,
+    TELL_SOURCE,
+    ArchiveDisposition,
+    Decision,
+    archive_disposition,
+)
 
 __all__ = [
     "EVENT_COLUMNS",
     "SNAPSHOT_RETENTION_DAYS",
+    "ArchiveResult",
     "JsonlWrite",
     "archive_events",
     "event_record",
@@ -101,6 +118,18 @@ class JsonlWrite:
     """Event ids appended by this call, in file order."""
     present: list[str]
     """Event ids of the call's input that are now in the file (written or already there)."""
+    held: list[str] = field(default_factory=list)
+    """Excluded event ids of the day: never appended, never reported present."""
+
+
+@dataclass(frozen=True)
+class ArchiveResult:
+    """Outcome of :func:`archive_events`."""
+
+    archived: list[str]
+    """Eligible old event ids now on disk: the only ids prune may delete."""
+    held: list[str]
+    """Excluded old event ids: not appended, not deletable, kept in the database."""
 
 
 # --- paths --------------------------------------------------------------------------------
@@ -263,10 +292,37 @@ def write_events_jsonl(session: Session, out_dir: Path, day: date) -> JsonlWrite
             .order_by(EventRow.observed_at, EventRow.event_id)
         )
     )
-    result, refs = _append(out_dir, day, rows)
+    decisions = _crossing_signal_decisions(session, rows)
+    keep, held = _split(rows, decisions)
+    result, refs = _append(out_dir, day, keep)
     _stamp_raw_refs(session, refs)
     session.flush()
-    return result
+    return JsonlWrite(path=result.path, written=result.written, present=result.present, held=held)
+
+
+def _crossing_signal_decisions(session: Session, rows: Iterable[EventRow]) -> dict[int, Decision]:
+    payloads = [
+        r.payload for r in rows if r.source == TELL_SOURCE and r.type == SCORE_CROSSED_THRESHOLD
+    ]
+    return signal_decisions(session, signal_ids_of_crossings(payloads)) if payloads else {}
+
+
+def _row_decision(row: EventRow, decisions: Mapping[int, Decision]) -> Decision:
+    return event_decision(row.source, row.type, row.url, row.payload, decisions)
+
+
+def _split(
+    rows: Sequence[EventRow], decisions: Mapping[int, Decision]
+) -> tuple[list[EventRow], list[str]]:
+    """Eligible rows to append, and the ids of the excluded rows held back."""
+    keep: list[EventRow] = []
+    held: list[str] = []
+    for row in rows:
+        if _row_decision(row, decisions).eligible:
+            keep.append(row)
+        else:
+            held.append(row.event_id)
+    return keep, held
 
 
 def _by_observed_day(rows: Iterable[EventRow]) -> Iterator[tuple[date, list[EventRow]]]:
@@ -283,12 +339,15 @@ def _by_observed_day(rows: Iterable[EventRow]) -> Iterator[tuple[date, list[Even
         yield current, bucket
 
 
-def archive_events(session: Session, out_dir: Path, older_than: datetime) -> list[str]:
-    """Write every event with ``observed_at < older_than`` to its observed-day file.
+def archive_events(session: Session, out_dir: Path, older_than: datetime) -> ArchiveResult:
+    """Write every eligible event with ``observed_at < older_than`` to its observed-day file.
 
-    Returns the ids of those events that are now on disk (appended by this call or
-    already archived by an earlier nightly publish), ``fsync``-ed, so the prune job can
-    delete exactly these rows after this function returns. Raises (and returns nothing)
+    Each row is classified first (:func:`~tell.ops.source_eligibility.archive_disposition`).
+    Only ``archive_then_prune`` rows are appended; ``archived`` lists those now on disk
+    (appended by this call or already archived by an earlier nightly publish),
+    ``fsync``-ed, so the prune job can delete exactly these rows after this function
+    returns. ``held`` lists the excluded rows: never appended, never in ``archived``,
+    even when an earlier run already wrote them to a file. Raises (and returns nothing)
     when any file cannot be read or written. Flushes; never commits.
     """
     if older_than.tzinfo is None or older_than.utcoffset() is None:
@@ -300,16 +359,35 @@ def archive_events(session: Session, out_dir: Path, older_than: datetime) -> lis
         .order_by(EventRow.observed_at, EventRow.event_id)
         .execution_options(yield_per=2000)
     )
+    # Crossing lineage is loaded up front, never interleaved with the streaming cursor.
+    crossing_payloads = session.scalars(
+        select(EventRow.payload).where(
+            EventRow.observed_at < older_than,
+            EventRow.source == TELL_SOURCE,
+            EventRow.type == SCORE_CROSSED_THRESHOLD,
+        )
+    ).all()
+    decisions = signal_decisions(session, signal_ids_of_crossings(crossing_payloads))
     archived: list[str] = []
+    held: list[str] = []
     stamps: list[tuple[EventRow, str]] = []
     for day, rows in _by_observed_day(session.scalars(stmt)):
-        result, refs = _append(out_dir, day, rows)
+        to_archive: list[EventRow] = []
+        for row in rows:
+            disposition = archive_disposition(
+                _row_decision(row, decisions), row.observed_at, older_than
+            )
+            if disposition is ArchiveDisposition.ARCHIVE_THEN_PRUNE:
+                to_archive.append(row)
+            else:
+                held.append(row.event_id)
+        result, refs = _append(out_dir, day, to_archive)
         stamps.extend(refs)
         archived.extend(result.present)
     # Stamped after the streaming cursor is exhausted, never interleaved with its fetches.
     _stamp_raw_refs(session, stamps)
     session.flush()
-    return archived
+    return ArchiveResult(archived=archived, held=held)
 
 
 # --- snapshots ------------------------------------------------------------------------------

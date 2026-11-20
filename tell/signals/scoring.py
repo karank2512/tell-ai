@@ -78,7 +78,10 @@ company and profile whose scored day (``payload.as_of``) is within the last 7 da
 oscillating around 6.0 by less than 0.5 therefore fires at most once. The event's
 ``occurred_at`` and ``observed_at`` are both the run instant (the crossing is something
 tell observed, never a timestamp in the future); the scored day lives in ``version``
-and ``payload.as_of``, which is what the cooldown and re-arm compare.
+and ``payload.as_of``, which is what the cooldown and re-arm compare. The payload is
+also stamped with its lineage (``policy_version``, the full sorted ``signal_ids`` and
+the top :data:`~tell.ops.source_eligibility.STAMP_TOP_N` ``contributions``) so it can
+be cleared without reading the ``scores`` row a same-day rescore upserts.
 
 Heat
 ----
@@ -114,6 +117,7 @@ from tell.collectors.base import (
 )
 from tell.db import upsert
 from tell.models import AtsBoard, EventRow, Score, Signal, Watchlist, WatchlistItem
+from tell.ops.source_eligibility import POLICY_VERSION, STAMP_TOP_N
 from tell.signals.profiles import (
     DEFAULT_PROFILE_NAME,
     Profile,
@@ -1053,6 +1057,12 @@ def emit_crossings(
                     "previous_as_of": prev_as_of.isoformat() if prev_as_of else None,
                     "threshold": threshold,
                     "top_contributions": result.contributions[:2],
+                    # Lineage stamp (source-exclusion/1): additive JSONB keys, no
+                    # migration. The crossing is cleared from these alone, never from
+                    # the ``scores`` row a same-day rescore upserts.
+                    "policy_version": POLICY_VERSION,
+                    "signal_ids": sorted({int(c["signal_id"]) for c in result.contributions}),
+                    "contributions": result.contributions[:STAMP_TOP_N],
                 },
                 company_id=result.company_id,
                 run_id=run,
