@@ -59,9 +59,10 @@ def _ok(args: list[str]) -> dict[str, Any]:
     return record
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_publish_out_runs_data_then_site(bound: Engine, tmp_path: Path) -> None:
     record = _ok(["--out", str(tmp_path)])
-    assert record["companies"] == 4
+    assert record["companies"] == 3  # Quillstone (Google News only) is not scored
     assert record["weekly"] == "2026-W40"
     assert record["watchlists"] == ["pilot"]
     assert record["events_written"] > 0  # news observed 10-05, crossings 10-06
@@ -74,9 +75,13 @@ def test_publish_out_runs_data_then_site(bound: Engine, tmp_path: Path) -> None:
         ]
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
+@pytest.mark.usefixtures(
+    "permitted_test_feed"
+)  # these runs include news: checked only with a permit
 def test_each_command(bound: Engine, tmp_path: Path) -> None:
     site = _ok(["site", "--out", str(tmp_path), "--as-of", sc.AS_OF.isoformat()])
-    assert site["validated"] == 8
+    assert site["validated"] == 7  # one company JSON fewer: Quillstone is not scored
     # 2026-10-05 holds only the (Google News) news fixture rows: all held, none written.
     held_day = _ok(["data", "--out", str(tmp_path), "--day", "2026-10-05"])
     assert held_day["events_written"] == 0
@@ -100,6 +105,7 @@ def test_each_command(bound: Engine, tmp_path: Path) -> None:
     assert (tmp_path / "site" / "health.html").is_file()
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_bad_input_is_rejected(bound: Engine, tmp_path: Path) -> None:
     for args, message in (
         (["site", "--out", str(tmp_path), "--as-of", "yesterday"], "ISO date"),
@@ -116,6 +122,7 @@ def test_bad_input_is_rejected(bound: Engine, tmp_path: Path) -> None:
     assert "Usage" in result.output
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_notify_slack(bound: Engine, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # An explicit empty private dir: the default ``../tell-private`` may be a real checkout
     # with real webhooks on a developer's machine, and the test must not read it.

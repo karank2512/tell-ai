@@ -492,10 +492,48 @@ def _crossing(session: Session, company_id: int) -> EventRow:
     ).one()
 
 
+def _legacy_news_signal(session: Session, company_id: int) -> int:
+    """A signal stored before the scoring gate, from one of the company's Google News events.
+
+    Since the gate no news event of the scenario derives a signal, so restricted inputs
+    for these tests are built explicitly from the stored Google News rows.
+    """
+    event = session.scalars(
+        select(EventRow)
+        .where(EventRow.company_id == company_id, EventRow.source == "news")
+        .order_by(EventRow.event_id)
+    ).first()
+    assert event is not None
+    assert "news.google.com" in event.url
+    signal = Signal(
+        company_id=company_id,
+        event_id=event.event_id,
+        signal_type="launch",
+        role_family=None,
+        weight=Decimal(1),
+        magnitude=Decimal(1),
+        half_life_days=30,
+        starts_at=event.occurred_at,
+    )
+    session.add(signal)
+    session.flush()
+    return signal.id
+
+
 @pytest.mark.db
 def test_emit_crossings_stamps_policy_full_signal_ids_and_top_n(db_session: Session) -> None:
     scenario = sc.build(db_session)
-    for domain in (sc.ROBOTICS, sc.BLUEFIN, sc.QUILLSTONE):
+    # Quillstone (Google News only) is no longer scored, so it never crosses.
+    quill = scenario.companies[sc.QUILLSTONE]
+    assert (
+        db_session.scalars(
+            select(EventRow).where(
+                EventRow.company_id == quill, EventRow.type == "score_crossed_threshold"
+            )
+        ).all()
+        == []
+    )
+    for domain in (sc.ROBOTICS, sc.BLUEFIN):
         company_id = scenario.companies[domain]
         payload = _crossing(db_session, company_id).payload
         stored = db_session.get(Score, (company_id, "default", sc.AS_OF))
@@ -516,14 +554,9 @@ def test_same_day_rescore_keeps_a_stamped_crossing_clean(db_session: Session) ->
     profile = load_profiles()["default"]
     score_profile(db_session, profile, sc.AS_OF, now=sc.CROSSED_AT + timedelta(hours=2))
     assert _crossing(db_session, robotics).payload == stamped
-    # Now the scores row is upserted with a different value and a restricted input (the
-    # news-derived Quillstone signal), as a rescore after new rows could do.
-    news_signal = db_session.scalars(
-        select(Signal.id)
-        .join(EventRow, EventRow.event_id == Signal.event_id)
-        .where(EventRow.source == "news")
-    ).first()
-    assert news_signal is not None
+    # Now the scores row is upserted with a different value and a restricted input (a
+    # legacy signal from a Google News row), as a rescore after new rows could do.
+    news_signal = _legacy_news_signal(db_session, scenario.companies[sc.QUILLSTONE])
     stored = db_session.get(Score, (robotics, "default", sc.AS_OF))
     assert stored is not None
     stored.score = Decimal("31.0")
@@ -541,7 +574,26 @@ def test_same_day_rescore_keeps_a_stamped_crossing_clean(db_session: Session) ->
 @pytest.mark.db
 def test_restricted_and_legacy_crossings_are_absent_from_slack(db_session: Session) -> None:
     scenario = sc.build(db_session)
-    quill = _crossing(db_session, scenario.companies[sc.QUILLSTONE])
+    # A stamped crossing that cites a legacy Google News signal (written as the pre-gate
+    # scorer would have): stamped, but restricted.
+    quill_id = scenario.companies[sc.QUILLSTONE]
+    restricted = _legacy_news_signal(db_session, quill_id)
+    db_session.add(
+        EventRow(
+            event_id="synthetic-restricted-crossing",
+            company_id=quill_id,
+            source="tell",
+            type="score_crossed_threshold",
+            occurred_at=sc.CROSSED_AT,
+            observed_at=sc.CROSSED_AT,
+            magnitude=Decimal(9),
+            url="https://x.example/n",
+            payload={**_stamp([restricted]), "as_of": sc.AS_OF.isoformat()},
+            run_id="synthetic",
+        )
+    )
+    db_session.flush()
+    quill = _crossing(db_session, quill_id)
     assert quill.payload["policy_version"] == POLICY_VERSION  # stamped, but restricted
     public = [a.domain for a in crossed_accounts(db_session, scenario.public, sc.NOW)]
     assert sc.QUILLSTONE not in public

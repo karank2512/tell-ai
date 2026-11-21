@@ -117,7 +117,8 @@ from tell.collectors.base import (
 )
 from tell.db import upsert
 from tell.models import AtsBoard, EventRow, Score, Signal, Watchlist, WatchlistItem
-from tell.ops.source_eligibility import POLICY_VERSION, STAMP_TOP_N
+from tell.ops import source_eligibility
+from tell.ops.source_eligibility import POLICY_VERSION, STAMP_TOP_N, classify_event
 from tell.signals.profiles import (
     DEFAULT_PROFILE_NAME,
     Profile,
@@ -149,6 +150,7 @@ __all__ = [
     "build_signals",
     "contribution",
     "default_profile_companies",
+    "eligible_for_scoring",
     "emit_crossings",
     "funding_magnitude",
     "heat",
@@ -520,6 +522,45 @@ def _amended_funding(session: Session, now: datetime) -> list[dict[str, Any]]:
     return changes
 
 
+_PROVENANCE_COLUMNS = (
+    EventRow.source,
+    EventRow.url,
+    EventRow.payload["match"],
+    EventRow.payload["query"],
+    func.jsonb_typeof(EventRow.payload),
+)
+"""What :func:`~tell.ops.source_eligibility.classify_event` reads from an event: its
+source, URL, the two provenance markers of a news payload and the payload's JSON type
+(never the whole payload)."""
+
+
+def eligible_for_scoring(
+    source: object,
+    type_: object,
+    url: object,
+    match: Any,
+    query: Any,
+    *,
+    payload_type: object,
+) -> bool:
+    """Whether a stored event may feed scoring under source eligibility.
+
+    ``PERMITS`` is read at call time (a code constant, never a setting). An excluded event
+    (Google News, unknown provenance, an unpermitted feed, an unrecognized source, a
+    payload that is not a JSON object) derives no signal and a signal already stored from
+    one is never scored. ``payload_type`` is the payload's ``jsonb_typeof``.
+    """
+    payload: object = (
+        {key: value for key, value in (("match", match), ("query", query)) if value is not None}
+        if payload_type == "object"
+        else None
+    )
+    decision = classify_event(
+        str(source), str(type_), url, payload, permits=source_eligibility.PERMITS
+    )
+    return decision.eligible
+
+
 def build_signals(session: Session, *, now: datetime, profile: Profile | None = None) -> int:
     """Create ``signals`` rows from events (see the module table). Returns rows inserted.
 
@@ -541,6 +582,10 @@ def build_signals(session: Session, *, now: datetime, profile: Profile | None = 
     The result is the same as re-deriving from every eligible event's full payload.
     ``weight`` and ``half_life_days`` are the ``default`` profile's (``profile``
     overrides it, for tests). Flushes; never commits.
+
+    Source eligibility: an event that :func:`~tell.ops.source_eligibility.classify_event`
+    excludes (Google News, unknown provenance, an unpermitted company feed) derives no
+    signal; only its source, URL and two provenance payload keys are read to decide.
     """
     _require_aware(now, "now")
     stamp = profile or default_profile()
@@ -551,6 +596,7 @@ def build_signals(session: Session, *, now: datetime, profile: Profile | None = 
             EventRow.company_id,
             EventRow.occurred_at,
             EventRow.magnitude,
+            *_PROVENANCE_COLUMNS,
             *(EventRow.payload[key] for key in DERIVATION_KEYS),
         )
         .where(
@@ -565,8 +611,14 @@ def build_signals(session: Session, *, now: datetime, profile: Profile | None = 
     rows = session.execute(stmt).all()
     existing = _existing_signals(session, [str(r[0]) for r in rows])
     values: list[dict[str, Any]] = []
-    for event_id, event_type, company_id, occurred_at, event_magnitude, *projected in rows:
-        payload = _projected(projected)
+    for row in rows:
+        event_id, event_type, company_id, occurred_at, event_magnitude = row[:5]
+        source, url, match, query, payload_type = row[5:10]
+        if not eligible_for_scoring(
+            source, event_type, url, match, query, payload_type=payload_type
+        ):
+            continue
+        payload = _projected(row[10:])
         derived = _derive(str(event_type), Decimal(event_magnitude), payload)
         if derived is None or company_id is None:
             continue
@@ -639,12 +691,24 @@ def contribution(sig: SignalView | Signal, profile: Profile, t: datetime) -> flo
 def _load_views(
     session: Session, company_ids: Iterable[int], *, since: datetime, until: datetime
 ) -> dict[int, list[SignalView]]:
-    """Signals of ``company_ids`` with ``since < starts_at <= until``, joined to their events."""
+    """Signals of ``company_ids`` with ``since < starts_at <= until``, joined to their events.
+
+    A signal whose source event is excluded by source eligibility is left out, including
+    one stored before the exclusion existed: it never reaches a score, a receipt or
+    :func:`why_not_higher`.
+    """
     ids = sorted(set(company_ids))
     out: dict[int, list[SignalView]] = defaultdict(list)
     for start in range(0, len(ids), 500):
         stmt = (
-            select(Signal, EventRow.url, EventRow.occurred_at, EventRow.payload)
+            select(
+                Signal,
+                EventRow.url,
+                EventRow.occurred_at,
+                EventRow.payload,
+                EventRow.source,
+                EventRow.type,
+            )
             .join(EventRow, EventRow.event_id == Signal.event_id)
             .where(
                 Signal.company_id.in_(ids[start : start + 500]),
@@ -653,7 +717,19 @@ def _load_views(
             )
             .order_by(Signal.starts_at, Signal.id)
         )
-        for sig, url, occurred_at, payload in session.execute(stmt):
+        for sig, url, occurred_at, payload, source, event_type in session.execute(stmt):
+            if not isinstance(payload, dict):
+                continue  # a non-object payload is excluded (payload_not_object)
+            body: dict[str, Any] = payload
+            if not eligible_for_scoring(
+                source,
+                event_type,
+                url,
+                body.get("match"),
+                body.get("query"),
+                payload_type="object",
+            ):
+                continue
             out[sig.company_id].append(
                 SignalView(
                     id=sig.id,
@@ -666,7 +742,7 @@ def _load_views(
                     starts_at=sig.starts_at,
                     url=url,
                     occurred_at=occurred_at,
-                    payload=payload or {},
+                    payload=body,
                 )
             )
     return out

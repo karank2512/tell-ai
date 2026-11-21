@@ -19,6 +19,7 @@ from tell.intake.feedback import (
 )
 from tell.intake.reader import IntakeError, RowError
 from tell.models import Company, Feedback, Run, Signal, Watchlist, WatchlistItem
+from tests.ops.helpers import add_company, add_event, add_signal
 from tests.publish import scenario as sc
 
 HEADER = "Timestamp,Signal id,Domain,Verdict,Watchlist,Note\n"
@@ -118,13 +119,21 @@ def test_sync_places_validates_and_is_idempotent(db_session: Session) -> None:
             )
         )
     ).first()
+    if orphan is None:
+        # Source exclusion: the scenario's only list-less signals came from Google News,
+        # which no longer derives signals, so make an eligible (EDGAR) one explicitly.
+        loner = add_company(db_session, "orphan.example")
+        orphan = add_signal(
+            db_session, add_event(db_session, "orphan-formd", sc.NOW, company=loner), loner
+        )
+    assert orphan is not None
     text = _sheet(
         f"t1,{on_both.id},{sc.ROBOTICS},useful,private-list,Nice",  # named list
         f"t2,{on_both.id},,not_useful,,",  # no list: lowest id (the public one)
         f"t3,{on_both.id},other.example,useful,,",  # wrong domain
         f"t4,{on_both.id},,useful,ghost,",  # unknown list
         f"t5,{only_public.id},,useful,private-list,",  # list does not hold the company
-        f"t6,{orphan.id if orphan else 999999},,useful,,",  # no list holds it
+        f"t6,{orphan.id},,useful,,",  # no list holds it
         "t7,999999,,won,,",  # unknown signal
     )
     result = sync_feedback(db_session, text, now=sc.NOW)

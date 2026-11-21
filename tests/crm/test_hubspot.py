@@ -174,6 +174,7 @@ def test_company_properties_take_the_top_contribution() -> None:
 # --- client and operations ----------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_setup_creates_only_the_missing_properties(hubspot: respx.MockRouter) -> None:
     _route_properties(hubspot, missing={"tell_profile", "tell_scored_at"})
     created = hubspot.post("/crm/v3/properties/companies").mock(
@@ -195,6 +196,7 @@ def test_setup_creates_only_the_missing_properties(hubspot: respx.MockRouter) ->
     assert first.headers["User-Agent"].startswith("tell/")
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_setup_is_a_no_op_when_everything_exists(hubspot: respx.MockRouter) -> None:
     _route_properties(hubspot, missing=set())
     created = hubspot.post("/crm/v3/properties/companies")
@@ -205,6 +207,7 @@ def test_setup_is_a_no_op_when_everything_exists(hubspot: respx.MockRouter) -> N
     assert not created.called
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_check_reports_the_probe_and_the_properties(hubspot: respx.MockRouter) -> None:
     probe = hubspot.get("/crm/v3/objects/companies", params={"limit": "1"}).mock(
         return_value=httpx.Response(200, json=_fixture("companies_probe.json"))
@@ -219,6 +222,7 @@ def test_check_reports_the_probe_and_the_properties(hubspot: respx.MockRouter) -
     assert result["properties"]["tell_score"] is True
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_push_creates_company_note_and_task_when_search_is_empty(
     hubspot: respx.MockRouter,
 ) -> None:
@@ -287,6 +291,7 @@ def test_push_creates_company_note_and_task_when_search_is_empty(
     assert task_sent["properties"]["hubspot_owner_id"] == "555"
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_push_updates_an_existing_company_and_skips_the_task_by_default(
     hubspot: respx.MockRouter,
 ) -> None:
@@ -317,6 +322,7 @@ def test_push_updates_an_existing_company_and_skips_the_task_by_default(
     assert "name" not in patched
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_push_is_unchanged_when_this_score_was_pushed_unless_forced(
     hubspot: respx.MockRouter,
 ) -> None:
@@ -360,6 +366,7 @@ def test_crm_status_reads_sales_activity_never_the_note_date() -> None:
     assert "notes_last_updated" not in ACTIVITY_PROPERTIES
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_lookups_ask_for_the_activity_properties(hubspot: respx.MockRouter) -> None:
     search = hubspot.post("/crm/v3/objects/companies/search").mock(
         return_value=httpx.Response(200, json=_fixture("search_empty.json"))
@@ -375,6 +382,7 @@ def test_lookups_ask_for_the_activity_properties(hubspot: respx.MockRouter) -> N
     assert listed >= set(ACTIVITY_PROPERTIES)
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_push_finds_a_company_the_search_index_does_not_have_yet(
     hubspot: respx.MockRouter,
 ) -> None:
@@ -408,6 +416,7 @@ def test_push_finds_a_company_the_search_index_does_not_have_yet(
     assert listing.calls[1].request.url.params["after"] == "1000"
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_push_lookup_is_unchanged_through_the_listing_too(hubspot: respx.MockRouter) -> None:
     hubspot.post("/crm/v3/objects/companies/search").mock(
         return_value=httpx.Response(200, json=_fixture("search_empty.json"))
@@ -434,6 +443,7 @@ def test_push_lookup_is_unchanged_through_the_listing_too(hubspot: respx.MockRou
     assert not note.called
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_push_stops_listing_at_the_page_cap_and_says_so(hubspot: respx.MockRouter) -> None:
     hubspot.post("/crm/v3/objects/companies/search").mock(
         return_value=httpx.Response(200, json=_fixture("search_empty.json"))
@@ -454,6 +464,7 @@ def test_push_stops_listing_at_the_page_cap_and_says_so(hubspot: respx.MockRoute
     assert outcome.as_record()["listed"] == {"pages": LIST_PAGE_CAP, "capped": True}
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_list_company_honours_a_smaller_cap(hubspot: respx.MockRouter) -> None:
     listing = hubspot.get("/crm/v3/objects/companies").mock(
         return_value=httpx.Response(200, json=_fixture("companies_list_more.json"))
@@ -478,6 +489,7 @@ def test_dry_run_builds_every_payload_and_sends_nothing(hubspot: respx.MockRoute
     assert not hubspot.calls
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 @pytest.mark.parametrize(
     ("status", "fixture", "expected_scopes"),
     [
@@ -505,6 +517,7 @@ def test_auth_errors_carry_the_status_category_and_scopes(
     assert TOKEN not in err.hint
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_forbidden_without_a_named_scope_hints_every_scope(hubspot: respx.MockRouter) -> None:
     hubspot.get("/crm/v3/objects/companies").mock(
         return_value=httpx.Response(403, content=b"forbidden")
@@ -514,6 +527,7 @@ def test_forbidden_without_a_named_scope_hints_every_scope(hubspot: respx.MockRo
     assert all(scope in info.value.hint for scope in SCOPES)
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_other_errors_keep_hubspots_message(hubspot: respx.MockRouter) -> None:
     hubspot.post("/crm/v3/objects/companies/search").mock(
         return_value=httpx.Response(
@@ -524,6 +538,7 @@ def test_other_errors_keep_hubspots_message(hubspot: respx.MockRouter) -> None:
         client.find_company(DOMAIN)
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_requests_are_paced_by_the_shared_budget(hubspot: respx.MockRouter) -> None:
     _route_properties(hubspot, missing=set())
     waits: list[float] = []
@@ -596,6 +611,7 @@ def _json(result: Result) -> dict[str, Any]:
     return record
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_push_command_without_a_token_exits_1(bound: Engine) -> None:
     with SessionLocal(bind=bound) as session:
         _seed(session)
@@ -620,16 +636,19 @@ def test_push_command_dry_run_needs_no_token(bound: Engine) -> None:
     )
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_push_command_unknown_domain_exits_1(bound: Engine) -> None:
     record = _json(_invoke(["push", "nobody.example"], code=1))
     assert record["source"] == "hubspot"
     assert "no company" in record["error"]
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_push_command_unknown_profile_is_a_usage_error(bound: Engine) -> None:
     _invoke(["push", DOMAIN, "--profile", "nope"], code=2)
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 @freeze_time(NOW)
 def test_push_command_end_to_end(
     bound: Engine, hubspot: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
@@ -664,6 +683,7 @@ def test_push_command_end_to_end(
     assert TOKEN not in record.values()
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_check_and_setup_commands_report_hints_on_auth_failure(
     bound: Engine, hubspot: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -682,6 +702,7 @@ def test_check_and_setup_commands_report_hints_on_auth_failure(
     assert "crm.objects.companies.write" in record["error"]
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_check_and_setup_commands_succeed(
     bound: Engine, hubspot: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
 ) -> None:

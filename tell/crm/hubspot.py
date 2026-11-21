@@ -46,7 +46,7 @@ from tell.collectors.base import iso_utc
 from tell.config import get_settings
 from tell.http import RateBudget, fetch, make_client
 from tell.models import Company, Score
-from tell.ops import source_eligibility
+from tell.ops import effects, source_eligibility
 from tell.publish.json_api import round_half_up
 from tell.signals.profiles import Profile
 
@@ -275,6 +275,9 @@ class HubSpotClient:
         client: httpx.Client | None = None,
         sleep: Callable[[float], None] | None = None,
     ) -> None:
+        # Backstop of the external-effect gate: no client (and so no HubSpot request) can
+        # exist while it is closed, whichever caller forgot to check first.
+        effects.ensure_effects_enabled("the HubSpot client")
         settings = get_settings()
         self._base = (base_url or settings.hubspot_api_base).rstrip("/")
         self._sleep = sleep if sleep is not None else time.sleep

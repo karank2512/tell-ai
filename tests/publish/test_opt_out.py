@@ -262,7 +262,8 @@ def test_the_next_publish_leaves_an_opted_out_company_off_every_page(
     filings = json.loads(after["api/v0/form-d-filings.json"])
     assert [r["domain"] for r in filings["filings"]] == [sc.BLUEFIN]
     pilot = json.loads(after["api/v0/watchlists/pilot.json"])
-    assert [c["domain"] for c in pilot["companies"]] == [sc.QUILLSTONE, sc.GREENHOUSE]
+    # Source exclusion: Quillstone (Google News only) now scores 0, below the board.
+    assert [c["domain"] for c in pilot["companies"]] == [sc.GREENHOUSE, sc.QUILLSTONE]
     assert [c["heat"] for c in pilot["companies"]] == [100, 0]  # among the members shown
     # The aggregate counts still count it: tell reads its sources for the private outputs.
     assert weekly["coverage"] == json.loads(before["api/v0/weekly/latest.json"])["coverage"]
@@ -429,6 +430,7 @@ def _private_outputs(session: Session, scenario: sc.Scenario) -> dict[str, Any]:
     }
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 @pytest.mark.db
 @pytest.mark.usefixtures("frozen")
 def test_nudges_digest_hubspot_push_and_csv_ignore_the_opt_out(db_session: Session) -> None:

@@ -159,9 +159,12 @@ Per source (registered collectors, then the `resolve`, `score`, `publish` jobs):
 observed in the last 24 hours: from the earliest moment tell could have seen an event to the
 moment it recorded it, with first looks, first-seen-only events and backfills left out;
 ADR 0043, defined in [README.md](README.md#freshness-p95-134-spec-section-12)), `stale` (has
-run, but no success in 24 hours) and `status` (`ok` / `stale` / `never_run`). Any stale
-source turns the health page's banner red and adds a red line at the top of the Slack
-digest.
+run, but no success in 24 hours) and `status` (`ok` / `stale` / `never_run` /
+`skipped_by_policy` / `policy_breach`). `skipped_by_policy`: source eligibility stops the
+source from running (news without a company-feed permit); not stale. `policy_breach`: such a
+source nonetheless started a run in the last 24 hours; stale, and the banner says it ran
+(ADR 0023, item 7; ADR 0028, item 3). Any stale source turns the health page's banner red
+and adds a red line at the top of the Slack digest.
 
 ## 7. Slack digest timing
 

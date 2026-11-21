@@ -44,6 +44,14 @@ every deviation to be recorded here. The Phase 9 and Phase 10-12 verifiers liste
    red for a collector nobody runs. There is no pause flag in the configuration, so "active
    source" means "scheduled source". A source that *has* run and then falls silent is
    `stale` in both.
+
+   *Amended 2026-11-21 (source exclusion):* a scheduled source that source eligibility
+   stops from running (news while `news_fetch_plan` does not run: no company-feed permit)
+   is `skipped_by_policy` in the dead-man, the health page and `tell runlog --week`: listed,
+   not silent, not stale, and left out of `weeks_unattended`. If it nonetheless started a
+   run in the last 24 hours it is `policy_breach` in all three: the dead-man fails, the
+   health page is red and `weeks_unattended` is 0. The rule is
+   `tell.ops.deadman.policy_statuses`, computed at call time, never from settings.
 4. **Prune keeps evidence.** An event older than 180 days that a `signals` row still cites
    (`signals.evidence_event_id`) is archived to `tell-data/events/` like the rest but not
    deleted, so an account page's receipts never dangle; it is deleted once the signal is.

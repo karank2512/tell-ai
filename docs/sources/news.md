@@ -200,7 +200,11 @@ cases with placeholder names.
   the run's only failure (`news.is_block_only_failure`: status `failed`, `notes.blocked`
   true, no `notes.drift`, no `notes.error`), so one 429/503 no longer turns the scheduled
   ingest job red; the run row stays `failed`, and `tell deadman` still alarms when news has
-  no `ok` run in 24 hours. A contract failure (`drift`) or a crash (`error`) still exits 1. Other Google News failures (other 4xx/5xx, transport errors) count as
+  no `ok` run in 24 hours while news may run (a company-feed permit is recorded). Under the
+  source-exclusion policy with no permit (`news_fetch_plan` does not run), `tell ingest
+  --source news` is skipped before any request and writes no run row, and the dead-man, the
+  health page and `tell runlog --week` report news as `skipped_by_policy` (no alarm); a news
+  run that nonetheless started in the last 24 hours is `policy_breach`, which does alarm. A contract failure (`drift`) or a crash (`error`) still exits 1. Other Google News failures (other 4xx/5xx, transport errors) count as
   an error for that company, which is not marked polled and is counted in
   `notes.unanswered`; the run continues.
 - Rotation (PLAN Phase 4, SPEC section 11), read from `runs.notes["polled"]`

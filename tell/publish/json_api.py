@@ -314,7 +314,15 @@ HEALTH_SCHEMA: dict[str, Any] = {
                     "inserted_24h": {"type": "integer", "minimum": 0},
                     "freshness_p95_h": {"type": ["number", "null"], "minimum": 0},
                     "stale": {"type": "boolean"},
-                    "status": {"enum": ["ok", "stale", "never_run"]},
+                    "status": {
+                        "enum": [
+                            "ok",
+                            "stale",
+                            "never_run",
+                            "skipped_by_policy",
+                            "policy_breach",
+                        ]
+                    },
                 },
             },
         },

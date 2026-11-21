@@ -179,6 +179,7 @@ def _spy(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return seen
 
 
+@pytest.mark.usefixtures("news_ingest_ungated")
 def test_cohort_defaults_to_a_120_day_window(
     bound: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -195,6 +196,7 @@ def test_cohort_defaults_to_a_120_day_window(
     assert notes["when_days"] == 120
 
 
+@pytest.mark.usefixtures("news_ingest_ungated")
 def test_when_days_is_passed_through(bound: Engine, monkeypatch: pytest.MonkeyPatch) -> None:
     seen = _spy(monkeypatch)
     with respx.mock(assert_all_mocked=True):
@@ -217,6 +219,7 @@ def test_when_days_is_passed_through(bound: Engine, monkeypatch: pytest.MonkeyPa
     assert (seen["cohort"], seen["when_days"]) == (None, 30)
 
 
+@pytest.mark.usefixtures("news_ingest_ungated")
 def test_scheduled_news_keeps_the_seven_day_window(
     bound: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:

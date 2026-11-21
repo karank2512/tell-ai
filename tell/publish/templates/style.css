@@ -28,3 +28,5 @@ ul.postings { font-size: 14px; margin: 4px 0; }
 .banner.ok { background: #edf7ed; color: var(--good); border: 1px solid var(--good); }
 tr.stale td { color: var(--bad); }
 tr.never_run td { color: var(--muted); }
+tr.policy_breach td { color: var(--bad); font-weight: 600; }
+tr.skipped_by_policy td { color: var(--muted); font-style: italic; }

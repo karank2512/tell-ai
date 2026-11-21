@@ -84,6 +84,7 @@ from tell.http import make_client
 from tell.intake import cli as intake_cli
 from tell.models import AtsBoard, Company, Run
 from tell.ops import deadman as deadman_ops
+from tell.ops import effects, source_eligibility
 from tell.ops import prune as prune_ops
 from tell.ops import runlog as runlog_ops
 from tell.publish import cli as publish_cli
@@ -484,6 +485,45 @@ def _company_ids(session: Session, domain: str) -> list[int]:
     return [int(i) for i in ids]
 
 
+NEWS_REFUSED_EXIT_CODE = 2
+"""Exit code of ``tell ingest --source news`` when a feed permit exists (collector not yet gated)."""
+
+
+def _news_gate() -> dict[str, Any] | None:
+    """Apply :func:`~tell.ops.source_eligibility.news_fetch_plan` before any news work.
+
+    Runs before any database session, settings read, collector call or HTTP client.
+    ``PERMITS`` is read at call time; no environment variable or config file is read.
+
+    * No permit (the shipped policy): Google News is excluded and no company feed may be
+      fetched, so there is nothing to ingest. Returns the ``skipped`` line to print; the
+      command exits 0 so a ``collect_only`` run stays green.
+    * A permit exists: the collector would still poll Google News alongside the feeds,
+      and restricting it to permitted feeds is collector work not done yet, so the
+      command refuses (exit 2) rather than fetch an excluded source.
+    """
+    plan = source_eligibility.news_fetch_plan(source_eligibility.PERMITS)
+    if plan.google_news:  # pragma: no cover - news_fetch_plan never allows Google News
+        msg = "news_fetch_plan allowed Google News; refusing"
+        raise AssertionError(msg)
+    if plan.runs:
+        typer.echo(
+            "error: `tell ingest --source news` refused: a company feed permit exists, but "
+            "the news collector is not yet restricted to permitted feeds (it would also "
+            "poll Google News)",
+            err=True,
+        )
+        raise typer.Exit(code=NEWS_REFUSED_EXIT_CODE)
+    coverage, reason = source_eligibility.news_coverage(source_eligibility.PERMITS)
+    return {
+        "source": news.SOURCE,
+        "status": "skipped",
+        "reason": reason,
+        "news_coverage": coverage.value,
+        "policy_version": source_eligibility.POLICY_VERSION,
+    }
+
+
 def _ingest_news(
     domain: str | None,
     limit: int | None,
@@ -633,6 +673,10 @@ def ingest(
                 with_notes=False,
             )
         elif source is Source.NEWS:
+            skipped = _news_gate()
+            if skipped is not None:
+                _echo(skipped)
+                return
             line, tolerated = _ingest_news(
                 domain, limit, when_days=when_days, cohort=cohort, cohort_days=cohort_days
             )
@@ -787,6 +831,8 @@ def score_main(
     if not all_profiles:
         typer.echo(ctx.get_help())
         raise typer.Exit(code=0)
+    # The scheduled pipeline's first output step: refused before any session or runs row.
+    effects.require_effects("score --all-profiles")
     day = _parse_day(as_of, "--as-of")
     _emit_run(_tracked(SCORE_RUN_SOURCE, _score_work(day), with_notes=True))
 

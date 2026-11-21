@@ -11,7 +11,9 @@
   a score already pushed (same day and value) is reported ``unchanged`` unless ``--force``.
 
 Every command prints one JSON object. The token comes from ``HUBSPOT_PRIVATE_APP_TOKEN``
-and is never printed.
+and is never printed. ``check``, ``setup`` and ``push`` (not ``push --dry-run``) exit 3
+before using the token or reading any database row while the external-effect gate
+(:mod:`tell.ops.effects`) is closed.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from tell.crm.hubspot import (
     push_company,
 )
 from tell.db import session_scope
+from tell.ops import effects
 from tell.signals.profiles import DEFAULT_PROFILE_NAME, ProfileNotFoundError, get_profile
 
 app = typer.Typer(
@@ -68,6 +71,7 @@ def _client() -> HubSpotClient:
 @hubspot_app.command("check")
 def check_command() -> None:
     """Confirm the token works and report which tell properties exist."""
+    effects.require_effects("crm hubspot check")
     try:
         with _client() as client:
             _echo(check(client))
@@ -78,6 +82,7 @@ def check_command() -> None:
 @hubspot_app.command("setup")
 def setup_command() -> None:
     """Create the tell_* company properties that are missing (idempotent)."""
+    effects.require_effects("crm hubspot setup")
     try:
         with _client() as client:
             _echo(ensure_properties(client))
@@ -103,6 +108,10 @@ def push_command(  # noqa: PLR0917 - typer options are positional by constructio
     ] = False,
 ) -> None:
     """Upsert the company by domain and write the receipt as a note."""
+    if not dry_run:
+        # Before the database and the token: a refused push touches nothing.
+        # --dry-run builds the payloads locally and sends nothing, so it stays available.
+        effects.require_effects("crm hubspot push")
     settings = get_settings()
     try:
         icp = get_profile(profile)

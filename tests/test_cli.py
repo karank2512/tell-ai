@@ -180,6 +180,7 @@ def test_score_without_options_prints_help() -> None:
     assert "--all-profiles" in result.output
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 @pytest.mark.parametrize(
     "args",
     [
@@ -338,6 +339,7 @@ def test_ingest_edgar_failure_is_recorded(bound: Engine) -> None:
     assert "HTTPStatusError" in run.notes["error"]
 
 
+@pytest.mark.usefixtures("news_ingest_ungated")
 def test_ingest_news_and_github_with_nothing_to_poll(bound: Engine) -> None:
     with respx.mock(assert_all_mocked=True):
         news_line = _json(_invoke(["ingest", "--source", "news", "--limit", "5"]))
@@ -346,6 +348,7 @@ def test_ingest_news_and_github_with_nothing_to_poll(bound: Engine) -> None:
     assert (github_line["source"], github_line["status"]) == ("github", "ok")
 
 
+@pytest.mark.usefixtures("news_ingest_ungated")
 def test_ingest_news_domain(bound: Engine, monkeypatch: pytest.MonkeyPatch) -> None:
     _invoke(["ingest", "--source", "news", "--domain", "missing.example"], code=2)
     with SessionLocal(bind=bound) as session:
@@ -364,6 +367,7 @@ def test_ingest_news_domain(bound: Engine, monkeypatch: pytest.MonkeyPatch) -> N
     assert seen["max_companies"] == news.MAX_COMPANIES
 
 
+@pytest.mark.usefixtures("news_ingest_ungated")
 @pytest.mark.parametrize("module", [news, github_org], ids=["news", "github"])
 def test_ingest_collector_crash_records_a_failed_run(
     bound: Engine, monkeypatch: pytest.MonkeyPatch, module: Any
@@ -389,6 +393,8 @@ def _mock_news_sites(mock: respx.MockRouter) -> None:
     mock.get(url__regex=r"https://blockedco\.example/.*").mock(return_value=httpx.Response(404))
 
 
+@pytest.mark.usefixtures("permitted_test_feed")  # news is checked only with a permit
+@pytest.mark.usefixtures("news_ingest_ungated")
 @pytest.mark.parametrize("status", [429, 503])
 def test_ingest_news_block_fails_the_run_but_exits_0(
     bound: Engine, monkeypatch: pytest.MonkeyPatch, status: int
@@ -414,6 +420,8 @@ def test_ingest_news_block_fails_the_run_but_exits_0(
     assert report["sources"][0]["status"] == "stale"
 
 
+@pytest.mark.usefixtures("permitted_test_feed")  # news is checked only with a permit
+@pytest.mark.usefixtures("news_ingest_ungated")  # drive the blocked collector, not the skip
 def test_ingest_news_block_after_an_old_ok_run_still_alarms_the_deadman(
     bound: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -428,9 +436,11 @@ def test_ingest_news_block_after_an_old_ok_run_still_alarms_the_deadman(
         )
         _mock_news_sites(mock)
         _invoke(["ingest", "--source", "news", "--domain", "blockedco.example"])
+    assert _runs(bound, "news")[-1].status == "failed"  # the blocked run really ran
     assert _json(_invoke(["deadman", "--source", "news"], code=1))["silent"] == ["news"]
 
 
+@pytest.mark.usefixtures("news_ingest_ungated")
 def test_ingest_news_contract_failure_still_exits_1(bound: Engine) -> None:
     _news_company(bound)
     broken = b"<rss><channel><item><title>BlockedCo raises</title></item></channel></rss>"
@@ -553,6 +563,7 @@ def scenario(bound: Engine) -> Engine:
     return bound
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_score_all_profiles(scenario: Engine) -> None:
     with freeze_time(sc.NOW):
         line = _json(_invoke(["score", "--all-profiles", "--as-of", sc.AS_OF.isoformat()]))
@@ -565,6 +576,7 @@ def test_score_all_profiles(scenario: Engine) -> None:
     assert [r.status for r in _runs(scenario, "score")] == ["ok"]
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_publish_out_writes_data_site_health_weekly(scenario: Engine, tmp_path: Path) -> None:
     with freeze_time(sc.NOW):
         record = _json(_invoke(["publish", "--out", str(tmp_path)]))
@@ -582,6 +594,7 @@ def test_publish_out_writes_data_site_health_weekly(scenario: Engine, tmp_path: 
     assert any((tmp_path / "events").rglob("*.jsonl"))
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_weekly_alias(bound: Engine, tmp_path: Path) -> None:
     with freeze_time(sc.NOW):
         record = _json(_invoke(["weekly", "--week", "current", "--out", str(tmp_path)]))
@@ -589,6 +602,7 @@ def test_weekly_alias(bound: Engine, tmp_path: Path) -> None:
     assert (tmp_path / "site" / "weekly" / "2026-W40.html").is_file()
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_notify_slack_at_the_digest_hour(
     bound: Engine, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -638,6 +652,9 @@ def _healthy(engine: Engine, *, skip: str | None = None) -> None:
         session.commit()
 
 
+@pytest.mark.usefixtures(
+    "permitted_test_feed"
+)  # these runs include news: checked only with a permit
 def test_deadman_green(bound: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _healthy(bound)
     summary = tmp_path / "summary.md"
@@ -649,6 +666,7 @@ def test_deadman_green(bound: Engine, tmp_path: Path, monkeypatch: pytest.Monkey
     assert "dead-man: green" in summary.read_text(encoding="utf-8")
 
 
+@pytest.mark.usefixtures("permitted_test_feed")  # news is checked only with a permit
 def test_deadman_red(bound: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _healthy(bound, skip="news")
     with SessionLocal(bind=bound) as session:
@@ -670,6 +688,9 @@ def test_deadman_red(bound: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert "`news`: never_ran" in text
 
 
+@pytest.mark.usefixtures(
+    "permitted_test_feed"
+)  # these runs include news: checked only with a permit
 def test_deadman_named_sources_without_summary(
     bound: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -694,6 +715,9 @@ def test_runlog_source(bound: Engine) -> None:
     assert line["status"] == "ok"
 
 
+@pytest.mark.usefixtures(
+    "permitted_test_feed"
+)  # these runs include news: checked only with a permit
 def test_runlog_week(bound: Engine) -> None:
     with SessionLocal(bind=bound) as session:
         t = FROZEN - 14 * DAY
@@ -741,6 +765,7 @@ def _prunable(engine: Engine) -> datetime:
     return now
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_prune_archives_then_deletes(bound: Engine, tmp_path: Path) -> None:
     now = _prunable(bound)
     line = _json(_invoke(["prune", "--out", str(tmp_path)]))
@@ -760,6 +785,7 @@ def test_prune_archives_then_deletes(bound: Engine, tmp_path: Path) -> None:
         assert session.scalar(select(func.count()).select_from(PostingObservation)) == 1
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_prune_archive_failure_deletes_nothing(bound: Engine, tmp_path: Path) -> None:
     now = _prunable(bound)
     target = events_path(tmp_path, (now - 200 * DAY).date())

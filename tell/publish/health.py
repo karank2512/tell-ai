@@ -20,11 +20,15 @@ For every source, from ``runs`` and ``events``:
     the last 24 hours. Any stale source turns the health page's banner red and puts a
     red line at the top of the Slack digest.
 ``status``
-    ``ok``, ``stale`` or ``never_run``. A source with no ``runs`` row at all (an optional
-    collector such as ``github`` that the scheduled workflow does not run) is listed as
-    ``never_run`` and is not stale, so an unscheduled source never paints the public page
-    red; the dead-man step (Phase 10) is what fails a run for a silent scheduled source
-    (ADR 0023).
+    ``ok``, ``stale``, ``never_run``, ``skipped_by_policy`` or ``policy_breach``. A source
+    with no ``runs`` row at all (an optional collector such as ``github`` that the
+    scheduled workflow does not run) is listed as ``never_run`` and is not stale, so an
+    unscheduled source never paints the public page red; the dead-man step (Phase 10) is
+    what fails a run for a silent scheduled source (ADR 0023). A source that source
+    eligibility stops from running (news without a company-feed permit) is
+    ``skipped_by_policy`` and is not stale; if it nonetheless started a run in the last 24
+    hours it is ``policy_breach`` and stale (red). Both come from
+    :func:`tell.ops.deadman.policy_statuses`, the dead-man's own rule.
 
 Sources are the registered collectors (``discover_collectors``) plus tell's internal
 jobs :data:`INTERNAL_JOBS` (``resolve``, ``score``, ``publish``), which write ``runs`` rows
@@ -102,6 +106,7 @@ from tell.models import (
     PostingObservation,
     Run,
 )
+from tell.ops.deadman import POLICY_BREACH, policy_statuses
 
 __all__ = [
     "BACKFILL",
@@ -146,7 +151,7 @@ class SourceHealth:
     freshness_p95_h: float | None
     stale: bool
     status: str
-    """``ok``, ``stale`` or ``never_run``."""
+    """``ok``, ``stale``, ``never_run``, ``skipped_by_policy`` or ``policy_breach``."""
 
 
 @dataclass(frozen=True)
@@ -548,12 +553,17 @@ def compute_health(
     stats = _run_stats(session, now, [name for name, _ in chosen])
     collectors = [name for name, kind in chosen if kind == "collector"]
     classified = freshness_events(session, now, collectors) if collectors else []
+    by_policy = policy_statuses(session, now, [name for name, _ in chosen])
     rows: list[SourceHealth] = []
     for name, kind in chosen:
         st = stats.get(name, {})
         last_ok: datetime | None = st.get("last_ok")
         ever_ran = int(st.get("runs", 0)) > 0
         stale = ever_ran and (last_ok is None or last_ok < now - STALE_AFTER)
+        status = "stale" if stale else ("ok" if ever_ran else "never_run")
+        if name in by_policy:
+            status = by_policy[name]
+            stale = status == POLICY_BREACH
         rows.append(
             SourceHealth(
                 source=name,
@@ -568,7 +578,7 @@ def compute_health(
                     else None
                 ),
                 stale=stale,
-                status="stale" if stale else ("ok" if ever_ran else "never_run"),
+                status=status,
             )
         )
     return Health(

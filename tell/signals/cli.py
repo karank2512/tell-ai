@@ -11,6 +11,13 @@ Commands:
 
 Each command commits on success and prints one JSON object on stdout, except
 ``feedback-report`` which prints Markdown.
+
+``run`` and ``all`` write ``scores`` and ``score_crossed_threshold`` events (what
+``notify`` later sends), so, like ``tell score --all-profiles``, they refuse first while
+the external-effect gate is closed (:func:`tell.ops.effects.require_effects`, exit 3),
+before any profile load, session or runs row. The parent callback returns early when a
+subcommand is invoked, so ``tell score --all-profiles all`` is refused here too.
+``--help`` still works: typer prints it before a command body runs.
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ import typer
 
 from tell.collectors.base import utcnow
 from tell.db import session_scope
+from tell.ops import effects
 from tell.signals.feedback import format_markdown, precision_report
 from tell.signals.profiles import DEFAULT_PROFILE_NAME, ProfileNotFoundError, get_profile
 from tell.signals.scoring import build_signals, score_all, score_profile
@@ -69,6 +77,7 @@ def run_command(
     as_of: AsOfOption = None,
 ) -> None:
     """Score one profile for a day and emit score_crossed_threshold events."""
+    effects.require_effects("score run")
     chosen = _profile(profile)
     day = _as_of(as_of)
     with session_scope() as session:
@@ -87,6 +96,7 @@ def run_command(
 @app.command("all")
 def all_command(as_of: AsOfOption = None) -> None:
     """The daily job: score every profile for a day."""
+    effects.require_effects("score all")
     day = _as_of(as_of)
     with session_scope() as session:
         stats = score_all(session, as_of=day, now=utcnow())

@@ -3,9 +3,13 @@
 Review candidate (``docs/review/source-exclusion-retention-design.md``). First local
 slice: the JSONL publish/archive writer and the prune delete hold excluded rows; the
 Slack crossing list and HubSpot receipts fail closed; ``tell publish``/``prune``/
-``notify`` refuse to run while :data:`WIRED` is ``False`` (it is). Scoring inputs, the
-site, the JSON API, the weekly page and the CSV export are NOT filtered yet, which is
-why :data:`WIRED` stays ``False``. This module itself reads nothing, writes nothing and
+``notify`` refuse to run while :data:`WIRED` is ``False`` (it is). Second slice:
+``tell ingest --source news`` follows :func:`news_fetch_plan` (no permit: skipped before
+any request; a permit: refused until the collector is restricted to permitted feeds),
+excluded events derive no signal and are never scored (``tell.signals.scoring``), and
+the Slack new-signal count follows the same rule. The site, the JSON API/MCP, the weekly
+page, the CSV export and the backtests still read stored signals directly, which is why
+:data:`WIRED` stays ``False``. This module itself reads nothing, writes nothing and
 opens no connection; every function here takes plain values and returns a decision.
 
 It keeps four concerns apart:
@@ -82,7 +86,7 @@ A code constant, never a setting: no environment variable or config file can fli
 While it is not ``True``, ``tell publish``, ``tell prune``, ``tell notify`` and the
 ``tell weekly`` alias exit 2 before opening any database session or HTTP client
 (:func:`outputs_blocked`). Flipping it is a reviewed code change made only once the
-remaining output paths (site, JSON API, weekly page, CSV, scoring inputs) filter through
+remaining output paths (site, JSON API/MCP, weekly page, CSV, backtests) filter through
 this module; see the change summary for the next slice.
 """
 
@@ -138,6 +142,7 @@ class Reason(StrEnum):
     LINEAGE_INCOMPLETE = "lineage_incomplete"
     LINEAGE_RESTRICTED = "lineage_restricted"
     LINEAGE_CLEAN = "lineage_clean"
+    PAYLOAD_NOT_OBJECT = "payload_not_object"
 
 
 _ELIGIBLE_REASONS: Final[frozenset[Reason]] = frozenset(
@@ -231,25 +236,31 @@ def classify_event(
     source: str,
     type_: str,
     url: object,
-    payload: Mapping[str, Any] | None,
+    payload: object,
     *,
     permits: Sequence[FeedPermit] = PERMITS,
 ) -> Decision:
-    """Classify one stored event. Never reads or changes anything.
+    """Classify one stored event. Never reads or changes anything, and never raises.
 
-    A ``score_crossed_threshold`` row is excluded here (``lineage_required``): only
-    :func:`classify_crossing`, given its stored score and signal decisions, can clear it.
+    A payload that is not a JSON object (a list, a string, null, a number) is excluded
+    first, for every source (``payload_not_object``): every collector writes an object, so
+    anything else is malformed and fails closed. A ``score_crossed_threshold`` row is
+    excluded here (``lineage_required``): only :func:`classify_crossing` or
+    :func:`classify_stamped_crossing`, given its lineage, can clear it.
     """
+    if not isinstance(payload, Mapping):
+        return _NOT_OBJECT
     if source in INDEPENDENT_SOURCES:
         return Decision(Provenance.INDEPENDENT, Reason.INDEPENDENT_SOURCE)
     if source == TELL_SOURCE:
         return _TELL_TYPES.get(type_, _UNRECOGNIZED)
     if source == NEWS_SOURCE:
-        return _news_decision(url, payload if isinstance(payload, Mapping) else {}, permits)
+        return _news_decision(url, payload, permits)
     return _UNRECOGNIZED
 
 
 _UNRECOGNIZED: Final = Decision(Provenance.UNKNOWN, Reason.UNRECOGNIZED_SOURCE)
+_NOT_OBJECT: Final = Decision(Provenance.UNKNOWN, Reason.PAYLOAD_NOT_OBJECT)
 _TELL_TYPES: Final[Mapping[str, Decision]] = {
     HIRING_VELOCITY: Decision(Provenance.INDEPENDENT, Reason.INDEPENDENT_SOURCE),
     SCORE_CROSSED_THRESHOLD: Decision(Provenance.DERIVED, Reason.LINEAGE_REQUIRED),
