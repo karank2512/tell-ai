@@ -52,12 +52,13 @@ from tell.collectors.base import finish_run, start_run
 from tell.config import get_settings
 from tell.http import fetch
 from tell.models import Company, EventRow, Run, Signal, Watchlist, WatchlistItem
+from tell.ops import effects
 from tell.ops.lineage import signal_decisions, signal_ids_of_crossings
 from tell.ops.source_eligibility import classify_stamped_crossing
 from tell.publish.health import compute_health
 from tell.publish.json_api import intake_link, round_half_up
 from tell.publish.weekly import IsoWeek
-from tell.signals.scoring import SCORE_CROSSED_THRESHOLD, SCORE_SOURCE
+from tell.signals.scoring import SCORE_CROSSED_THRESHOLD, SCORE_SOURCE, eligible_for_scoring
 
 __all__ = [
     "DIGEST_SOURCE",
@@ -305,11 +306,22 @@ def crossed_accounts(session: Session, watchlist: Watchlist, now: datetime) -> l
 
 
 def new_signals_count(session: Session, company_ids: Sequence[int], now: datetime) -> int:
-    """Signals of ``company_ids`` whose event was observed in the last 24 hours."""
+    """Eligible signals of ``company_ids`` whose event was observed in the last 24 hours.
+
+    A signal from an event excluded by source eligibility is not counted (the same rule
+    scoring applies, :func:`~tell.signals.scoring.eligible_for_scoring`).
+    """
     if not company_ids:
         return 0
     stmt = (
-        select(func.count())
+        select(
+            EventRow.source,
+            EventRow.type,
+            EventRow.url,
+            EventRow.payload["match"],
+            EventRow.payload["query"],
+            func.jsonb_typeof(EventRow.payload),
+        )
         .select_from(Signal)
         .join(EventRow, EventRow.event_id == Signal.event_id)
         .where(
@@ -318,7 +330,11 @@ def new_signals_count(session: Session, company_ids: Sequence[int], now: datetim
             EventRow.observed_at <= now,
         )
     )
-    return int(session.execute(stmt).scalar_one())
+    return sum(
+        1
+        for *row, payload_type in session.execute(stmt)
+        if eligible_for_scoring(*row, payload_type=payload_type)
+    )
 
 
 # --- timing and sending ---------------------------------------------------------------------------
@@ -408,7 +424,11 @@ def post_blocks(
 
     ``None`` means a transport error. Goes through :func:`tell.http.fetch` (retried on
     429/5xx, never on transport errors since POST is not idempotent).
+
+    Library backstop: raises :class:`~tell.ops.effects.ExternalEffectsBlockedError` while
+    the external-effect gate is closed, before any HTTP client or request, whoever calls.
     """
+    effects.ensure_effects_enabled("a Slack webhook POST")
     try:
         response = fetch(
             webhook_url,
@@ -440,8 +460,11 @@ def send_digests(
     with one gets its digest there, the rest go to ``webhook_url``, and a watchlist with
     neither is skipped and counted in ``without_webhook``. Flushes the ``runs`` row;
     never commits. POSTs go through :func:`post_blocks`. ``sleep`` (default
-    ``time.sleep``) paces the sends and the retries.
+    ``time.sleep``) paces the sends and the retries. Raises
+    :class:`~tell.ops.effects.ExternalEffectsBlockedError` first, before any read or
+    ``runs`` row, while the external-effect gate is closed.
     """
+    effects.ensure_effects_enabled("the Slack digest")
     pause = sleep if sleep is not None else time.sleep
     private = dict(private_webhooks or {})
     if not webhook_url and not private:

@@ -1,9 +1,15 @@
 {% extends "base.html" %}
 {% block title %}tell run health{% endblock %}
 {% block content %}
-{% if h.stale_sources %}
-<div class="banner stale">Stale: {{ h.stale_sources|join(", ") }} (no successful run in 24 hours).</div>
-{% else %}
+{% set breaches = h.sources|selectattr("status", "equalto", "policy_breach")|map(attribute="source")|list %}
+{% set silent = h.stale_sources|reject("in", breaches)|list %}
+{% if breaches %}
+<div class="banner stale">Policy breach: {{ breaches|join(", ") }} ran in the last 24 hours although source-eligibility policy excludes it.</div>
+{% endif %}
+{% if silent %}
+<div class="banner stale">Stale: {{ silent|join(", ") }} (no successful run in 24 hours).</div>
+{% endif %}
+{% if not h.stale_sources %}
 <div class="banner ok">All sources that run have succeeded in the last 24 hours.</div>
 {% endif %}
 <h1>Run health</h1>

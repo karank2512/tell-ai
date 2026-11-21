@@ -224,7 +224,9 @@ def test_crossed_accounts_and_new_signals_from_the_scenario(db_session: Session)
     assert [a.domain for a in private] == [sc.ROBOTICS, sc.BLUEFIN]  # Bluefin: EDGAR only
     assert crossed_accounts(db_session, scenario.public, sc.NOW + timedelta(days=2)) == []
     members = [scenario.companies[d] for d in (sc.ROBOTICS, sc.QUILLSTONE, sc.GREENHOUSE)]
-    assert new_signals_count(db_session, members, sc.NOW) == 5  # the news observed 10-05
+    # Source exclusion: the five signals observed on 10-05 were Google News; none is
+    # derived any more, and the members' other signals are older than 24 hours.
+    assert new_signals_count(db_session, members, sc.NOW) == 0
     assert new_signals_count(db_session, [], sc.NOW) == 0
     empty = Watchlist(owner="team-z", name="Empty")
     db_session.add(empty)
@@ -309,6 +311,7 @@ def _digest_runs(session: Session) -> list[Run]:
     return list(session.scalars(select(Run).where(Run.source == DIGEST_SOURCE)))
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 @pytest.mark.db
 @pytest.mark.usefixtures("frozen")
 def test_send_digests_one_message_per_watchlist_with_a_pause(db_session: Session) -> None:
@@ -330,11 +333,10 @@ def test_send_digests_one_message_per_watchlist_with_a_pause(db_session: Session
         "tell · Pilot list · 2026-10-06",
         "tell · Private list · 2026-10-06",
     ]
-    # Source exclusion: Quillstone's news-derived crossing is dropped. The "new signals"
-    # count still includes the news fixture's signals: new_signals_count is not filtered
-    # yet (next slice), which is one reason WIRED stays False.
+    # Source exclusion: Quillstone no longer crosses, and the Google News signals of
+    # 10-05 are neither derived nor counted, so the count is 0.
     assert bodies[0]["blocks"][2]["elements"][0]["text"].startswith(
-        "5 new signals · 1 accounts crossed the threshold · freshness p95 "
+        "0 new signals · 1 accounts crossed the threshold · freshness p95 "
     )
     assert bodies[0]["text"] == "tell · Pilot list · 2026-10-06: 1 accounts crossed"
     (run,) = _digest_runs(db_session)
@@ -365,6 +367,7 @@ def test_send_digests_one_message_per_watchlist_with_a_pause(db_session: Session
     assert send_digests(db_session, now=now, webhook_url=None).skipped == "no webhook"
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 @pytest.mark.db
 @pytest.mark.usefixtures("frozen")
 def test_send_digests_records_a_failed_run_when_every_send_fails(db_session: Session) -> None:

@@ -73,6 +73,10 @@ from tell.signals.scoring import (
     why_not_higher,
 )
 from tell.signals.velocity import HIRING_VELOCITY
+from tests.source_feed import feed_provenance
+
+# Synthetic news events come from the permitted test feed (tests/source_feed.py).
+pytestmark = pytest.mark.usefixtures("permitted_test_feed")
 
 T0 = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
 D0 = T0.date()
@@ -119,7 +123,9 @@ def _event(
     magnitude: float = 1,
     external_id: str | None = None,
     url: str | None = None,
-    source: str = "synthetic",
+    # An independent source by default ("synthetic" is unrecognized, so source
+    # eligibility would exclude it); news events come from the permitted test feed.
+    source: str = "greenhouse",
 ) -> Event:
     ext = external_id or f"{company.id}:{kind}:{occurred_at.isoformat()}"
     event = Event(
@@ -130,7 +136,7 @@ def _event(
         occurred_at=occurred_at,
         observed_at=T0,
         url=url or f"https://example.test/{company.id}/{kind}/{abs(hash(ext))}",
-        payload=payload or {},
+        payload=feed_provenance(payload) if source == "news" else (payload or {}),
         run_id=RUN,
         magnitude=magnitude,
         company_id=company.id,
@@ -1199,6 +1205,7 @@ def bound(engine: Engine, monkeypatch: pytest.MonkeyPatch) -> Engine:
     return engine
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_cli_build_run_all_and_report(bound: Engine) -> None:
     with SessionLocal(bind=bound) as session:
         company = _company(session, 1)
@@ -1254,6 +1261,7 @@ def test_cli_build_run_all_and_report(bound: Engine) -> None:
         }
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 def test_cli_rejects_unknown_profile_and_bad_date(bound: Engine) -> None:
     result = runner.invoke(cli.app, ["run", "--profile", "nope"])
     assert result.exit_code != 0

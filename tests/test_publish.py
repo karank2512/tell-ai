@@ -80,7 +80,9 @@ def test_every_company_json_validates_against_the_schema(
     result = _render(db_session, scenario, tmp_path)
     files = sorted((tmp_path / "site" / "api" / "v0" / "companies").glob("*.json"))
     assert [f.stem for f in files] == sorted(result.companies)
-    assert {f.stem for f in files} == {sc.ROBOTICS, sc.BLUEFIN, sc.GREENHOUSE, sc.QUILLSTONE}
+    # Source exclusion: Quillstone's only signals came from Google News, so it has no
+    # score and no company page; the other three are unchanged.
+    assert {f.stem for f in files} == {sc.ROBOTICS, sc.BLUEFIN, sc.GREENHOUSE}
     schema = _load(COMPANY_SCHEMA_PATH)
     jsonschema.Draft202012Validator.check_schema(schema)
     validator = jsonschema.Draft202012Validator(schema)
@@ -109,7 +111,9 @@ def test_every_contribution_has_a_url_and_they_sum_to_the_score(
         assert abs(total - obj["score"]) < 1e-6, path.name
         for decayed in obj["why_not_higher"]:
             assert decayed["url"]
-    assert seen >= 8
+    # One receipt each for Robotics (Form D), Bluefin (Form D) and the board (velocity);
+    # Quillstone's five Google News receipts are excluded at scoring.
+    assert seen == 3
 
 
 def test_html_has_no_unresolved_template_variables(
@@ -204,10 +208,9 @@ def test_company_json_contract_values(
         "2026-10-02",
     ]
 
-    news = _load(api / f"{sc.QUILLSTONE}.json")
-    assert news["sources"]["news"] is True
-    values = [c["contribution"] for c in news["contributions"]]
-    assert values == sorted(values, reverse=True)
+    # Source exclusion: the news-only company (Google News provenance) is not scored, so
+    # no company JSON is published for it.
+    assert not (api / f"{sc.QUILLSTONE}.json").exists()
 
 
 def test_public_watchlist_json_has_heat_and_no_owner(
@@ -220,7 +223,8 @@ def test_public_watchlist_json_has_heat_and_no_owner(
     assert set(obj) == {"slug", "name", "profile", "as_of", "generated_by", "companies"}
     assert obj["name"] == "Pilot list"
     assert "team-a" not in path.read_text()
-    assert [c["domain"] for c in obj["companies"]] == [sc.ROBOTICS, sc.QUILLSTONE, sc.GREENHOUSE]
+    # Source exclusion: Quillstone (Google News only) scores 0 and sorts last.
+    assert [c["domain"] for c in obj["companies"]] == [sc.ROBOTICS, sc.GREENHOUSE, sc.QUILLSTONE]
     assert [c["heat"] for c in obj["companies"]] == [100, 50, 0]
     for company in obj["companies"]:
         validate_company_json(company)
@@ -311,6 +315,9 @@ def test_opt_out_line_on_every_account_page_and_nowhere_else(
         assert line not in (site / other).read_text(), other
 
 
+@pytest.mark.usefixtures(
+    "permitted_test_feed"
+)  # these runs include news: checked only with a permit
 def test_health_json_fields(db_session: Session, scenario: sc.Scenario, tmp_path: Path) -> None:
     # The scenario's news replay would be Quillstone's first Google News query, which is a first
     # look, not tell's lag (ADR 0043); a query the day before is on record here.

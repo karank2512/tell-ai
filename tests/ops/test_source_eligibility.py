@@ -156,14 +156,21 @@ def test_conflicting_markers_fail_closed(url: str, payload: dict[str, Any]) -> N
         (GNEWS_ITEM, _google(match={"rule": 7})[1]),
         (GNEWS_ITEM, _google(query=None)[1]),
         (_company()[0], _company(match={"rule": "R9"})[1]),
-        (GNEWS_ITEM, None),
-        (GNEWS_ITEM, ["not", "a", "mapping"]),
         (GNEWS_ITEM, {}),
     ],
 )
 def test_missing_or_unrecognized_provenance_fails_closed(url: object, payload: Any) -> None:
     decision = _news(url, payload, permits=(PERMIT,))
     assert decision == Decision(Provenance.UNKNOWN, Reason.PROVENANCE_UNKNOWN)
+    assert not decision.eligible
+
+
+@pytest.mark.parametrize("payload", [None, ["not", "a", "mapping"]])
+def test_a_payload_that_is_not_an_object_fails_closed(payload: Any) -> None:
+    # Moved out of the provenance cases above: a non-object payload is now refused before
+    # provenance is read, with its own reason (payload_not_object), for every source.
+    decision = _news(GNEWS_ITEM, payload, permits=(PERMIT,))
+    assert decision == Decision(Provenance.UNKNOWN, Reason.PAYLOAD_NOT_OBJECT)
     assert not decision.eligible
 
 

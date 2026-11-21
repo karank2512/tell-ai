@@ -20,9 +20,11 @@ from typer.testing import CliRunner
 
 from tell.collectors.base import finish_run, start_run
 from tell.config import get_settings
+from tell.crm.hubspot import HubSpotClient
 from tell.db import SessionLocal
 from tell.intake.reader import PrivateWatchlist, write_private_watchlists
 from tell.models import AtsBoard, EnrichmentVerdict, EventRow, Nudge, Run, Score, Signal
+from tell.ops import effects, source_eligibility
 from tell.ops.lineage import signal_decisions
 from tell.ops.source_eligibility import Reason, classify_stamped_crossing
 from tell.publish import cli
@@ -262,6 +264,7 @@ def _nudge_runs(session: Session) -> list[Run]:
     return list(session.scalars(select(Run).where(Run.source == NUDGE_SOURCE)))
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 @pytest.mark.db
 @pytest.mark.usefixtures("frozen")
 def test_send_nudges_one_message_per_account_to_the_private_webhook_only(
@@ -341,6 +344,7 @@ def test_send_nudges_one_message_per_account_to_the_private_webhook_only(
     )
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 @pytest.mark.db
 @pytest.mark.usefixtures("frozen")
 def test_send_nudges_rate_link_only_for_a_top_signal_with_a_receipt(
@@ -407,6 +411,7 @@ def test_send_nudges_rate_link_only_for_a_top_signal_with_a_receipt(
     assert "forms.example" not in json.dumps(sent[sc.BLUEFIN])
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 @pytest.mark.db
 @pytest.mark.usefixtures("frozen")
 def test_failed_nudge_is_recorded_and_retried_until_the_window_closes(
@@ -515,6 +520,7 @@ def _second_family(session: Session, company_id: int) -> None:
     session.flush()
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 @pytest.mark.db
 @pytest.mark.usefixtures("frozen")
 def test_gate_enrich_budget_hold_thin_coverage_and_the_resend_verdict(
@@ -574,6 +580,7 @@ def test_gate_enrich_budget_hold_thin_coverage_and_the_resend_verdict(
     assert len(list(db_session.scalars(select(EnrichmentVerdict)))) == 2
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 @pytest.mark.db
 @pytest.mark.usefixtures("frozen")
 def test_gate_skips_a_company_credited_in_the_last_90_days(db_session: Session) -> None:
@@ -636,6 +643,7 @@ def hubspot_base(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     get_settings.cache_clear()
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 @pytest.mark.db
 @pytest.mark.usefixtures("frozen", "hubspot_base")
 def test_enrich_pushes_to_hubspot_once_and_the_nudge_says_so(db_session: Session) -> None:
@@ -702,6 +710,7 @@ def test_enrich_pushes_to_hubspot_once_and_the_nudge_says_so(db_session: Session
     assert text.endswith("HubSpot: added · note + task")
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 @pytest.mark.db
 @pytest.mark.usefixtures("frozen", "hubspot_base")
 def test_active_in_hubspot_is_a_skip_and_nothing_is_pushed(db_session: Session) -> None:
@@ -731,6 +740,7 @@ def test_active_in_hubspot_is_a_skip_and_nothing_is_pushed(db_session: Session) 
     assert set(reasons.values()) == {"in_crm_active"}
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 @pytest.mark.db
 @pytest.mark.usefixtures("frozen", "hubspot_base")
 def test_failed_push_is_recorded_shown_and_retried(db_session: Session) -> None:
@@ -785,6 +795,7 @@ def test_failed_push_is_recorded_shown_and_retried(db_session: Session) -> None:
     assert (row.crm_action, row.crm_company_id) == ("created", "2002")
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 @pytest.mark.db
 @pytest.mark.usefixtures("frozen", "hubspot_base")
 def test_hubspot_lookup_failure_leaves_the_crm_unchecked(db_session: Session) -> None:
@@ -811,6 +822,117 @@ def test_hubspot_lookup_failure_leaves_the_crm_unchecked(db_session: Session) ->
     assert outcome.crm["failed"] == 1  # the push was attempted and HubSpot was down
     reasons = {v.company_id: v.reasons[2] for v in db_session.scalars(select(EnrichmentVerdict))}
     assert set(reasons.values()) == {"crm_unchecked"}
+
+
+# --- refusals before any HubSpot request (gate, then receipt cutover) ----------------------
+
+
+def _hubspot_clients(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record every HubSpotClient construction (the only way to a HubSpot request)."""
+    made: list[str] = []
+    real_init = HubSpotClient.__init__
+
+    def init(self: HubSpotClient, *args: Any, **kwargs: Any) -> None:
+        made.append("HubSpotClient")
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(HubSpotClient, "__init__", init)
+    return made
+
+
+def _nudge_with_refused_hubspot(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Any, list[str], respx.Route, respx.Route, int]:
+    scenario = _scenario_with_private_slug(db_session)
+    robotics = scenario.companies[sc.ROBOTICS]
+    _second_family(db_session, robotics)
+    made = _hubspot_clients(monkeypatch)
+    with respx.mock(assert_all_mocked=True, assert_all_called=False) as mock:
+        slack = mock.post(PRIVATE).respond(200)
+        # Any HubSpot request at all (lookup, list, create, note, task) lands here.
+        hubspot = mock.route(host="hubspot.invalid").respond(200, json=_hs("search_empty.json"))
+        outcome = send_nudges(
+            db_session,
+            now=sc.NOW,
+            private_webhooks={SLUG: PRIVATE},
+            crm={SLUG: CrmConfig(token=HUBSPOT_TOKEN, owner_id="555")},
+            sleep=lambda _: None,
+        )
+    return outcome, made, hubspot, slack, robotics
+
+
+def _assert_refused_without_hubspot(
+    db_session: Session,
+    outcome: Any,
+    made: list[str],
+    hubspot: respx.Route,
+    robotics: int,
+    reason: str,
+) -> None:
+    assert hubspot.call_count == 0  # no lookup (rule 3) and no push: zero HubSpot requests
+    assert made == []  # no HubSpot client was even created
+    assert outcome.sent == 2
+    assert outcome.verdicts["enrich"] == 1
+    assert outcome.crm == {"created": 0, "updated": 0, "unchanged": 0, "failed": 1}
+    rows = {v.company_id: v for v in db_session.scalars(select(EnrichmentVerdict))}
+    assert {v.reasons[2] for v in rows.values()} == {"crm_unchecked"}
+    assert (rows[robotics].crm_action, rows[robotics].crm_company_id) == ("failed", reason)
+
+
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
+@pytest.mark.db
+@pytest.mark.usefixtures("frozen", "hubspot_base")
+def test_no_cutover_refuses_the_hubspot_nudge_before_any_request(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # F3: the receipt refusal used to come after the rule-3 lookup had already gone out.
+    monkeypatch.setattr(source_eligibility, "ELIGIBILITY_CUTOVER", None)
+    outcome, made, hubspot, slack, robotics = _nudge_with_refused_hubspot(db_session, monkeypatch)
+    _assert_refused_without_hubspot(db_session, outcome, made, hubspot, robotics, "LookupError")
+    text = json.loads(slack.calls[0].request.content)["blocks"][0]["text"]["text"]
+    assert text.endswith("HubSpot: push failed (LookupError)")
+
+
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
+@pytest.mark.db
+@pytest.mark.usefixtures("frozen", "hubspot_base")
+def test_score_before_the_cutover_refuses_the_hubspot_nudge_before_any_request(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(source_eligibility, "ELIGIBILITY_CUTOVER", sc.AS_OF + timedelta(days=1))
+    outcome, made, hubspot, _slack, robotics = _nudge_with_refused_hubspot(db_session, monkeypatch)
+    _assert_refused_without_hubspot(db_session, outcome, made, hubspot, robotics, "LookupError")
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("frozen", "hubspot_base")
+def test_closed_effect_gate_refuses_slack_and_hubspot_nudges_before_any_request(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The receipt is trusted here (receipt_cutover); only the external-effect gate refuses.
+    # Since the Slack library backstop (s5), send_nudges itself refuses first: no Slack
+    # POST, no HubSpot request or client, and no nudge, verdict or runs row is written.
+    monkeypatch.setattr(effects, "EXTERNAL_EFFECTS_ENABLED", False)
+    scenario = _scenario_with_private_slug(db_session)
+    _second_family(db_session, scenario.companies[sc.ROBOTICS])
+    made = _hubspot_clients(monkeypatch)
+    with respx.mock(assert_all_mocked=True, assert_all_called=False) as mock:
+        slack = mock.post(PRIVATE).respond(200)
+        hubspot = mock.route(host="hubspot.invalid").respond(200, json=_hs("search_empty.json"))
+        with pytest.raises(effects.ExternalEffectsBlockedError, match="Slack nudges"):
+            send_nudges(
+                db_session,
+                now=sc.NOW,
+                private_webhooks={SLUG: PRIVATE},
+                crm={SLUG: CrmConfig(token=HUBSPOT_TOKEN, owner_id="555")},
+                sleep=lambda _: None,
+            )
+    assert slack.call_count == 0
+    assert hubspot.call_count == 0
+    assert made == []
+    assert list(db_session.scalars(select(Nudge))) == []
+    assert list(db_session.scalars(select(EnrichmentVerdict))) == []
+    assert _nudge_runs(db_session) == []
 
 
 def test_crm_line_and_load_private_crm(tmp_path: Path) -> None:
@@ -840,6 +962,7 @@ def test_load_private_budgets(tmp_path: Path) -> None:
     assert load_private_budgets(tmp_path) == {}
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 @pytest.mark.db
 @pytest.mark.usefixtures("frozen")
 def test_digest_routes_to_the_private_webhook_else_the_global_one(db_session: Session) -> None:
@@ -912,6 +1035,7 @@ def bound(engine: Engine, monkeypatch: pytest.MonkeyPatch) -> Iterator[Engine]:
         yield engine
 
 
+@pytest.mark.usefixtures("external_effects")  # needs the open effect gate (s5: per test)
 @pytest.mark.db
 def test_notify_cli_reports_nudges_and_digest(
     bound: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

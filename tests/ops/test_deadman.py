@@ -17,6 +17,10 @@ NOW = datetime(2026, 10, 6, 20, 30, tzinfo=UTC)
 HOUR = timedelta(hours=1)
 
 
+# With no company-feed permit news is skipped_by_policy (tests/ops/
+# test_deadman_policy_and_payloads.py); these two check the rule itself with news in it,
+# so they record the test-only permit and news is checked as before.
+@pytest.mark.usefixtures("permitted_test_feed")
 def test_all_recent_ok_is_green(db_session: Session) -> None:
     for source in deadman.SCHEDULED_SOURCES:
         add_run(db_session, source, NOW - 3 * HOUR)
@@ -28,6 +32,7 @@ def test_all_recent_ok_is_green(db_session: Session) -> None:
     assert report.to_dict()["ok"] is True
 
 
+@pytest.mark.usefixtures("permitted_test_feed")
 def test_stale_failed_only_and_never_ran_are_silent(db_session: Session) -> None:
     add_run(db_session, "greenhouse", NOW - 3 * HOUR)
     add_run(db_session, "lever", NOW - 30 * HOUR)  # last ok older than 24 h

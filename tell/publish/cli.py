@@ -38,7 +38,7 @@ from tell.config import get_settings
 from tell.db import session_scope
 from tell.intake.reader import DEFAULT_PRIVATE_DIR
 from tell.models import Watchlist, WatchlistItem
-from tell.ops import source_eligibility
+from tell.ops import effects, source_eligibility
 from tell.publish.csv_export import export_csv
 from tell.publish.data_repo import prune_snapshots, write_events_jsonl, write_snapshots
 from tell.publish.health import compute_health
@@ -101,11 +101,13 @@ BLOCKED_EXIT_CODE = 2
 
 
 def require_wired(command: str) -> None:
-    """Exit 2 unless :data:`tell.ops.source_eligibility.WIRED` is ``True``.
+    """Exit 2 unless ``WIRED`` is ``True``, then exit 3 unless external effects are enabled.
 
     Called first in every output command, before any database session, settings read,
-    file read or HTTP client: a refused command touches nothing. The constant is code,
-    never an environment variable, so no setting can bypass it.
+    file read or HTTP client: a refused command touches nothing. Both constants are code
+    (:data:`tell.ops.source_eligibility.WIRED`, then
+    :data:`tell.ops.effects.EXTERNAL_EFFECTS_ENABLED`), never an environment variable, so
+    no setting can bypass either.
     """
     if source_eligibility.outputs_blocked():
         typer.echo(
@@ -114,6 +116,7 @@ def require_wired(command: str) -> None:
             err=True,
         )
         raise typer.Exit(code=BLOCKED_EXIT_CODE)
+    effects.require_effects(command)
 
 
 def _echo(record: dict[str, Any]) -> None:

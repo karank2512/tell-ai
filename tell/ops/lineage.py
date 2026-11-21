@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -70,11 +70,16 @@ def event_decision(
     source: str,
     type_: str,
     url: object,
-    payload: Mapping[str, Any] | None,
+    payload: object,
     decisions: Mapping[int, Decision],
 ) -> Decision:
-    """:func:`classify_event`, with a crossing cleared only through its stamp."""
-    if is_crossing(source, type_):
+    """:func:`classify_event`, with a crossing cleared only through its stamp.
+
+    A payload that is not a JSON object gets ``payload_not_object`` for every type,
+    crossings included (before, a non-object crossing read ``lineage_incomplete``: also
+    excluded, but for a misleading reason).
+    """
+    if is_crossing(source, type_) and isinstance(payload, Mapping):
         return classify_stamped_crossing(payload, decisions)
     return classify_event(source, type_, url, payload)
 
@@ -86,9 +91,14 @@ def deletable_predicate() -> ColumnElement[bool]:
     ``tell``/``hiring_velocity``. ``news`` rows (even a permitted company feed) and
     ``score_crossed_threshold`` rows are never deleted by SQL, whatever ids are passed:
     their eligibility depends on payload provenance or lineage the SQL cannot re-check.
-    So the SQL set is a subset of the Python-eligible set, equal on every other row.
+    So the SQL set is a subset of the Python-eligible set, equal on every other row. A
+    payload that is not a JSON object is never deletable, as :func:`classify_event`
+    excludes it (``payload_not_object``).
     """
-    return or_(
-        EventRow.source.in_(sorted(INDEPENDENT_SOURCES)),
-        and_(EventRow.source == TELL_SOURCE, EventRow.type == HIRING_VELOCITY),
+    return and_(
+        func.jsonb_typeof(EventRow.payload) == "object",
+        or_(
+            EventRow.source.in_(sorted(INDEPENDENT_SOURCES)),
+            and_(EventRow.source == TELL_SOURCE, EventRow.type == HIRING_VELOCITY),
+        ),
     )

@@ -38,6 +38,7 @@ from tell.publish.opt_out import opt_out_link
 from tell.publish.site import environment, page_context
 from tell.signals.scoring import build_signals, score_companies, score_instant
 from tests.publish import scenario as sc
+from tests.source_feed import feed_provenance
 
 
 def _company(**overrides: Any) -> dict[str, Any]:
@@ -264,6 +265,7 @@ def test_schema_file_is_where_the_docs_say() -> None:
 
 
 @pytest.mark.db
+@pytest.mark.usefixtures("permitted_test_feed")
 def test_company_json_through_a_watchlist_with_a_decayed_signal(db_session: Session) -> None:
     profile = sc.profiles()["default"]
     company = Company(domain="decay.example", name="Decay Co")
@@ -284,7 +286,7 @@ def test_company_json_through_a_watchlist_with_a_decayed_signal(db_session: Sess
                 occurred_at=occurred,
                 observed_at=occurred,
                 url=f"https://news.example/decay-{n}",
-                payload={"title": f"Headline {n}"},
+                payload=feed_provenance({"title": f"Headline {n}"}),  # permitted test feed
                 run_id="r",
                 company_id=target.id,
             )

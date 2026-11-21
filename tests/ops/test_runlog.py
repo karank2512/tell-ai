@@ -87,6 +87,9 @@ def test_success_rates(db_session: Session) -> None:
     assert runlog.success_rates(db_session, NOW, NOW) == (None, {})
 
 
+@pytest.mark.usefixtures(
+    "permitted_test_feed"
+)  # these runs include news: checked only with a permit
 def test_weeks_unattended_without_gap_counts_from_first_run(db_session: Session) -> None:
     assert runlog.weeks_unattended(db_session, NOW) == (None, None)
     start = NOW - 21 * DAY
@@ -96,6 +99,9 @@ def test_weeks_unattended_without_gap_counts_from_first_run(db_session: Session)
     assert weeks == 3.0
 
 
+@pytest.mark.usefixtures(
+    "permitted_test_feed"
+)  # these runs include news: checked only with a permit
 def test_weeks_unattended_restarts_after_a_silent_gap(db_session: Session) -> None:
     _every_six_hours(db_session, NOW - 21 * DAY, NOW - 15 * DAY)
     # edgar silent for two days, then back: the recovery run anchors the period.
@@ -109,6 +115,9 @@ def test_weeks_unattended_restarts_after_a_silent_gap(db_session: Session) -> No
     assert weeks == round((NOW - since).total_seconds() / (7 * 86400), 1)
 
 
+@pytest.mark.usefixtures(
+    "permitted_test_feed"
+)  # these runs include news: checked only with a permit
 def test_weeks_unattended_is_zero_while_a_source_is_silent(db_session: Session) -> None:
     _every_six_hours(db_session, NOW - 14 * DAY, NOW - HOUR)
     add_run(db_session, "news", NOW - 2 * HOUR, "failed")
@@ -118,6 +127,9 @@ def test_weeks_unattended_is_zero_while_a_source_is_silent(db_session: Session) 
     assert since == NOW + 2 * DAY
 
 
+@pytest.mark.usefixtures(
+    "permitted_test_feed"
+)  # these runs include news: checked only with a permit
 def test_ops_line(db_session: Session) -> None:
     _every_six_hours(db_session, NOW - 14 * DAY, NOW - HOUR)
     add_run(db_session, "greenhouse", NOW - 2 * HOUR, "failed")

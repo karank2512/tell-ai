@@ -44,8 +44,9 @@ from tell.publish.json_api import (
 )
 from tell.signals.profiles import get_profile
 from tell.signals.scoring import build_signals, score_companies
+from tests.source_feed import feed_provenance
 
-pytestmark = pytest.mark.db
+pytestmark = [pytest.mark.db, pytest.mark.usefixtures("permitted_test_feed")]
 
 NOW = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
 TODAY = NOW.date()
@@ -98,7 +99,8 @@ def _event(
         occurred_at=occurred,
         observed_at=occurred,
         url=url or f"https://receipts.example/{source}/{external_id}",
-        payload=payload,
+        # Synthetic news comes from the permitted test feed (source eligibility).
+        payload=feed_provenance(payload) if source == "news" else payload,
         run_id="test-run",
         magnitude=magnitude,
         company_id=company_id,
@@ -139,7 +141,7 @@ def _velocity(company_id: int, family: str, day: str, new7: int) -> Event:
 def _form_d(company_id: int, day: str, amount: int) -> Event:
     return _event(
         company_id,
-        source="edgar_formd",
+        source="edgar",  # what the Form D collector writes (edgar_formd.SOURCE)
         type_="form_d_filed",
         external_id=f"formd-{company_id}-{day}",
         occurred=_at(day),

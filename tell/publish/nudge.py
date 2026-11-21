@@ -52,6 +52,7 @@ from tell.collectors.base import finish_run, start_run
 from tell.config import get_settings
 from tell.intake.reader import DEFAULT_PRIVATE_DIR, PrivateRecordError, load_private_watchlists
 from tell.models import Company, Nudge, Watchlist
+from tell.ops import effects
 from tell.publish.crm_push import CrmConfig, CrmRun, crm_line, load_private_crm, push_counts
 from tell.publish.json_api import company_facts_many, feedback_link
 from tell.publish.slack import (
@@ -269,7 +270,10 @@ def send_nudges(
     the gate's rule 3 reads that portal and an ``enrich`` verdict is pushed there before
     the message goes out. Flushes the ``nudges``, ``enrichment_verdicts`` and ``runs``
     rows; never commits. Runs on every ingest run; with no candidate nothing is recorded.
+    Raises :class:`~tell.ops.effects.ExternalEffectsBlockedError` first, before any read or
+    row, while the external-effect gate is closed (Slack and HubSpot are both external).
     """
+    effects.ensure_effects_enabled("Slack nudges")
     pause = sleep if sleep is not None else time.sleep
     if not private_webhooks:
         return NudgeOutcome(candidates=0, sent=0, errors=0, skipped="no private webhooks")
@@ -302,7 +306,11 @@ def send_nudges(
             slug = watchlist.slug
             row = verdict_row(session, event_id=account.event_id, watchlist_id=watchlist.id)
             # A stored verdict (a resend) is read back as is: no HubSpot lookup for it.
-            status_in_crm = "unchecked" if row is not None else hubspot.status(slug, account.domain)
+            status_in_crm = (
+                "unchecked"
+                if row is not None
+                else hubspot.status(session, slug=slug, watchlist=watchlist, domain=account.domain)
+            )
             verdict = judge(
                 session,
                 watchlist,

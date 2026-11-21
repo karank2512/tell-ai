@@ -71,7 +71,9 @@ def test_rows_carry_receipts(db_session: Session, tmp_path: Path) -> None:
     assert export_csv(db_session, path, [*ids, 999_999], scenario.default, sc.AS_OF) == 4
     header, rows = _read(path)
     assert header == SPEC_COLUMNS
-    assert [r["domain"] for r in rows] == [sc.ROBOTICS, sc.BLUEFIN, sc.QUILLSTONE, sc.GREENHOUSE]
+    # Source exclusion: Quillstone's only signals are Google News, so it scores 0 and sorts
+    # last; its receipt columns are empty.
+    assert [r["domain"] for r in rows] == [sc.ROBOTICS, sc.BLUEFIN, sc.GREENHOUSE, sc.QUILLSTONE]
     robotics = rows[0]
     assert robotics["score"] == "27.7"
     assert robotics["heat"] == "100"
@@ -89,7 +91,7 @@ def test_rows_carry_receipts(db_session: Session, tmp_path: Path) -> None:
     bluefin = rows[1]
     assert bluefin["funding_last_180d_usd"] == ""  # amount undisclosed
     assert bluefin["funding_url"].startswith("https://www.sec.gov/")
-    board = rows[3]
+    board = rows[2]
     assert board["top_signal_1"].startswith("hiring_velocity (sales): 3 new sales roles")
     # The spike (2026-09-30 to 10-02) is inside the 7 days to the end of 10-06; the board's
     # first-poll postings are baselines and never count.
@@ -97,8 +99,11 @@ def test_rows_carry_receipts(db_session: Session, tmp_path: Path) -> None:
     assert board["new_roles_7d_other"] == "0"
     assert (board["open_postings"], board["long_open_roles"]) == ("5", "2")
     assert board["ats"] == board["coverage_note"] == "greenhouse:tell-fixture"
-    news = rows[2]
-    assert news["top_signal_2_url"].startswith("https://news.google.com/")
+    news = rows[3]
+    assert news["domain"] == sc.QUILLSTONE
+    assert news["top_signal_1"] == news["top_signal_1_url"] == ""
+    assert news["top_signal_2"] == news["top_signal_2_url"] == ""
+    assert "news.google.com" not in path.read_text(encoding="utf-8")
 
 
 def test_rate_this_row_uses_the_feedback_form(

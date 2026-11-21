@@ -19,6 +19,14 @@ line, over the trailing 7 days:
     successful run. The unattended period starts at the successful run that ended the
     most recent such gap (the first run ever when there was none) and is ``0`` while a
     scheduled source is silent right now. ``null`` before any scheduled source has run.
+    A source that source eligibility stops from running (news without a company-feed
+    permit; :func:`tell.ops.deadman.policy_statuses`) is left out, so a deliberately
+    excluded source never pins the count to ``0``. If such a source nonetheless started
+    a run in the last 24 hours (``policy_breach``) the count is ``0``: something ran that
+    policy forbids, which needs a human.
+``skipped_by_policy`` / ``policy_breaches``
+    The scheduled sources reported ``skipped_by_policy`` and ``policy_breach`` by that
+    same rule, so the operations line says why a source is missing from the count.
 ``success_rate`` / ``success_rate_by_source``
     ``ok / (ok + failed)`` over runs started in the period, overall and per source
     (sources with no finished run in the period are left out; ``running`` rows never
@@ -38,7 +46,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -47,7 +55,7 @@ from sqlalchemy.orm import Session
 
 from tell.collectors.base import iso_utc
 from tell.models import AtsBoard, Company, Posting, Run
-from tell.ops.deadman import SCHEDULED_SOURCES, SILENT_AFTER
+from tell.ops.deadman import POLICY_BREACH, SCHEDULED_SOURCES, SILENT_AFTER, policy_statuses
 from tell.publish.health import freshness_p95_h
 
 __all__ = [
@@ -157,9 +165,13 @@ def weeks_unattended(
     session: Session, now: datetime, sources: Sequence[str] = SCHEDULED_SOURCES
 ) -> tuple[float | None, datetime | None]:
     """``(weeks, since)``: the unattended period at ``now`` (see the module docstring)."""
+    by_policy = policy_statuses(session, now, sources)
+    if POLICY_BREACH in by_policy.values():
+        return 0.0, now
+    counted = [name for name in sources if name not in by_policy]
     rows = session.execute(
         select(Run.source, Run.started_at, Run.finished_at, Run.status)
-        .where(Run.source.in_(list(sources)), Run.started_at <= now)
+        .where(Run.source.in_(counted), Run.started_at <= now)
         .order_by(Run.source, Run.started_at)
     ).all()
     first_start: dict[str, datetime] = {}
@@ -208,6 +220,10 @@ class OpsLine:
     freshness_p95_h: float | None
     companies_monitored: int
     postings_tracked: int
+    skipped_by_policy: list[str] = field(default_factory=list)
+    """Scheduled sources source eligibility stops from running (left out of the count)."""
+    policy_breaches: list[str] = field(default_factory=list)
+    """Policy-skipped sources that nonetheless started a run in the last 24 hours."""
 
     @property
     def summary(self) -> str:
@@ -215,11 +231,16 @@ class OpsLine:
         weeks = "n/a" if self.weeks_unattended is None else f"{self.weeks_unattended:g}"
         rate = "n/a" if self.success_rate is None else f"{self.success_rate * 100:.1f}%"
         fresh = "n/a" if self.freshness_p95_h is None else f"{self.freshness_p95_h:g}h"
-        return (
+        line = (
             f"{weeks} weeks unattended · success rate {rate} ({self.period_days}d) · "
             f"freshness p95 {fresh} · {self.companies_monitored:,} companies monitored · "
             f"{self.postings_tracked:,} postings tracked"
         )
+        if self.policy_breaches:
+            line += f" · POLICY BREACH: {', '.join(self.policy_breaches)}"
+        if self.skipped_by_policy:
+            line += f" · skipped by policy: {', '.join(self.skipped_by_policy)}"
+        return line
 
     def to_dict(self) -> dict[str, Any]:
         return {**asdict(self), "summary": self.summary}
@@ -232,6 +253,7 @@ def ops_line(session: Session, now: datetime, period: timedelta = OPS_PERIOD) ->
         raise ValueError(msg)
     overall, by_source = success_rates(session, now - period, now)
     weeks, since = weeks_unattended(session, now)
+    by_policy = policy_statuses(session, now, SCHEDULED_SOURCES)
     return OpsLine(
         as_of=iso_utc(now),
         period_days=round(period.total_seconds() / 86400),
@@ -242,4 +264,6 @@ def ops_line(session: Session, now: datetime, period: timedelta = OPS_PERIOD) ->
         freshness_p95_h=freshness_p95_h(session, now),
         companies_monitored=companies_monitored(session),
         postings_tracked=postings_tracked(session),
+        skipped_by_policy=[n for n, st in by_policy.items() if st != POLICY_BREACH],
+        policy_breaches=[n for n, st in by_policy.items() if st == POLICY_BREACH],
     )

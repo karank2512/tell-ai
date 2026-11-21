@@ -40,6 +40,10 @@ a signal; each is a presentation or measurement rule, recorded here so it can be
    optional collector the schedule does not run (GitHub) cannot paint the public page red;
    the dead-man step is what fails a run for a silent scheduled source. Health sources
    are the registered collectors plus the internal jobs `resolve`, `score`, `publish`.
+   *Amended 2026-11-21 (source exclusion):* `status` may also be `skipped_by_policy` (a
+   source eligibility stops from running, such as news without a company-feed permit; not
+   stale) or `policy_breach` (such a source started a run in the last 24 hours; stale, so
+   the banner is red), by the dead-man's own rule (ADR 0028, item 3).
 8. **Digest hour.** `TELL_SLACK_DIGEST_HOUR` defaults to 7: the first ingest run at or
    after 07:00 local time on a local day with no digest sent yet sends it. With the
    `17 2,8,14,20` cron and Pacific time that is the 07:17 run in summer and the 12:17 run in

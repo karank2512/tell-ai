@@ -37,12 +37,15 @@ from tell.crm.hubspot import (
     HubSpotClient,
     HubSpotError,
     Lookup,
+    Receipt,
     crm_status,
     load_receipt,
     push_company,
 )
 from tell.intake.reader import DEFAULT_PRIVATE_DIR, PrivateRecordError, load_private_watchlists
 from tell.models import EnrichmentVerdict, Watchlist
+from tell.ops import effects
+from tell.ops.effects import ExternalEffectsBlockedError
 from tell.signals.profiles import ProfileNotFoundError, get_profile
 
 __all__ = ["CrmConfig", "CrmRun", "crm_line", "load_private_crm", "push_counts"]
@@ -129,9 +132,29 @@ class CrmRun:
             )
         return self._clients[slug]
 
-    def status(self, slug: str, domain: str) -> str:
-        """Rule 3's input: ``absent`` / ``quiet`` / ``active``; ``unchecked`` when HubSpot fails."""
+    @staticmethod
+    def _receipt(session: Session, watchlist: Watchlist, domain: str) -> Receipt:
+        """The refusals, in order, before any HubSpot client or request exists.
+
+        The external-effect gate first (:class:`ExternalEffectsBlockedError`), then the
+        receipt and its source-eligibility cutover (:class:`LookupError`), then the profile.
+        """
+        effects.ensure_effects_enabled("the HubSpot nudge")
+        return load_receipt(session, domain, get_profile(watchlist.icp_profile))
+
+    def status(self, session: Session, *, slug: str, watchlist: Watchlist, domain: str) -> str:
+        """Rule 3's input: ``absent`` / ``quiet`` / ``active``.
+
+        ``unchecked`` when the watchlist has no HubSpot access, when HubSpot fails, and,
+        without any HubSpot request, when the push would be refused anyway: the gate is
+        closed or the company has no trusted receipt (no cutover, or a score before it).
+        """
         if not self.configured(slug):
+            return "unchecked"
+        try:
+            self._receipt(session, watchlist, domain)
+        except (ExternalEffectsBlockedError, LookupError, ProfileNotFoundError) as exc:
+            log.info("hubspot lookup not attempted for a watchlist (%s)", type(exc).__name__)
             return "unchecked"
         key = (slug, domain)
         if key not in self._lookups:
@@ -160,8 +183,9 @@ class CrmRun:
         action = "failed"
         company_id: str | None = None
         try:
+            # Refusals (gate, receipt cutover, profile) before the client is created.
+            receipt = self._receipt(session, watchlist, domain)
             profile = get_profile(watchlist.icp_profile)
-            receipt = load_receipt(session, domain, profile)
             outcome = push_company(
                 self._client(slug),
                 receipt,
@@ -176,7 +200,12 @@ class CrmRun:
         except HubSpotError as exc:
             company_id = str(exc.status)
             log.warning("hubspot push failed for a watchlist (HTTP %s)", exc.status)
-        except (httpx.HTTPError, LookupError, ProfileNotFoundError) as exc:
+        except (
+            ExternalEffectsBlockedError,
+            httpx.HTTPError,
+            LookupError,
+            ProfileNotFoundError,
+        ) as exc:
             company_id = type(exc).__name__
             log.warning("hubspot push failed for a watchlist (%s)", type(exc).__name__)
         row.crm_action = action

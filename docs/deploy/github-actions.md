@@ -136,11 +136,27 @@ section 14) rather than raising the timeout.
   publish or the digest; it publishes whatever the healthy sources produced.
 - The **dead-man** step (`tell deadman`) is last. It exits 1 when any scheduled source
   (the four ATS vendors, `edgar`, `news`) has had no successful run in 24 hours, or has
-  never run at all, writes the report to the step summary, and turns the run red. The
+  never run at all, writes the report to the step summary, and turns the run red. Under the
+  source-exclusion policy, news is reported `skipped_by_policy` (listed, not an alarm)
+  while `news_fetch_plan` cannot run (no company-feed permit), and `policy_breach` (an
+  alarm) if a news run nonetheless started in the last 24 hours; with a permit, news is
+  checked as above. **Expected red window after the exclusion lands:** a news run that
+  started in the 24 hours *before* the change took effect still counts, so the dead-man
+  (and `/healthz`, `tell runlog --week`) can report `policy_breach` for up to 24 hours
+  after merge. That is a known false alarm which clears by itself once those runs are
+  older than 24 hours; a `policy_breach` that persists past that, or names a run started
+  after the merge, is real and needs a human. The
   health page shows a never-run source as `never_run` without turning red (ADR 0023), so
   the two disagree only until every scheduled source has run once (ADR 0028). GitHub emails the repo owner about a
   failed scheduled run, which is the alert: no pager, no cost. One bad run does not page;
   24 hours of silence does.
+- **External-effect gate.** `EXTERNAL_EFFECTS_ENABLED` in `tell/ops/effects.py` is a
+  `False` code constant, never a setting. While it is `False`, `tell score --all-profiles`,
+  `tell score run|all`, every `tell publish` output command, `tell weekly`, `tell notify`,
+  `tell prune` and `tell crm hubspot check|setup|push` exit 3 before any database session,
+  token, file or HTTP client, and the Slack and HubSpot libraries refuse too. A scheduled
+  run therefore goes red at the score step until the owner opens the gate in a reviewed
+  code change; `WIRED` (exit 2) is a separate check that publish and notify also need.
 - The health page (`health.html`, `api/v0/health.json`) is rebuilt by every publish with
   `last_ok_at`, `success_rate_7d`, `fetched_24h`, `inserted_24h` and `freshness_p95_h` per
   source, and the digest opens with a red line when a source is stale.

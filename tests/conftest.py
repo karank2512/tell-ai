@@ -37,7 +37,7 @@ import tests._ci_env  # noqa: F401  # must run before typer reads the environmen
 from tell.config import Settings, get_settings
 from tell.db import SessionLocal, make_engine
 from tell.models import Base
-from tell.ops import source_eligibility
+from tell.ops import effects, source_eligibility
 
 MAINTENANCE_DB = "postgres"
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -198,6 +198,39 @@ def wired_outputs(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
+def external_effects(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Open the in-process external-effect gate (``tell/ops/effects.py``) for one test.
+
+    Production code leaves ``EXTERNAL_EFFECTS_ENABLED`` ``False`` (score --all-profiles,
+    publish, prune, notify and crm hubspot exit 3; the HubSpot client refuses to exist). A
+    test of what those paths do once enabled asks for this fixture explicitly; every HTTP
+    call it makes still goes to a ``respx`` route or a mocked client.
+    """
+    monkeypatch.setattr(effects, "EXTERNAL_EFFECTS_ENABLED", True)
+
+
+@pytest.fixture
 def receipt_cutover(monkeypatch: pytest.MonkeyPatch) -> None:
     """Set the receipt cutover before every synthetic score so ``load_receipt`` trusts them."""
     monkeypatch.setattr(source_eligibility, "ELIGIBILITY_CUTOVER", date(2000, 1, 1))
+
+
+@pytest.fixture
+def news_ingest_ungated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let a test drive the news collector through ``tell ingest --source news``.
+
+    Production code skips (no permit) or refuses (a permit) news ingest before any
+    collector call (``tell.cli._news_gate``). Tests of the collector mechanics behind the
+    CLI (rotation, cohorts, block handling, run lines) ask for this fixture explicitly.
+    """
+    import tell.cli  # noqa: PLC0415  # the CLI module imports every collector; load lazily
+
+    monkeypatch.setattr(tell.cli, "_news_gate", lambda: None)
+
+
+@pytest.fixture
+def permitted_test_feed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Record the test-only company-feed permit (``tests/source_feed.py``) for one test."""
+    from tests.source_feed import TEST_PERMIT  # noqa: PLC0415  # keep conftest import-light
+
+    monkeypatch.setattr(source_eligibility, "PERMITS", (TEST_PERMIT,))

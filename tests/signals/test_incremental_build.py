@@ -42,11 +42,14 @@ from tell.collectors.base import (
     write_events,
 )
 from tell.models import Company, EventRow, Signal
+from tell.ops import source_eligibility
+from tell.ops.source_eligibility import classify_event
 from tell.signals import scoring as sc
 from tell.signals.profiles import Profile, load_profiles
 from tell.signals.velocity import HIRING_VELOCITY
+from tests.source_feed import feed_provenance
 
-pytestmark = pytest.mark.db
+pytestmark = [pytest.mark.db, pytest.mark.usefixtures("permitted_test_feed")]
 
 T0 = datetime(2026, 10, 5, 15, 17, tzinfo=UTC)
 DAY = timedelta(days=1)
@@ -90,8 +93,14 @@ def _reference_build(session: Session, *, now: datetime, profile: Profile) -> in
     values: list[dict[str, Any]] = []
     amended: list[tuple[int, Decimal]] = []
     for row in rows:
-        deriver = sc._DERIVERS.get(row.type)
         payload = row.payload or {}
+        # Source eligibility, decided here from the full row (the build reads only the
+        # provenance columns): an excluded event derives nothing in the reference too.
+        if not classify_event(
+            row.source, row.type, row.url, payload, permits=source_eligibility.PERMITS
+        ).eligible:
+            continue
+        deriver = sc._DERIVERS.get(row.type)
         derived = deriver(row.magnitude, payload) if deriver is not None else None
         if derived is None or row.company_id is None:
             continue
@@ -161,7 +170,9 @@ def _event(
     observed_at: datetime,
     payload: dict[str, Any],
     magnitude: float = 1,
-    source: str = "synthetic",
+    # An independent source by default ("synthetic" is unrecognized, so source
+    # eligibility would exclude it); news events come from the permitted test feed.
+    source: str = "greenhouse",
 ) -> str:
     row = Event(
         source=source,
@@ -171,7 +182,7 @@ def _event(
         occurred_at=occurred_at,
         observed_at=observed_at,
         url=f"https://example.test/{external_id}",
-        payload=payload,
+        payload=feed_provenance(payload) if source == "news" else payload,
         run_id=RUN,
         magnitude=magnitude,
         company_id=company.id if company is not None else None,
@@ -433,7 +444,12 @@ def test_build_never_selects_a_whole_event_payload(db_session: Session, profile:
     selects = [s for s in seen if s.lstrip().upper().startswith("SELECT")]
     assert selects
     bare = re.compile(r"events\.payload(?!\s*(->|\[))")
-    assert not [s for s in selects if bare.search(s)]
+    # Source eligibility reads the payload's JSON type in the database
+    # (``jsonb_typeof(events.payload)`` returns a type name such as "object"), never the
+    # payload itself; that one call is the only bare reference allowed.
+    typeof = "jsonb_typeof(events.payload)"
+    assert any(typeof in s for s in selects)
+    assert not [s for s in selects if bare.search(s.replace(typeof, ""))]
 
 
 def test_rerun_reads_no_event_that_already_has_its_signal(
