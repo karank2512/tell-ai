@@ -139,6 +139,7 @@ __all__ = [
     "NEWS_EXPANSION",
     "NEWS_LAUNCH",
     "NEWS_LEADERSHIP",
+    "PROVENANCE_COLUMNS",
     "REARM_MARGIN",
     "SCORE_CROSSED_THRESHOLD",
     "SCORE_SOURCE",
@@ -532,6 +533,11 @@ _PROVENANCE_COLUMNS = (
 """What :func:`~tell.ops.source_eligibility.classify_event` reads from an event: its
 source, URL, the two provenance markers of a news payload and the payload's JSON type
 (never the whole payload)."""
+
+PROVENANCE_COLUMNS = _PROVENANCE_COLUMNS
+"""Public name of :data:`_PROVENANCE_COLUMNS`: other read paths (the site's company
+selection, the JSON API's news coverage flag) select these and pass them, in this order,
+with the event type to :func:`eligible_for_scoring`, so every output applies one rule."""
 
 
 def eligible_for_scoring(

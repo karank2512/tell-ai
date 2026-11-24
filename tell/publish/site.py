@@ -70,7 +70,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tell.config import get_settings
-from tell.models import Company, Signal, Watchlist
+from tell.models import Company, EventRow, Signal, Watchlist
 from tell.publish.health import Health, compute_health
 from tell.publish.json_api import (
     FILINGS_FILE,
@@ -100,7 +100,13 @@ from tell.publish.weekly import (
     form_d_filings,
 )
 from tell.signals.profiles import DEFAULT_PROFILE_NAME, Profile, get_profile
-from tell.signals.scoring import ScoreResult, score_companies, score_instant
+from tell.signals.scoring import (
+    PROVENANCE_COLUMNS,
+    ScoreResult,
+    eligible_for_scoring,
+    score_companies,
+    score_instant,
+)
 
 __all__ = [
     "FILINGS_METHOD_DOC",
@@ -262,21 +268,30 @@ def published_company_ids(session: Session, as_of: date) -> list[int]:
     """Companies with a signal starting in the 180 days to ``as_of`` (the size budget).
 
     A company that opted out of the public site (``companies.public_opt_out``, ADR 0044) is
-    never published, whatever its signals.
+    never published, whatever its signals. Source eligibility: only a signal whose source
+    event is eligible counts (the rule scoring applies, :func:`eligible_for_scoring`), so a
+    company whose only signals came from excluded rows (Google News, unknown provenance, an
+    unpermitted feed) gets no page. Only the event's provenance columns are read.
     """
     t = score_instant(as_of)
     stmt = (
-        select(Signal.company_id)
+        select(Signal.company_id, EventRow.type, *PROVENANCE_COLUMNS)
         .join(Company, Company.id == Signal.company_id)
+        .join(EventRow, EventRow.event_id == Signal.event_id)
         .where(
             Signal.starts_at <= t,
             Signal.starts_at > t - timedelta(days=SIZE_BUDGET_DAYS),
             Company.public_opt_out.is_(False),
         )
-        .distinct()
         .order_by(Signal.company_id)
     )
-    return [int(r[0]) for r in session.execute(stmt)]
+    published: set[int] = set()
+    for company_id, event_type, source, url, match, query, payload_type in session.execute(stmt):
+        if company_id in published:
+            continue
+        if eligible_for_scoring(source, event_type, url, match, query, payload_type=payload_type):
+            published.add(int(company_id))
+    return sorted(published)
 
 
 def _resolve_profile(name: str, profiles: Mapping[str, Profile] | None) -> Profile:
