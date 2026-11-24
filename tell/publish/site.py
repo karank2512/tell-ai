@@ -71,6 +71,8 @@ from sqlalchemy.orm import Session
 
 from tell.config import get_settings
 from tell.models import Company, EventRow, Signal, Watchlist
+from tell.ops import source_eligibility
+from tell.ops.lineage import deletable_predicate, permitted_news_predicate
 from tell.publish.health import Health, compute_health
 from tell.publish.json_api import (
     FILINGS_FILE,
@@ -271,26 +273,46 @@ def published_company_ids(session: Session, as_of: date) -> list[int]:
     never published, whatever its signals. Source eligibility: only a signal whose source
     event is eligible counts (the rule scoring applies, :func:`eligible_for_scoring`), so a
     company whose only signals came from excluded rows (Google News, unknown provenance, an
-    unpermitted feed) gets no page. Only the event's provenance columns are read.
+    unpermitted feed) gets no page.
+
+    Two reads: the companies with an always-eligible signal (``deletable_predicate``: an
+    independent source or ``tell``/``hiring_velocity`` with an object payload), one row per
+    company; then only the news signals whose feed holds a recorded permit
+    (``permitted_news_predicate``), each confirmed by :func:`eligible_for_scoring`. No other
+    stored row can be eligible, so Google News rows are never read here.
     """
     t = score_instant(as_of)
-    stmt = (
-        select(Signal.company_id, EventRow.type, *PROVENANCE_COLUMNS)
-        .join(Company, Company.id == Signal.company_id)
-        .join(EventRow, EventRow.event_id == Signal.event_id)
-        .where(
-            Signal.starts_at <= t,
-            Signal.starts_at > t - timedelta(days=SIZE_BUDGET_DAYS),
-            Company.public_opt_out.is_(False),
-        )
-        .order_by(Signal.company_id)
+    window = (
+        Signal.starts_at <= t,
+        Signal.starts_at > t - timedelta(days=SIZE_BUDGET_DAYS),
+        Company.public_opt_out.is_(False),
     )
-    published: set[int] = set()
-    for company_id, event_type, source, url, match, query, payload_type in session.execute(stmt):
-        if company_id in published:
-            continue
-        if eligible_for_scoring(source, event_type, url, match, query, payload_type=payload_type):
-            published.add(int(company_id))
+    published = {
+        int(company_id)
+        for (company_id,) in session.execute(
+            select(Signal.company_id)
+            .join(Company, Company.id == Signal.company_id)
+            .join(EventRow, EventRow.event_id == Signal.event_id)
+            .where(*window, deletable_predicate())
+            .distinct()
+        )
+    }
+    if source_eligibility.PERMITS:
+        news = (
+            select(Signal.company_id, EventRow.type, *PROVENANCE_COLUMNS)
+            .join(Company, Company.id == Signal.company_id)
+            .join(EventRow, EventRow.event_id == Signal.event_id)
+            .where(*window, permitted_news_predicate())
+        )
+        for company_id, event_type, source, url, match, query, payload_type in session.execute(
+            news
+        ):
+            if int(company_id) in published:
+                continue
+            if eligible_for_scoring(
+                source, event_type, url, match, query, payload_type=payload_type
+            ):
+                published.add(int(company_id))
     return sorted(published)
 
 

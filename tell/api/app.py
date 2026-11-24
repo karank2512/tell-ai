@@ -48,7 +48,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -74,7 +74,13 @@ from tell.collectors.base import parse_iso, utcnow
 from tell.db import SessionLocal, get_engine
 from tell.discovery import registrable_domain
 from tell.models import ApiKey, Company, EventRow, Feedback, Signal, Watchlist, WatchlistItem
-from tell.ops.lineage import event_decision, is_crossing, signal_decisions, signal_ids_of_crossings
+from tell.ops.lineage import (
+    candidate_predicate,
+    event_decision,
+    is_crossing,
+    signal_decisions,
+    signal_ids_of_crossings,
+)
 from tell.publish.health import compute_health
 from tell.publish.json_api import (
     apportion_tenths,
@@ -101,6 +107,8 @@ Clock = Callable[[], datetime]
 
 PROBLEM_MEDIA_TYPE = "application/problem+json"
 MAX_EVENTS = 200
+MAX_EVENT_PAGES = 10
+"""Keyset pages of candidate rows one ``/events`` request may read (bounds the work)."""
 DEFAULT_SINCE_DAYS = 7
 TOP_CONTRIBUTIONS = 3
 KNOWN_FAMILIES: frozenset[str] = frozenset((*FAMILIES, OTHER))
@@ -431,26 +439,42 @@ def company_events(
     Source eligibility: only eligible events are returned (the rule the JSONL publish
     applies, :func:`~tell.ops.lineage.event_decision`): Google News, unknown provenance,
     unpermitted feeds and malformed payloads are left out, and a threshold crossing only
-    when its own lineage stamp is clean. Rows are read a page at a time until ``limit``
-    eligible events are found, so excluded rows never shorten a full page.
+    when its own lineage stamp is clean.
+
+    Only candidate rows are read (``candidate_predicate``: rows that are always eligible,
+    news from a permitted feed, and crossings), so Google News and other certainly-excluded
+    rows never cost a read. Candidates are read in keyset pages of :data:`MAX_EVENTS` rows, newest
+    first with ``event_id`` breaking ties, until ``limit`` eligible events are found, the
+    rows run out or :data:`MAX_EVENT_PAGES` pages were read: no row repeats or is skipped
+    across pages, and the work per request is bounded.
     """
     company = _find_company(session, domain)
     if company is None:
         raise _not_found(f"no company for domain {normalize_domain(domain)!r}")
     wanted = _split(types or [])
-    stmt = select(EventRow).where(EventRow.company_id == company.id)
+    stmt = select(EventRow).where(EventRow.company_id == company.id, candidate_predicate())
     if since is not None:
         stmt = stmt.where(EventRow.occurred_at >= _day_start(since))
     if wanted:
         stmt = stmt.where(EventRow.type.in_(wanted))
     stmt = stmt.order_by(EventRow.occurred_at.desc(), EventRow.event_id)
     events: list[EventOut] = []
-    offset = 0
-    while len(events) < limit:
-        page = list(session.scalars(stmt.offset(offset).limit(MAX_EVENTS)))
+    after: tuple[datetime, str] | None = None
+    for _page in range(MAX_EVENT_PAGES):
+        if len(events) >= limit:
+            break
+        page_stmt = stmt
+        if after is not None:  # keyset: strictly after the last row read, in the same order
+            page_stmt = stmt.where(
+                or_(
+                    EventRow.occurred_at < after[0],
+                    and_(EventRow.occurred_at == after[0], EventRow.event_id > after[1]),
+                )
+            )
+        page = list(session.scalars(page_stmt.limit(MAX_EVENTS)))
         if not page:
             break
-        offset += len(page)
+        after = (page[-1].occurred_at, page[-1].event_id)
         decisions = signal_decisions(
             session,
             signal_ids_of_crossings(r.payload for r in page if is_crossing(r.source, r.type)),

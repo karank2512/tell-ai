@@ -54,11 +54,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from tell.backtest.common import Metric, Query, Report, Section, Table, share
-from tell.models import CIK_SOURCES
+from tell.models import CIK_SOURCES, EventRow
+from tell.ops import source_eligibility
+from tell.ops.lineage import permitted_news_predicate
+from tell.signals.scoring import PROVENANCE_COLUMNS, eligible_for_scoring
 
 __all__ = [
     "ALERT_CADENCE_HOURS",
@@ -223,6 +226,7 @@ p as (
   select a.event_id, min((n.occurred_at at time zone 'UTC')::date) as first_press_on
   from a join events n on n.company_id = a.company_id
   where n.type = 'news_funding'
+    and n.event_id = any(cast(:press_event_ids as text[]))
     and (n.occurred_at at time zone 'UTC')::date between a.filed_on - 14 and a.filed_on + 60
     and (a.full_brand is null
          or position(' ' || a.full_brand || ' ' in
@@ -385,6 +389,29 @@ def _empty(cohort: str, cadence_hours: int) -> SpeedVsPress:
     )
 
 
+def eligible_press_event_ids(session: Session) -> list[str]:
+    """The ``news_funding`` events the press measure may count under source eligibility.
+
+    Only a row from a feed with a recorded permit can be eligible
+    (``permitted_news_predicate``); each is confirmed by the scoring rule
+    (:func:`~tell.signals.scoring.eligible_for_scoring`). Google News rows, unknown
+    provenance and unpermitted feeds are never counted. With no permit the list is empty
+    and press is unmeasured (:func:`build_report` says so).
+    """
+    if not source_eligibility.PERMITS:
+        return []
+    rows = session.execute(
+        select(EventRow.event_id, EventRow.type, *PROVENANCE_COLUMNS).where(
+            EventRow.type == "news_funding", permitted_news_predicate()
+        )
+    )
+    return sorted(
+        str(event_id)
+        for event_id, type_, source, url, match, query, payload_type in rows
+        if eligible_for_scoring(source, type_, url, match, query, payload_type=payload_type)
+    )
+
+
 def compute_cohorts(
     session: Session, now: datetime, *, cadence_hours: int = ALERT_CADENCE_HOURS
 ) -> dict[str, SpeedVsPress]:
@@ -393,7 +420,8 @@ def compute_cohorts(
         msg = f"cadence_hours must be positive, got {cadence_hours}"
         raise ValueError(msg)
     results = {name: _empty(name, cadence_hours) for name in COHORTS}
-    for row in session.execute(text(SQL), _binds(now, cadence_hours)):
+    binds = {**_binds(now, cadence_hours), "press_event_ids": eligible_press_event_ids(session)}
+    for row in session.execute(text(SQL), binds):
         results[str(row.cohort)] = SpeedVsPress(
             n=int(row.n),
             with_press=int(row.with_press),
@@ -457,10 +485,10 @@ def build_report(
             "before the filing (a YC directory company, or one that existed before the filing "
             "date) and found from the filing (created on or after the filing date by "
             "issuer-first discovery, whose alert time is the link time). Press: news_funding "
-            "events of that company dated from 14 days before to 60 days after the filing date "
-            "(collected first with Google News when:120d by `tell ingest --source news "
-            "--cohort formd --when-days 120`); for a one-word brand not from the YC directory "
-            "the headline must carry the full legal name."
+            "events of that company dated from 14 days before to 60 days after the filing date, "
+            "counted only when source eligibility allows them (a company feed with a recorded "
+            "permit; Google News rows are never counted); for a one-word brand not from the YC "
+            "directory the headline must carry the full legal name."
         ),
         n=result.n,
         as_of=now.date(),
@@ -474,6 +502,13 @@ def build_report(
         )
         report.notices.append(line)
         report.blockers.append(f"sample too small, N={result.n} under {MIN_COHORT}")
+    if not source_eligibility.PERMITS:
+        report.notices.append(
+            "Press is unmeasured: source eligibility excludes Google News and no company feed "
+            "holds a recorded permit, so no press row is counted. Every press figure below "
+            "reads 0 or empty because nothing was measured, not because no press exists."
+        )
+        report.blockers.append("press unmeasured: no permitted news source")
     if result.n and result.mostly_estimated:
         report.notices.append(
             f"alert_at is estimated for {result.alert_estimated} of {result.n} filings "

@@ -21,6 +21,7 @@ from tell.ops import source_eligibility
 from tell.ops.source_eligibility import (
     HIRING_VELOCITY,
     INDEPENDENT_SOURCES,
+    NEWS_SOURCE,
     SCORE_CROSSED_THRESHOLD,
     TELL_SOURCE,
     Decision,
@@ -30,9 +31,12 @@ from tell.ops.source_eligibility import (
 )
 
 __all__ = [
+    "candidate_predicate",
+    "crossing_predicate",
     "deletable_predicate",
     "event_decision",
     "is_crossing",
+    "permitted_news_predicate",
     "signal_decisions",
     "signal_ids_of_crossings",
 ]
@@ -108,3 +112,36 @@ def deletable_predicate() -> ColumnElement[bool]:
             and_(EventRow.source == TELL_SOURCE, EventRow.type == HIRING_VELOCITY),
         ),
     )
+
+
+def permitted_news_predicate() -> ColumnElement[bool]:
+    """SQL pre-filter: the only ``news`` rows that *can* be eligible.
+
+    A news row is eligible only as a company feed whose ``payload.query`` is the exact
+    URL of a recorded permit (:func:`~tell.ops.source_eligibility.classify_event`), so
+    this is a necessary condition, never a sufficient one: callers still classify every
+    row it returns. ``PERMITS`` is read at call time; with no permit it matches nothing,
+    so Google News and unpermitted feeds are never even read.
+    """
+    feeds = sorted({permit.feed_url for permit in source_eligibility.PERMITS})
+    return and_(
+        EventRow.source == NEWS_SOURCE,
+        func.jsonb_typeof(EventRow.payload) == "object",
+        EventRow.payload["query"].astext.in_(feeds),
+    )
+
+
+def crossing_predicate() -> ColumnElement[bool]:
+    """SQL: ``score_crossed_threshold`` rows (cleared only through their stamp)."""
+    return and_(EventRow.source == TELL_SOURCE, EventRow.type == SCORE_CROSSED_THRESHOLD)
+
+
+def candidate_predicate() -> ColumnElement[bool]:
+    """SQL pre-filter: every row :func:`event_decision` could call eligible, and fewer others.
+
+    The union of :func:`deletable_predicate` (always eligible), :func:`permitted_news_predicate`
+    and :func:`crossing_predicate` (both still classified in Python). Rows outside it are
+    certainly excluded: Google News, unpermitted or unknown news, unrecognized sources,
+    other ``tell`` types and non-object payloads of the independent sources.
+    """
+    return or_(deletable_predicate(), permitted_news_predicate(), crossing_predicate())

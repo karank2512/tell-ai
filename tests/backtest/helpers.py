@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from tell.models import AtsBoard, Company, EventRow, Posting, Run
+from tests.source_feed import feed_provenance
 
 NOW = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
 DAY = timedelta(days=1)
@@ -144,8 +145,14 @@ def formd(
 
 
 def news(session: Session, owner: Company, at: datetime, type_: str = "news_funding") -> EventRow:
+    # Synthetic press from the permitted test feed: source eligibility counts no other news.
     return event(
-        session, type_, at, owner=owner, payload={"title": "raises a round"}, source="news"
+        session,
+        type_,
+        at,
+        owner=owner,
+        payload=feed_provenance({"title": "raises a round"}),
+        source="news",
     )
 
 

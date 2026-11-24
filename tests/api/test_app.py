@@ -22,6 +22,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -37,6 +38,7 @@ from tell.api.app import MAX_EVENTS, PROBLEM_MEDIA_TYPE, create_app, normalize_d
 from tell.collectors.base import Event, write_events
 from tell.db import SessionLocal
 from tell.models import ApiKey, ApiUsage, Company, Feedback, Signal, Watchlist, WatchlistItem
+from tell.ops.source_eligibility import POLICY_VERSION
 from tell.publish.json_api import (
     build_company_json,
     validate_company_json,
@@ -1007,3 +1009,101 @@ def test_cli_revoke_and_usage(bound_cli: Engine, client: TestClient, world: Worl
     missing = runner.invoke(cli.app, ["revoke-key", "tell_missing"])
     assert missing.exit_code == 1
     assert "no API key" in missing.stderr
+
+
+def test_events_return_a_cleanly_stamped_crossing(
+    client: TestClient, engine: Engine, key: str
+) -> None:
+    """A crossing whose stamp cites only eligible signals is returned (positive case)."""
+    with SessionLocal(bind=engine) as session:
+        company = Company(domain="stamped.example", name="Stamped")
+        session.add(company)
+        session.flush()
+        filing = _event(
+            company.id,
+            source="edgar",
+            type_="form_d_filed",
+            external_id="stamped-filing",
+            occurred=_at("2026-03-01"),
+            payload={"is_amendment": False},
+        )
+        write_events(session, [filing])
+        signal = Signal(
+            company_id=company.id,
+            event_id=filing.event_id,
+            signal_type="funding",
+            role_family=None,
+            weight=Decimal("1"),
+            magnitude=Decimal("1"),
+            half_life_days=30,
+            starts_at=_at("2026-03-01"),
+        )
+        session.add(signal)
+        session.flush()
+        crossing = _event(
+            company.id,
+            source="tell",
+            type_="score_crossed_threshold",
+            external_id=f"{company.id}:default",
+            occurred=_at("2026-03-02"),
+            payload={
+                "profile": "default",
+                "as_of": "2026-03-02",
+                "score": 7.5,
+                "policy_version": POLICY_VERSION,
+                "signal_ids": [signal.id],
+                "contributions": [{"signal_id": signal.id, "contribution": 7.5}],
+            },
+        )
+        write_events(session, [crossing])
+        session.commit()
+    body = client.get("/v1/companies/stamped.example/events", headers=_h(key)).json()
+    assert [e["type"] for e in body["events"]] == ["score_crossed_threshold", "form_d_filed"]
+
+
+def test_events_keyset_pages_never_repeat_or_skip(
+    client: TestClient, engine: Engine, key: str
+) -> None:
+    """Excluded candidates fill page one; the next page continues exactly where it stopped.
+
+    120 unstamped crossings (candidates, then excluded) are the newest rows; 150 EDGAR
+    filings follow, two per timestamp so ties are broken by ``event_id``.
+    """
+    with SessionLocal(bind=engine) as session:
+        company = Company(domain="pages.example", name="Pages")
+        session.add(company)
+        session.flush()
+        start = _at("2026-02-01")
+        filings = [
+            _event(
+                company.id,
+                source="edgar",
+                type_="form_d_filed",
+                external_id=f"pages-filing-{i}",
+                occurred=start + timedelta(hours=i // 2),
+                payload={"is_amendment": False, "n": i},
+            )
+            for i in range(150)
+        ]
+        crossings = [
+            _event(
+                company.id,
+                source="tell",
+                type_="score_crossed_threshold",
+                external_id=f"{company.id}:p{i}",
+                occurred=start + timedelta(days=30, hours=i),
+                payload={"profile": f"p{i}", "as_of": "2026-03-03", "score": 9.0},
+            )
+            for i in range(120)
+        ]
+        write_events(session, [*filings, *crossings])
+        session.commit()
+        expected = [
+            row.event_id
+            for row in sorted(filings, key=lambda e: (-e.occurred_at.timestamp(), e.event_id))
+        ]
+    body = client.get("/v1/companies/pages.example/events", headers=_h(key)).json()
+    ids = [e["event_id"] for e in body["events"]]
+    assert len(ids) == len(set(ids)) == 150  # page one held 80 filings, page two the rest
+    assert ids == expected
+    assert {e["type"] for e in body["events"]} == {"form_d_filed"}

@@ -40,12 +40,21 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from tell.backtest.common import REPO_ROOT, Metric, Report, Section, Table, share
 from tell.collectors.base import MANUAL_NOTE_KEY, iso_utc
 from tell.models import EventRow, ReviewQueueItem, Run
+from tell.ops.lineage import (
+    crossing_predicate,
+    deletable_predicate,
+    event_decision,
+    is_crossing,
+    permitted_news_predicate,
+    signal_decisions,
+    signal_ids_of_crossings,
+)
 from tell.ops.runlog import NON_PIPELINE_SOURCES, companies_monitored, postings_tracked
 from tell.ops.runlog import weeks_unattended as deadman_weeks_unattended
 from tell.publish.health import Freshness, freshness, freshness_by_source
@@ -163,18 +172,37 @@ def freshness_n(session: Session, now: datetime) -> int:
 
 
 def review_queue_rate(session: Session, since: datetime, now: datetime) -> tuple[int, int]:
-    """``(items, events)`` created / observed in ``(since, now]``."""
+    """``(items, events)`` created / observed in ``(since, now]``.
+
+    Source eligibility: ``events`` counts eligible events only (the rule the JSONL publish
+    applies, :func:`~tell.ops.lineage.event_decision`), so excluded rows such as Google News
+    never inflate the denominator. Always-eligible rows are counted in SQL; only permitted
+    news and crossings are read and classified.
+    """
     items = session.scalar(
         select(func.count())
         .select_from(ReviewQueueItem)
         .where(ReviewQueueItem.created_at > since, ReviewQueueItem.created_at <= now)
     )
-    events = session.scalar(
-        select(func.count())
-        .select_from(EventRow)
-        .where(EventRow.observed_at > since, EventRow.observed_at <= now)
+    window = (EventRow.observed_at > since, EventRow.observed_at <= now)
+    events = int(
+        session.scalar(
+            select(func.count()).select_from(EventRow).where(*window, deletable_predicate())
+        )
+        or 0
     )
-    return int(items or 0), int(events or 0)
+    rows = session.execute(
+        select(EventRow.source, EventRow.type, EventRow.url, EventRow.payload).where(
+            *window, or_(permitted_news_predicate(), crossing_predicate())
+        )
+    ).all()
+    decisions = signal_decisions(
+        session, signal_ids_of_crossings(r.payload for r in rows if is_crossing(r.source, r.type))
+    )
+    events += sum(
+        1 for r in rows if event_decision(r.source, r.type, r.url, r.payload, decisions).eligible
+    )
+    return int(items or 0), events
 
 
 def _weeks(since: datetime | None, now: datetime) -> float | None:

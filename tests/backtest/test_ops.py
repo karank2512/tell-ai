@@ -193,3 +193,25 @@ def test_report_on_the_2026_10_19_window(db_session: Session, tmp_path: Path) ->
     assert "ADR 0043" in text
     assert "Freshness is tell's lag" in text  # the template's intro
     assert "[" not in text
+
+
+def test_review_queue_rate_counts_only_eligible_events(db_session: Session) -> None:
+    """Excluded rows (Google News, unknown provenance) never inflate the denominator."""
+    owner = company(db_session, "rate.example")
+    event(db_session, "form_d_filed", NOW - DAY, owner=owner)  # EDGAR: always eligible
+    google = event(
+        db_session,
+        "news_funding",
+        NOW - DAY,
+        owner=owner,
+        source="news",
+        payload={
+            "title": "Rate raises a round",
+            "match": {"rule": "news_query", "guard": "name_in_title"},
+            "query": "https://news.google.com/rss/search?q=%22Rate%22+when%3A7d",
+        },
+    )
+    google.url = "https://news.google.com/rss/articles/SYNTH-rate"  # synthetic, never fetched
+    db_session.flush()
+    event(db_session, "news_launch", NOW - DAY, owner=owner, source="news", payload={"title": "x"})
+    assert ops.review_queue_rate(db_session, NOW - ops.PERIOD, NOW) == (0, 1)
