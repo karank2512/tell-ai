@@ -7,9 +7,13 @@ Slack crossing list and HubSpot receipts fail closed; ``tell publish``/``prune``
 ``tell ingest --source news`` follows :func:`news_fetch_plan` (no permit: skipped before
 any request; a permit: refused until the collector is restricted to permitted feeds),
 excluded events derive no signal and are never scored (``tell.signals.scoring``), and
-the Slack new-signal count follows the same rule. The site, the JSON API/MCP, the weekly
-page, the CSV export and the backtests still read stored signals directly, which is why
-:data:`WIRED` stays ``False``. This module itself reads nothing, writes nothing and
+the Slack new-signal count follows the same rule. Seventh slice: the site's company
+selection, the JSON API's ``sources.news`` flag (the published JSON the MCP serves) and
+the API's raw ``/events`` route read eligible rows only; the CSV export and the weekly
+page already did (scores through ``tell.signals.scoring``; the weekly lists read EDGAR
+only). The backtests (speed vs press, the operations proxy counts, dogfood), which the
+weekly job republishes as methods reports, still read stored rows directly, which is
+why :data:`WIRED` stays ``False``. This module itself reads nothing, writes nothing and
 opens no connection; every function here takes plain values and returns a decision.
 
 It keeps four concerns apart:

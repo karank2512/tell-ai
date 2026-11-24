@@ -74,6 +74,7 @@ from tell.collectors.base import parse_iso, utcnow
 from tell.db import SessionLocal, get_engine
 from tell.discovery import registrable_domain
 from tell.models import ApiKey, Company, EventRow, Feedback, Signal, Watchlist, WatchlistItem
+from tell.ops.lineage import event_decision, is_crossing, signal_decisions, signal_ids_of_crossings
 from tell.publish.health import compute_health
 from tell.publish.json_api import (
     apportion_tenths,
@@ -425,7 +426,14 @@ def company_events(
     types: Annotated[list[str] | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=MAX_EVENTS)] = MAX_EVENTS,
 ) -> EventsOut:
-    """Raw events with their receipt URLs, newest first (at most 200)."""
+    """Raw events with their receipt URLs, newest first (at most 200).
+
+    Source eligibility: only eligible events are returned (the rule the JSONL publish
+    applies, :func:`~tell.ops.lineage.event_decision`): Google News, unknown provenance,
+    unpermitted feeds and malformed payloads are left out, and a threshold crossing only
+    when its own lineage stamp is clean. Rows are read a page at a time until ``limit``
+    eligible events are found, so excluded rows never shorten a full page.
+    """
     company = _find_company(session, domain)
     if company is None:
         raise _not_found(f"no company for domain {normalize_domain(domain)!r}")
@@ -435,20 +443,35 @@ def company_events(
         stmt = stmt.where(EventRow.occurred_at >= _day_start(since))
     if wanted:
         stmt = stmt.where(EventRow.type.in_(wanted))
-    stmt = stmt.order_by(EventRow.occurred_at.desc(), EventRow.event_id).limit(limit)
-    events = [
-        EventOut(
-            event_id=row.event_id,
-            source=row.source,
-            type=row.type,
-            occurred_at=row.occurred_at,
-            observed_at=row.observed_at,
-            magnitude=float(row.magnitude),
-            url=row.url,
-            payload=dict(row.payload or {}),
+    stmt = stmt.order_by(EventRow.occurred_at.desc(), EventRow.event_id)
+    events: list[EventOut] = []
+    offset = 0
+    while len(events) < limit:
+        page = list(session.scalars(stmt.offset(offset).limit(MAX_EVENTS)))
+        if not page:
+            break
+        offset += len(page)
+        decisions = signal_decisions(
+            session,
+            signal_ids_of_crossings(r.payload for r in page if is_crossing(r.source, r.type)),
         )
-        for row in session.scalars(stmt)
-    ]
+        for row in page:
+            if not event_decision(row.source, row.type, row.url, row.payload, decisions).eligible:
+                continue
+            events.append(
+                EventOut(
+                    event_id=row.event_id,
+                    source=row.source,
+                    type=row.type,
+                    occurred_at=row.occurred_at,
+                    observed_at=row.observed_at,
+                    magnitude=float(row.magnitude),
+                    url=row.url,
+                    payload=dict(row.payload),
+                )
+            )
+            if len(events) == limit:
+                break
     return EventsOut(domain=company.domain, since=since, types=wanted, events=events)
 
 

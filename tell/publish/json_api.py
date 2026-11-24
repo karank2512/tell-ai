@@ -64,11 +64,14 @@ from tell.models import (
     Watchlist,
     WatchlistItem,
 )
+from tell.ops import source_eligibility
 from tell.publish.health import Health
 from tell.publish.weekly import FilingsData, WeeklyData, velocity_postings
 from tell.signals.profiles import Profile, get_profile
 from tell.signals.scoring import (
+    PROVENANCE_COLUMNS,
     ScoreResult,
+    eligible_for_scoring,
     heat,
     score_companies,
     score_instant,
@@ -607,6 +610,7 @@ def company_facts_many(
     open_counts: dict[int, int] = defaultdict(int)
     feeds: dict[int, int] = {}
     news: set[int] = set()
+    permitted = {permit.feed_url for permit in source_eligibility.PERMITS}  # read at call time
     for chunk in _chunks(ids):
         for board in session.scalars(
             select(AtsBoard)
@@ -622,20 +626,28 @@ def company_facts_many(
             .group_by(AtsBoard.company_id)
         ):
             open_counts[cast("int", cid)] = int(count)  # IN filter: never NULL
+        # Source eligibility: ``sources.news`` claims news coverage tell may use. A stored
+        # company feed counts only with a recorded permit for its exact URL, and a news
+        # event only when it is eligible (the rule scoring applies). With no permit, no
+        # company shows news coverage; excluded rows are never revealed by this flag.
         for cid, count in session.execute(
             select(CompanyFeed.company_id, func.count())
-            .where(CompanyFeed.company_id.in_(chunk))
+            .where(
+                CompanyFeed.company_id.in_(chunk),
+                CompanyFeed.feed_url.in_(sorted(permitted)),
+            )
             .group_by(CompanyFeed.company_id)
         ):
             feeds[int(cid)] = int(count)
-        news.update(
-            cast("int", cid)  # IN filter: never NULL
-            for (cid,) in session.execute(
-                select(EventRow.company_id)
-                .where(EventRow.company_id.in_(chunk), EventRow.source == "news")
-                .distinct()
+        for cid, event_type, source, url, match, query, payload_type in session.execute(
+            select(EventRow.company_id, EventRow.type, *PROVENANCE_COLUMNS).where(
+                EventRow.company_id.in_(chunk), EventRow.source == "news"
             )
-        )
+        ):
+            if eligible_for_scoring(
+                source, event_type, url, match, query, payload_type=payload_type
+            ):
+                news.add(cast("int", cid))  # IN filter: never NULL
     long_open = long_open_roles_many(session, ids, t)
     out: dict[int, CompanyFacts] = {}
     for company in companies:

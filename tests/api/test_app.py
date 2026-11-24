@@ -670,6 +670,65 @@ def test_events_404_and_422(client: TestClient, world: World, key: str) -> None:
     _problem(client.get(f"/v1/companies/{ALPHA}/events?since=notadate", headers=_h(key)), 422)
 
 
+def _excluded_google_event(company_id: int, n: int, occurred: datetime) -> Event:
+    """A synthetic row with Google News provenance markers (invented values, never fetched)."""
+    url = f"https://news.google.com/rss/articles/SYNTH-{n}"
+    return Event(
+        source="news",
+        type="news_launch",
+        external_id=url,
+        version="1",
+        occurred_at=occurred,
+        observed_at=occurred,
+        url=url,
+        payload={
+            "title": f"Synthetic headline {n}",
+            "match": {"rule": "news_query", "guard": "name_in_title"},
+            "query": "https://news.google.com/rss/search?q=%22Mixed%22+when%3A7d",
+        },
+        run_id="test-run",
+        company_id=company_id,
+    )
+
+
+def test_events_leave_out_excluded_rows_and_fill_the_page(
+    client: TestClient, engine: Engine, key: str
+) -> None:
+    """Google News rows and an unstamped crossing are never returned; the page still fills."""
+    with SessionLocal(bind=engine) as session:
+        company = Company(domain="mixed.example", name="Mixed")
+        session.add(company)
+        session.flush()
+        start = _at("2026-03-01")
+        filing = _event(
+            company.id,
+            source="edgar",
+            type_="form_d_filed",
+            external_id="mixed-filing",
+            occurred=start,
+            payload={"is_amendment": False},
+        )
+        newer_google = [
+            _excluded_google_event(company.id, i, start + timedelta(hours=1 + i))
+            for i in range(MAX_EVENTS + 5)  # more excluded rows than one page holds
+        ]
+        legacy_crossing = _event(
+            company.id,
+            source="tell",
+            type_="score_crossed_threshold",
+            external_id=f"{company.id}:default",
+            occurred=start + timedelta(days=30),
+            payload={"profile": "default", "as_of": "2026-03-31", "score": 9.0},
+        )
+        write_events(session, [filing, *newer_google, legacy_crossing])
+        session.commit()
+    body = client.get("/v1/companies/mixed.example/events", headers=_h(key)).json()
+    assert [(e["source"], e["type"]) for e in body["events"]] == [("edgar", "form_d_filed")]
+    limited = client.get("/v1/companies/mixed.example/events?limit=1", headers=_h(key)).json()
+    assert [e["type"] for e in limited["events"]] == ["form_d_filed"]
+    assert all("news.google.com" not in e["url"] for e in body["events"])
+
+
 # --- POST /v1/watchlists -----------------------------------------------------------------------------
 
 

@@ -1,5 +1,8 @@
 """Database side of :mod:`tell.ops.source_eligibility`: decisions for stored rows.
 
+``PERMITS`` is read at call time (as :func:`tell.signals.scoring.eligible_for_scoring`
+does), so every output applies the same permit list.
+
 :mod:`~tell.ops.source_eligibility` stays pure; this module loads what it needs (the
 source event behind each signal) and applies it. Reads only; never writes or commits.
 """
@@ -14,6 +17,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from tell.models import EventRow, Signal
+from tell.ops import source_eligibility
 from tell.ops.source_eligibility import (
     HIRING_VELOCITY,
     INDEPENDENT_SOURCES,
@@ -55,7 +59,9 @@ def signal_decisions(session: Session, ids: Iterable[int]) -> dict[int, Decision
             .where(Signal.id.in_(wanted[start : start + _CHUNK]))
         )
         for signal_id, source, type_, url, payload in session.execute(stmt):
-            out[int(signal_id)] = classify_event(source, type_, url, payload)
+            out[int(signal_id)] = classify_event(
+                source, type_, url, payload, permits=source_eligibility.PERMITS
+            )
     return out
 
 
@@ -81,7 +87,7 @@ def event_decision(
     """
     if is_crossing(source, type_) and isinstance(payload, Mapping):
         return classify_stamped_crossing(payload, decisions)
-    return classify_event(source, type_, url, payload)
+    return classify_event(source, type_, url, payload, permits=source_eligibility.PERMITS)
 
 
 def deletable_predicate() -> ColumnElement[bool]:
