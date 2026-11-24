@@ -226,7 +226,7 @@ p as (
   select a.event_id, min((n.occurred_at at time zone 'UTC')::date) as first_press_on
   from a join events n on n.company_id = a.company_id
   where n.type = 'news_funding'
-    and n.event_id = any(cast(:press_event_ids as text[]))
+    and n.event_id = any(string_to_array(cast(:press_event_ids as text), ','))
     and (n.occurred_at at time zone 'UTC')::date between a.filed_on - 14 and a.filed_on + 60
     and (a.full_brand is null
          or position(' ' || a.full_brand || ' ' in
@@ -420,7 +420,10 @@ def compute_cohorts(
         msg = f"cadence_hours must be positive, got {cadence_hours}"
         raise ValueError(msg)
     results = {name: _empty(name, cadence_hours) for name in COHORTS}
-    binds = {**_binds(now, cadence_hours), "press_event_ids": eligible_press_event_ids(session)}
+    # Comma-joined (event ids are hex digests, never containing a comma): the SQL printed in
+    # the report stays free of square brackets, and an empty list matches no press row.
+    press = ",".join(eligible_press_event_ids(session))
+    binds = {**_binds(now, cadence_hours), "press_event_ids": press}
     for row in session.execute(text(SQL), binds):
         results[str(row.cohort)] = SpeedVsPress(
             n=int(row.n),
