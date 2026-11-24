@@ -10,8 +10,8 @@ excluded events derive no signal and are never scored (``tell.signals.scoring``)
 the Slack new-signal count follows the same rule. Seventh slice: the site's company
 selection, the JSON API's ``sources.news`` flag (the published JSON the MCP serves) and
 the API's raw ``/events`` route read eligible rows only; the CSV export and the weekly
-page already did (scores through ``tell.signals.scoring``; the weekly lists read EDGAR
-only). The backtests (speed vs press, the operations proxy counts, dogfood), which the
+page already did (scores through ``tell.signals.scoring``; the weekly lists read only
+EDGAR filings and ``tell``/``hiring_velocity`` events, both always eligible). The backtests (speed vs press, the operations proxy counts, dogfood), which the
 weekly job republishes as methods reports, still read stored rows directly, which is
 why :data:`WIRED` stays ``False``. This module itself reads nothing, writes nothing and
 opens no connection; every function here takes plain values and returns a decision.
@@ -90,8 +90,8 @@ A code constant, never a setting: no environment variable or config file can fli
 While it is not ``True``, ``tell publish``, ``tell prune``, ``tell notify`` and the
 ``tell weekly`` alias exit 2 before opening any database session or HTTP client
 (:func:`outputs_blocked`). Flipping it is a reviewed code change made only once the
-remaining output paths (site, JSON API/MCP, weekly page, CSV, backtests) filter through
-this module; see the change summary for the next slice.
+remaining output paths (the backtests the weekly job republishes as methods reports)
+filter through this module; see the module docstring for what each slice covered.
 """
 
 STAMP_TOP_N: Final = 5
