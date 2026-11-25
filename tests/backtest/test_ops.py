@@ -105,7 +105,7 @@ def test_numbers_with_manual_intervention(db_session: Session, tmp_path: Path) -
     )
     assert f"{ops.FRESHNESS_LABEL}: 2.9 h (N=2; too small to quote)" in text
     assert "Collector events observed in the 24-hour freshness window: 2" in text
-    assert "| edgar | 2 | 2 | 0 | 0 | 0 | 2.9 h (N=2; too small to quote) |" in text
+    assert "| edgar | 2 | 2 | 0 | 0 | 0 | 0 | 2.9 h (N=2; too small to quote) |" in text
     assert "Companies monitored (active board or a CIK): 2" in text
     assert "Postings tracked (closed_at is null): 1" in text
     assert (
@@ -168,28 +168,36 @@ def test_empty_database(db_session: Session, tmp_path: Path) -> None:
 
 
 def test_report_on_the_2026_10_19_window(db_session: Session, tmp_path: Path) -> None:
-    """The window that printed 23298.1 h now prints tell's lag, its N and what was left out."""
+    """The window that printed 23298.1 h now prints tell's lag, its N and what was left out.
+
+    Source eligibility (ADR 0043 amendment): with no feed permit all 24 news rows are left
+    out as ineligible, so the p95 is the boards' (it read 103.0 h, N=16, with Google News).
+    """
     window = load_window(db_session)
     report = ops.build_report(db_session, window.now, gold_doc=tmp_path / "absent.md")
     text = render_report(report)
-    assert f"{ops.FRESHNESS_LABEL}: 103.0 h (N=16; too small to quote)" in text
+    assert f"{ops.FRESHNESS_LABEL}: 10.7 h (N=4; too small to quote)" in text
     assert "Collector events observed in the 24-hour freshness window: 34" in text
     assert (
         "Left out of freshness, first looks (tell was not yet watching the board, company feed, "
-        "Google News query or source): 15"
+        "Google News query or source): 4"
     ) in text
     assert (
         "Left out of freshness, first-seen-only (no source timestamp: tell dated the event when "
         "it saw it): 1"
     ) in text
     assert (
-        "Left out of freshness, backfills (archive loads and widened Google News windows): 2"
+        "Left out of freshness, backfills (archive loads and widened Google News windows): 1"
+    ) in text
+    assert (
+        "Left out of freshness, ineligible (excluded by source eligibility: Google News, "
+        "unknown provenance, unpermitted feeds): 24"
     ) in text
     assert "### Freshness by source" in text
-    assert "| ashby | 5 | 1 | 4 | 0 | 0 | 8.0 h (N=1; too small to quote) |" in text
-    assert "| edgar | 1 | 0 | 0 | 0 | 1 | n/a (N=0; too small to quote) |" in text
-    assert "| greenhouse | 4 | 3 | 0 | 1 | 0 | 10.8 h (N=3; too small to quote) |" in text
-    assert "| news | 24 | 12 | 11 | 0 | 1 | 105.4 h (N=12; too small to quote) |" in text
+    assert "| ashby | 5 | 1 | 4 | 0 | 0 | 0 | 8.0 h (N=1; too small to quote) |" in text
+    assert "| edgar | 1 | 0 | 0 | 0 | 1 | 0 | n/a (N=0; too small to quote) |" in text
+    assert "| greenhouse | 4 | 3 | 0 | 1 | 0 | 0 | 10.8 h (N=3; too small to quote) |" in text
+    assert "| news | 24 | 0 | 0 | 0 | 0 | 24 | n/a (N=0; too small to quote) |" in text
     assert "ADR 0043" in text
     assert "Freshness is tell's lag" in text  # the template's intro
     assert "[" not in text

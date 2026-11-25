@@ -16,9 +16,10 @@ slice: those reads and the API use the SQL pre-filters of :mod:`tell.ops.lineage
 (Google News rows are never read; the API pages by keyset with a page cap), the speed vs
 press report counts only eligible press (and says press is unmeasured with no permit),
 and the operations review-queue rate counts only eligible events; dogfood needed no
-change (its verdicts only reach ``job_opened`` postings). The freshness p95
-(``tell.publish.health``: ``health.json`` and the operations report) still counts every
-news row, which is why :data:`WIRED` stays ``False``. This module itself reads nothing,
+change (its verdicts only reach ``job_opened`` postings). Ninth slice: the freshness p95
+(``tell.publish.health``: ``health.json`` and the operations report) counts only eligible
+events and reports the rest as ``ineligible`` (ADR 0043 amended). :data:`WIRED` stays
+``False``: enabling it is a separate, reviewed owner decision. This module itself reads nothing,
 writes nothing and opens no connection; every function here takes plain values and
 returns a decision.
 
@@ -95,10 +96,9 @@ WIRED: Final[bool] = False
 A code constant, never a setting: no environment variable or config file can flip it.
 While it is not ``True``, ``tell publish``, ``tell prune``, ``tell notify`` and the
 ``tell weekly`` alias exit 2 before opening any database session or HTTP client
-(:func:`outputs_blocked`). Flipping it is a reviewed code change made only once the
-remaining output path (the freshness p95 of ``tell.publish.health``, published in
-``health.json`` and the operations report) filters through this module; see the module
-docstring for what each slice covered.
+(:func:`outputs_blocked`). Flipping it is a reviewed code change and an owner decision,
+made only once every output path filters through this module; see the module docstring
+for what each slice covered.
 """
 
 STAMP_TOP_N: Final = 5

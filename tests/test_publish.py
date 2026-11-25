@@ -361,8 +361,9 @@ def test_health_json_fields(db_session: Session, scenario: sc.Scenario, tmp_path
     assert news["stale"] is False
     assert news["success_rate_7d"] == 1.0
     assert news["fetched_24h"] > 0
-    # Every item is dated before that query, which did not list it: 24 h since, not its age.
-    assert news["freshness_p95_h"] == 24.0
+    # The scenario's news is Google News: excluded by source eligibility, so it has no
+    # freshness (before the exclusion: 24 h since the previous query, not its age).
+    assert news["freshness_p95_h"] is None
     assert by_source["greenhouse"]["stale"] is True  # last success 2026-09-25
     assert health["stale_sources"] == ["edgar", "greenhouse"]
     assert by_source["ashby"]["status"] == "never_run"

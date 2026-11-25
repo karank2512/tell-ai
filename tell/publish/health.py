@@ -68,6 +68,12 @@ Left out, and counted (:class:`Freshness`):
     quarterly Form D data sets of ``tell backfill formd``) and Google News items of news
     runs whose window was wider than the scheduled ``when:7d`` (``runs.notes.when_days``,
     the SPEC 13.1 cohort fill).
+``ineligible``
+    Excluded by source eligibility (:mod:`tell.ops.source_eligibility`): Google News,
+    unknown provenance, an unpermitted feed, a non-object payload. Its lag is not a fact
+    tell may use, so it never reaches the p95; only its id and source are read, to count it
+    (the rows behind the p95 are selected through the same pre-filters as every other
+    output, :mod:`tell.ops.lineage`).
 """
 
 from __future__ import annotations
@@ -106,7 +112,10 @@ from tell.models import (
     PostingObservation,
     Run,
 )
+from tell.ops import source_eligibility
 from tell.ops.deadman import POLICY_BREACH, policy_statuses
+from tell.ops.lineage import deletable_predicate, permitted_news_predicate
+from tell.signals.scoring import PROVENANCE_COLUMNS, eligible_for_scoring
 
 __all__ = [
     "BACKFILL",
@@ -115,6 +124,7 @@ __all__ = [
     "FIRST_LOOK",
     "FIRST_SEEN_ONLY",
     "FRESHNESS_PERCENTILE",
+    "INELIGIBLE",
     "INTERNAL_JOBS",
     "STALE_AFTER",
     "Freshness",
@@ -197,6 +207,7 @@ date, so no run sees it before filing date 00:00 UTC + 26 h (SPEC 13.1's ``alert
 FIRST_LOOK = "first_look"
 FIRST_SEEN_ONLY = "first_seen_only"
 BACKFILL = "backfill"
+INELIGIBLE = "ineligible"
 """Why an event is left out of freshness (module docstring, "Freshness")."""
 
 _GOOGLE_NEWS_PREFIX = f"https://{GOOGLE_NEWS_HOST}/"
@@ -214,10 +225,12 @@ class Freshness:
     first_look: int = 0
     first_seen_only: int = 0
     backfill: int = 0
+    ineligible: int = 0
+    """Events excluded by source eligibility (never in the p95)."""
 
     @property
     def excluded(self) -> int:
-        return self.first_look + self.first_seen_only + self.backfill
+        return self.first_look + self.first_seen_only + self.backfill + self.ineligible
 
     @property
     def observed(self) -> int:
@@ -232,8 +245,8 @@ class FreshnessEvent:
     event_id: str
     source: str
     reason: str | None
-    """``None`` when the event counts; else :data:`FIRST_LOOK`, :data:`FIRST_SEEN_ONLY` or
-    :data:`BACKFILL`."""
+    """``None`` when the event counts; else :data:`FIRST_LOOK`, :data:`FIRST_SEEN_ONLY`,
+    :data:`BACKFILL` or :data:`INELIGIBLE`."""
     lag_h: float | None
     """tell's lag in hours (unrounded) for a counted event; ``None`` for one left out."""
 
@@ -272,9 +285,13 @@ def _flag(key: str) -> Any:
     return EventRow.payload[key].astext.is_not_distinct_from("true")
 
 
-def _window(session: Session, now: datetime, sources: Sequence[str] | None) -> list[_Seen]:
+def _window_filter(now: datetime, sources: Sequence[str] | None) -> tuple[Any, ...]:
     scope = EventRow.source.in_(list(sources)) if sources is not None else EventRow.source != "tell"
-    stmt = select(
+    return (EventRow.observed_at > now - STALE_AFTER, EventRow.observed_at <= now, scope)
+
+
+def _seen_columns() -> tuple[Any, ...]:
+    return (
         EventRow.event_id,
         EventRow.source,
         EventRow.occurred_at,
@@ -285,8 +302,40 @@ def _window(session: Session, now: datetime, sources: Sequence[str] | None) -> l
         _flag(FIRST_POLL_KEY),
         EventRow.payload["board_identifier"].astext,
         EventRow.payload["query"].astext,
-    ).where(EventRow.observed_at > now - STALE_AFTER, EventRow.observed_at <= now, scope)
-    return [_Seen(*row) for row in session.execute(stmt)]
+    )
+
+
+def _window(session: Session, now: datetime, sources: Sequence[str] | None) -> list[_Seen]:
+    """The eligible events observed in the window (source eligibility, as every output).
+
+    Always-eligible rows (``deletable_predicate``) are read directly; news rows only when
+    their feed holds a recorded permit (``permitted_news_predicate``), each confirmed by
+    :func:`~tell.signals.scoring.eligible_for_scoring`. No other row is selected here.
+    """
+    window = _window_filter(now, sources)
+    stmt = select(*_seen_columns()).where(*window, deletable_predicate())
+    seen = [_Seen(*row) for row in session.execute(stmt)]
+    if source_eligibility.PERMITS:
+        news = select(*_seen_columns(), *PROVENANCE_COLUMNS, EventRow.type).where(
+            *window, permitted_news_predicate()
+        )
+        for row in session.execute(news):
+            base, (source, url, match, query, payload_type, type_) = row[:10], row[10:]
+            if eligible_for_scoring(source, type_, url, match, query, payload_type=payload_type):
+                seen.append(_Seen(*base))
+    return seen
+
+
+def _ineligible(
+    session: Session, now: datetime, sources: Sequence[str] | None, eligible: set[str]
+) -> list[tuple[str, str]]:
+    """``(event_id, source)`` of every other event in the window: only those two columns."""
+    stmt = select(EventRow.event_id, EventRow.source).where(*_window_filter(now, sources))
+    return [
+        (str(event_id), str(source))
+        for event_id, source in session.execute(stmt)
+        if event_id not in eligible
+    ]
 
 
 def _previous_polls(
@@ -458,6 +507,10 @@ def freshness_events(
             seen_from = s.visible if looked is None else max(s.visible, looked)
             lag_h = max((s.observed - seen_from).total_seconds(), 0.0) / 3600.0
         out.append(FreshnessEvent(s.event_id, s.source, reason, lag_h))
+    out.extend(
+        FreshnessEvent(event_id, source, INELIGIBLE, None)
+        for event_id, source in _ineligible(session, now, sources, {s.event_id for s in seen})
+    )
     return out
 
 
@@ -482,6 +535,7 @@ def _summarize(classified: Sequence[FreshnessEvent]) -> Freshness:
         first_look=reasons.count(FIRST_LOOK),
         first_seen_only=reasons.count(FIRST_SEEN_ONLY),
         backfill=reasons.count(BACKFILL),
+        ineligible=reasons.count(INELIGIBLE),
     )
 
 

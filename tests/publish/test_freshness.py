@@ -7,6 +7,12 @@ events were company-blog posts from 2015 on, read when tell discovered each blog
 window (plus an old-dated posting, a backfilled Form D and a widened Google News query);
 the tests below show the literal formula reproducing the bug on it and the new definition
 measuring tell's lag, then pin each rule on its own.
+
+Source eligibility re-baseline (eighth+1 slice): freshness counts eligible events only.
+Without a feed permit every news row is ``ineligible`` (left out, counted); with a test
+permit for the fixture's two company feeds those rows follow the ADR 0043 rules as before.
+Google News rows are ineligible whatever the permits (a permit can never cover a Google
+host), so the Google News lag rules below now pin that exclusion instead of a lag.
 """
 
 from __future__ import annotations
@@ -23,11 +29,14 @@ from sqlalchemy.orm import Session
 from tell.backtest.common import percentile
 from tell.backtest.speed_vs_press import INDEX_LAG_HOURS
 from tell.models import AtsBoard, Company, CompanyFeed, EventRow, Posting, PostingObservation, Run
+from tell.ops import source_eligibility
+from tell.ops.source_eligibility import FeedPermit
 from tell.publish.health import (
     BACKFILL,
     EDGAR_INDEX_LAG,
     FIRST_LOOK,
     FIRST_SEEN_ONLY,
+    INELIGIBLE,
     Freshness,
     compute_health,
     freshness,
@@ -46,6 +55,15 @@ FORM_D = "Form D from the quarterly data set (tell backfill formd)"
 LATE = "Google News item dated before the previous query (indexed late)"
 
 NOW = datetime(2026, 10, 20, 7, 0, tzinfo=UTC)
+FIXTURE_FEEDS = ("https://blog.alpha.example/rss.xml", "https://www.bravo.example/blog/feed.xml")
+
+
+def _permit(monkeypatch: pytest.MonkeyPatch, *feeds: str) -> None:
+    """Record test-only feed permits (production PERMITS stays empty)."""
+    permits = tuple(FeedPermit(feed, "docs/sources/permits/test.md", NOW.date()) for feed in feeds)
+    monkeypatch.setattr(source_eligibility, "PERMITS", permits)
+
+
 HOUR = timedelta(hours=1)
 DAY = timedelta(days=1)
 
@@ -68,21 +86,45 @@ def test_literal_spec_formula_measures_the_age_of_blog_archives(db_session: Sess
 
 
 def test_window_freshness_is_tells_lag(db_session: Session) -> None:
+    """No feed permit (production): all 24 news rows are ineligible; the p95 is the boards'."""
     window = load_window(db_session)
     result = freshness(db_session, window.now)
-    assert result == Freshness(p95_h=103.0, n=16, first_look=15, first_seen_only=1, backfill=2)
-    assert (result.observed, result.excluded) == (34, 18)
+    assert result == Freshness(
+        p95_h=10.7, n=4, first_look=4, first_seen_only=1, backfill=1, ineligible=24
+    )
+    assert (result.observed, result.excluded) == (34, 30)
     assert freshness_by_source(db_session, window.now) == {
         "ashby": Freshness(p95_h=8.0, n=1, first_look=4),
         "edgar": Freshness(p95_h=None, n=0, backfill=1),
         "greenhouse": Freshness(p95_h=10.8, n=3, first_seen_only=1),
-        "news": Freshness(p95_h=105.4, n=12, first_look=11, backfill=1),
+        "news": Freshness(p95_h=None, n=0, ineligible=24),
     }
     assert freshness_p95_h(db_session, window.now, ["greenhouse", "ashby"]) == 10.7
 
 
-def test_window_cases(db_session: Session) -> None:
-    """Every case of the fixture lands where ADR 0043 says, with the lag it says."""
+def test_window_freshness_with_company_feed_permits(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Permitted company feeds follow ADR 0043; the 15 Google News rows stay ineligible."""
+    _permit(monkeypatch, *FIXTURE_FEEDS)
+    window = load_window(db_session)
+    result = freshness(db_session, window.now)
+    # Counted lags: the boards' four plus the feed item published after discovery (16.6 h).
+    assert result == Freshness(
+        p95_h=15.5, n=5, first_look=12, first_seen_only=1, backfill=1, ineligible=15
+    )
+    assert result.observed == 34
+    assert freshness_by_source(db_session, window.now)["news"] == Freshness(
+        p95_h=16.6, n=1, first_look=8, ineligible=15
+    )
+
+
+def test_window_cases(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every case of the fixture lands where ADR 0043 says, with the lag it says.
+
+    With a permit for the fixture's company feeds; Google News cases are ineligible.
+    """
+    _permit(monkeypatch, *FIXTURE_FEEDS)
     window = load_window(db_session)
     events = {e.event_id: e for e in freshness_events(db_session, window.now)}
     assert set(events) == set(window.cases)
@@ -96,10 +138,10 @@ def test_window_cases(db_session: Session) -> None:
         "board first poll": {FIRST_LOOK},
         ARCHIVE: {FIRST_LOOK},
         "company feed item published after discovery": {None},
-        "Google News, company polled before": {None},
-        LATE: {None},
-        "Google News, first query for the company": {FIRST_LOOK},
-        COHORT: {BACKFILL},
+        "Google News, company polled before": {INELIGIBLE},
+        LATE: {INELIGIBLE},
+        "Google News, first query for the company": {INELIGIBLE},
+        COHORT: {INELIGIBLE},
         FORM_D: {BACKFILL},
     }
     # Greenhouse dates the posting by first_published (2026-09-02); the board's previous poll
@@ -107,9 +149,9 @@ def test_window_cases(db_session: Session) -> None:
     # where the literal formula said 1,116.3 h.
     (old,) = by_case[OLD_DATED]
     assert round(old.lag_h, 2) == 11.19
-    # Dated 2026-10-15 09:00 but absent from the query of 2026-10-18 02:33:04: 24.1 h, not 89.6 h.
+    # Google News: excluded by source eligibility, so it has no lag (it measured 24.1 h).
     (late,) = by_case[LATE]
-    assert round(late.lag_h, 2) == 24.07
+    assert late.lag_h is None
     (posted,) = by_case["company feed item published after discovery"]
     assert round(posted.lag_h, 2) == 16.62
     assert sorted(round(e.lag_h, 1) for e in by_case["new posting"]) == [4.3, 6.8, 8.0]
@@ -123,9 +165,9 @@ def test_window_health_rows(db_session: Session) -> None:
         "ashby": 8.0,
         "edgar": None,
         "greenhouse": 10.8,
-        "news": 105.4,
+        "news": None,  # every news row is ineligible without a feed permit
     }
-    assert health.freshness_p95_h == 103.0
+    assert health.freshness_p95_h == 10.7
 
 
 # --- one rule at a time ---------------------------------------------------------------------------
@@ -219,11 +261,15 @@ def test_any_other_source_counts_from_its_first_run(db_session: Session) -> None
     assert _reasons(db_session) == [(None, 2.0), (FIRST_LOOK, None)]
 
 
-def test_company_feed_needs_its_discovery_on_record(db_session: Session) -> None:
+def test_company_feed_needs_its_discovery_on_record(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     company = _company(db_session)
     url = "https://kilo.example/feed.xml"
     payload = {"query": url, "match": {"rule": "R1", "confidence": 0.98}}
     _event(db_session, "news", NOW - 5 * HOUR, NOW - HOUR, company=company, payload=payload)
+    assert _reasons(db_session) == [(INELIGIBLE, None)]  # no permit for this feed
+    _permit(monkeypatch, url)
     assert _reasons(db_session) == [(FIRST_LOOK, None)]  # no company_feeds row
     db_session.add(
         CompanyFeed(company_id=company.id, feed_url=url, status="active", created_at=NOW - 2 * DAY)
@@ -232,7 +278,14 @@ def test_company_feed_needs_its_discovery_on_record(db_session: Session) -> None
     assert _reasons(db_session) == [(None, 4.0)]
 
 
-def test_google_news_uses_the_previous_query(db_session: Session) -> None:
+def test_google_news_is_ineligible_whatever_its_query_history(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Google News rows never reach the p95, with or without earlier queries or a feed permit.
+
+    Before source eligibility this pinned the previous-query rule (lags 2.0 h and 10.0 h).
+    """
+    _permit(monkeypatch, "https://kilo.example/feed.xml")
     company = _company(db_session)
     query = "https://news.google.com/rss/search?q=%22Kilo%22+when%3A7d&hl=en-US&gl=US&ceid=US:en"
     run = _run(db_session, "news", NOW - HOUR)
@@ -248,14 +301,15 @@ def test_google_news_uses_the_previous_query(db_session: Session) -> None:
             payload={"query": query},
             run_id=run.run_id,
         )
-    assert _reasons(db_session) == [(FIRST_LOOK, None), (FIRST_LOOK, None)]  # first query
+    assert _reasons(db_session) == [(INELIGIBLE, None), (INELIGIBLE, None)]
     _run(db_session, "news", observed - 10 * HOUR, {"polled": {str(company.id): "x"}})
     _run(db_session, "news", observed - 3 * DAY, {"polled": {str(company.id + 1): "x"}})
     _run(db_session, "news", observed - 4 * DAY, {"polled": ["not", "an", "object"]})
-    assert _reasons(db_session) == [(None, 2.0), (None, 10.0)]  # 30 h old, unseen 10 h ago
+    assert _reasons(db_session) == [(INELIGIBLE, None), (INELIGIBLE, None)]
 
 
-def test_widened_google_news_window_is_a_backfill(db_session: Session) -> None:
+def test_widened_google_news_window_is_ineligible(db_session: Session) -> None:
+    """Before source eligibility: a cohort run was a backfill, the others lagged 214 h."""
     company = _company(db_session)
     query = "https://news.google.com/rss/search?q=%22Kilo%22+when%3A120d&hl=en-US&gl=US&ceid=US:en"
     _run(db_session, "news", NOW - 9 * DAY, {"polled": {str(company.id): "x"}})
@@ -276,9 +330,7 @@ def test_widened_google_news_window_is_a_backfill(db_session: Session) -> None:
             payload={"query": query},
             run_id=run_id,
         )
-    # Only a numeric when_days above 7 marks a cohort run; the others are ordinary queries
-    # whose previous look (9 days ago) bounds the lag.
-    assert _reasons(db_session) == [(None, 214.0), (None, 214.0), (BACKFILL, None)]
+    assert _reasons(db_session) == [(INELIGIBLE, None)] * 3
 
 
 def test_board_without_an_earlier_poll_is_a_first_look(db_session: Session) -> None:
