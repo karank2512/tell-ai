@@ -223,3 +223,34 @@ def test_news_coverage_flag_counts_only_permitted_feeds_and_eligible_events(
         "feedevent.example": permit,
         "quiet.example": False,
     }
+
+
+@pytest.mark.usefixtures("permitted_test_feed")
+def test_unknown_provenance_and_non_object_payloads_never_count(db_session: Session) -> None:
+    """Even with a feed permit: news without provenance markers and a non-object payload."""
+    occurred = sc.NOW - timedelta(days=4)
+    unknown = _company(db_session, "unknownnews.example")
+    malformed = _company(db_session, "malformed.example")
+    _event_with_signal(
+        db_session,
+        unknown,
+        source="news",
+        type_="news_launch",
+        url="https://unknownnews.example/post",
+        payload={"title": "Unknownnews launches"},  # no match/query: unknown provenance
+        signal_type="launch",
+        occurred=occurred,
+    )
+    _event_with_signal(
+        db_session,
+        malformed,
+        source="edgar",
+        type_="form_d_filed",
+        url="https://www.sec.gov/Archives/edgar/data/3/synthetic-3",
+        payload=["not", "an", "object"],  # the malformed case under test
+        signal_type="funding",
+        occurred=occurred,
+    )
+    assert published_company_ids(db_session, sc.AS_OF) == []
+    facts = company_facts_many(db_session, [unknown, malformed], score_instant(sc.AS_OF))
+    assert (facts[unknown.id].news, facts[malformed.id].news) == (False, False)

@@ -65,6 +65,7 @@ from tell.models import (
     WatchlistItem,
 )
 from tell.ops import source_eligibility
+from tell.ops.lineage import permitted_news_predicate
 from tell.publish.health import Health
 from tell.publish.weekly import FilingsData, WeeklyData, velocity_postings
 from tell.signals.profiles import Profile, get_profile
@@ -639,9 +640,13 @@ def company_facts_many(
             .group_by(CompanyFeed.company_id)
         ):
             feeds[int(cid)] = int(count)
+        if not permitted:
+            continue  # no news row can be eligible: none is read
+        # Only rows from a permitted feed can be eligible (permitted_news_predicate); each
+        # is still confirmed by the scoring rule.
         for cid, event_type, source, url, match, query, payload_type in session.execute(
             select(EventRow.company_id, EventRow.type, *PROVENANCE_COLUMNS).where(
-                EventRow.company_id.in_(chunk), EventRow.source == "news"
+                EventRow.company_id.in_(chunk), permitted_news_predicate()
             )
         ):
             if eligible_for_scoring(

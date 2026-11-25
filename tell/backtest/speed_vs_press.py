@@ -21,8 +21,9 @@ reproducible report; each change is listed in :data:`SQL_CHANGES` and printed be
   directory: issuer-first discovery created it from this filing).
 * **Press.** ``news_funding`` events of the same company dated
   ``filing_date - 14d`` to ``filing_date + 60d``; ``first_press_on`` is the earliest. The
-  cohort's press is collected beforehand by ``tell ingest --source news --cohort formd
-  --when-days 120`` (Google News ``when:120d``); this report only reads events. When the
+  report counts only press that source eligibility allows (a company feed with a recorded
+  permit; Google News is excluded), and with no permit press is unmeasured (a notice, a
+  blocker and blank press shares); this report only reads events. When the
   cohort is too small, the CLI prints :func:`small_cohort_hint` (backfill the quarterly
   Form D data sets with ``tell backfill formd``, link them, collect their press).
 * **alert_at.** EDGAR publishes a day's form index at about 02:02 UTC the next day, so a
@@ -50,15 +51,19 @@ reproducible report; each change is listed in :data:`SQL_CHANGES` and printed be
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from tell.backtest.common import Metric, Query, Report, Section, Table, share
-from tell.models import CIK_SOURCES
+from tell.models import CIK_SOURCES, EventRow
+from tell.ops import source_eligibility
+from tell.ops.lineage import permitted_news_predicate
+from tell.signals.scoring import PROVENANCE_COLUMNS, eligible_for_scoring
 
 __all__ = [
     "ALERT_CADENCE_HOURS",
@@ -223,6 +228,7 @@ p as (
   select a.event_id, min((n.occurred_at at time zone 'UTC')::date) as first_press_on
   from a join events n on n.company_id = a.company_id
   where n.type = 'news_funding'
+    and n.event_id = any(string_to_array(cast(:press_event_ids as text), ','))
     and (n.occurred_at at time zone 'UTC')::date between a.filed_on - 14 and a.filed_on + 60
     and (a.full_brand is null
          or position(' ' || a.full_brand || ' ' in
@@ -325,10 +331,17 @@ class SpeedVsPress:
     full_brand_required: int = 0
     """Filings whose funding headline had to contain the company's full legal name."""
     cohort: str = "pooled"
+    press_measured: bool = True
+    """False when source eligibility allows no press source (no feed permit): press is
+    unmeasured, so every press share is ``None`` (blank) instead of a computed 0% or 100%."""
 
     @property
     def press_share(self) -> float | None:
-        return share(self.with_press, self.n)
+        return share(self.with_press, self.n) if self.press_measured else None
+
+    @property
+    def no_press_share(self) -> float | None:
+        return share(self.no_press, self.n) if self.press_measured else None
 
     @property
     def no_press(self) -> int:
@@ -340,6 +353,8 @@ class SpeedVsPress:
 
     @property
     def filing_first_share_all(self) -> float | None:
+        if not self.press_measured:
+            return None
         return share(self.filing_first + self.no_press, self.n)
 
     @property
@@ -385,6 +400,29 @@ def _empty(cohort: str, cadence_hours: int) -> SpeedVsPress:
     )
 
 
+def eligible_press_event_ids(session: Session) -> list[str]:
+    """The ``news_funding`` events the press measure may count under source eligibility.
+
+    Only a row from a feed with a recorded permit can be eligible
+    (``permitted_news_predicate``); each is confirmed by the scoring rule
+    (:func:`~tell.signals.scoring.eligible_for_scoring`). Google News rows, unknown
+    provenance and unpermitted feeds are never counted. With no permit the list is empty
+    and press is unmeasured (:func:`build_report` says so).
+    """
+    if not source_eligibility.PERMITS:
+        return []
+    rows = session.execute(
+        select(EventRow.event_id, EventRow.type, *PROVENANCE_COLUMNS).where(
+            EventRow.type == "news_funding", permitted_news_predicate()
+        )
+    )
+    return sorted(
+        str(event_id)
+        for event_id, type_, source, url, match, query, payload_type in rows
+        if eligible_for_scoring(source, type_, url, match, query, payload_type=payload_type)
+    )
+
+
 def compute_cohorts(
     session: Session, now: datetime, *, cadence_hours: int = ALERT_CADENCE_HOURS
 ) -> dict[str, SpeedVsPress]:
@@ -393,7 +431,11 @@ def compute_cohorts(
         msg = f"cadence_hours must be positive, got {cadence_hours}"
         raise ValueError(msg)
     results = {name: _empty(name, cadence_hours) for name in COHORTS}
-    for row in session.execute(text(SQL), _binds(now, cadence_hours)):
+    # Comma-joined (event ids are hex digests, never containing a comma): the SQL printed in
+    # the report stays free of square brackets, and an empty list matches no press row.
+    press = ",".join(eligible_press_event_ids(session))
+    binds = {**_binds(now, cadence_hours), "press_event_ids": press}
+    for row in session.execute(text(SQL), binds):
         results[str(row.cohort)] = SpeedVsPress(
             n=int(row.n),
             with_press=int(row.with_press),
@@ -410,6 +452,11 @@ def compute_cohorts(
             full_brand_required=int(row.full_brand_required or 0),
             cohort=str(row.cohort),
         )
+    if not source_eligibility.PERMITS:  # no press source is allowed: press is unmeasured
+        results = {
+            name: dataclasses.replace(result, press_measured=False)
+            for name, result in results.items()
+        }
     return results
 
 
@@ -457,10 +504,10 @@ def build_report(
             "before the filing (a YC directory company, or one that existed before the filing "
             "date) and found from the filing (created on or after the filing date by "
             "issuer-first discovery, whose alert time is the link time). Press: news_funding "
-            "events of that company dated from 14 days before to 60 days after the filing date "
-            "(collected first with Google News when:120d by `tell ingest --source news "
-            "--cohort formd --when-days 120`); for a one-word brand not from the YC directory "
-            "the headline must carry the full legal name."
+            "events of that company dated from 14 days before to 60 days after the filing date, "
+            "counted only when source eligibility allows them (a company feed with a recorded "
+            "permit; Google News rows are never counted); for a one-word brand not from the YC "
+            "directory the headline must carry the full legal name."
         ),
         n=result.n,
         as_of=now.date(),
@@ -474,6 +521,14 @@ def build_report(
         )
         report.notices.append(line)
         report.blockers.append(f"sample too small, N={result.n} under {MIN_COHORT}")
+    if not source_eligibility.PERMITS:
+        report.notices.append(
+            "Press is unmeasured: source eligibility excludes Google News and no company feed "
+            "holds a recorded permit, so no press row is counted. The press shares below are "
+            "blank and the press counts read 0 because nothing was measured, not because no "
+            "press exists."
+        )
+        report.blockers.append("press unmeasured: no permitted news source")
     if result.n and result.mostly_estimated:
         report.notices.append(
             f"alert_at is estimated for {result.alert_estimated} of {result.n} filings "
@@ -502,7 +557,7 @@ def build_report(
                 ),
                 Metric(
                     "Share with no press within 60 days",
-                    share(result.no_press, result.n),
+                    result.no_press_share,
                     result.n,
                     "share",
                 ),
@@ -566,19 +621,22 @@ def build_report(
     ]
     report.sections.append(_cohort_section(cohorts))
     binds = _binds(now, cadence_hours)
+    press_ids = len(eligible_press_event_ids(session))
     report.queries = [
         Query(
             "Implementation (bind :as_of = "
             + now.isoformat()
             + f", :cadence_hours = {binds['cadence_hours']}"
-            + f", :observed_window_hours = {binds['observed_window_hours']})",
+            + f", :observed_window_hours = {binds['observed_window_hours']}"
+            + f", :press_event_ids = {press_ids} eligible news_funding event ids, comma-joined)",
             SQL,
         )
     ]
     report.caveats = [
         (
-            "Google News coverage is incomplete for small companies; the no-press share is "
-            "reported, not hidden."
+            "Press counts only news that source eligibility allows (a company feed with a "
+            "recorded permit; never Google News), so press coverage is partial at best and the "
+            "no-press share is an upper bound; with no permit it is not measured at all."
         ),
         (
             "first_press_at is the earliest funding headline the news collector kept (name in the "
@@ -636,7 +694,7 @@ def _cohort_rows(r: SpeedVsPress) -> list[Metric]:
     return [
         Metric("Filings", r.n, kind="count", headline=False),
         Metric("Share with any press", r.press_share, r.n, "share", headline=False),
-        Metric("Share with no press within 60 days", share(r.no_press, r.n), r.n, "share", False),
+        Metric("Share with no press within 60 days", r.no_press_share, r.n, "share", False),
         Metric("Median lag, days", r.median_lag_days, r.with_press, "days", headline=False),
         Metric("p75 lag, days", r.p75_lag_days, r.with_press, "days", headline=False),
         Metric(

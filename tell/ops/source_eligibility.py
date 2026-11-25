@@ -11,10 +11,16 @@ the Slack new-signal count follows the same rule. Seventh slice: the site's comp
 selection, the JSON API's ``sources.news`` flag (the published JSON the MCP serves) and
 the API's raw ``/events`` route read eligible rows only; the CSV export and the weekly
 page already did (scores through ``tell.signals.scoring``; the weekly lists read only
-EDGAR filings and ``tell``/``hiring_velocity`` events, both always eligible). The backtests (speed vs press, the operations proxy counts, dogfood), which the
-weekly job republishes as methods reports, still read stored rows directly, which is
-why :data:`WIRED` stays ``False``. This module itself reads nothing, writes nothing and
-opens no connection; every function here takes plain values and returns a decision.
+EDGAR filings and ``tell``/``hiring_velocity`` events, both always eligible). Eighth
+slice: those reads and the API use the SQL pre-filters of :mod:`tell.ops.lineage`
+(Google News rows are never read; the API pages by keyset with a page cap), the speed vs
+press report counts only eligible press (and says press is unmeasured with no permit),
+and the operations review-queue rate counts only eligible events; dogfood needed no
+change (its verdicts only reach ``job_opened`` postings). The freshness p95
+(``tell.publish.health``: ``health.json`` and the operations report) still counts every
+news row, which is why :data:`WIRED` stays ``False``. This module itself reads nothing,
+writes nothing and opens no connection; every function here takes plain values and
+returns a decision.
 
 It keeps four concerns apart:
 
@@ -90,8 +96,9 @@ A code constant, never a setting: no environment variable or config file can fli
 While it is not ``True``, ``tell publish``, ``tell prune``, ``tell notify`` and the
 ``tell weekly`` alias exit 2 before opening any database session or HTTP client
 (:func:`outputs_blocked`). Flipping it is a reviewed code change made only once the
-remaining output paths (the backtests the weekly job republishes as methods reports)
-filter through this module; see the module docstring for what each slice covered.
+remaining output path (the freshness p95 of ``tell.publish.health``, published in
+``health.json`` and the operations report) filters through this module; see the module
+docstring for what each slice covered.
 """
 
 STAMP_TOP_N: Final = 5

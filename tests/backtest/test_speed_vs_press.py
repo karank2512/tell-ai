@@ -11,12 +11,15 @@ from sqlalchemy.orm import Session
 from tell.backtest import speed_vs_press as svp
 from tell.backtest.common import render_report
 from tell.models import CIK_SOURCES, Company, EventRow
+from tell.ops import source_eligibility
 from tell.resolve import guards
 from tests.backtest.helpers import DAY, HOUR, NOW, company, event, formd, midnight, news
+from tests.source_feed import feed_provenance
 
 MINUTE = HOUR / 60
 
-pytestmark = pytest.mark.db
+# Synthetic press comes from the permitted test feed (source eligibility counts nothing else).
+pytestmark = [pytest.mark.db, pytest.mark.usefixtures("permitted_test_feed")]
 
 
 def _match(session: Session, row: EventRow, **fields: Any) -> EventRow:
@@ -179,7 +182,7 @@ def test_report_flags_small_sample(db_session: Session) -> None:
     assert "Observed: 4; estimated: 2." in text
     assert "more than 14 days before the filing" in text
     assert "alert median is an estimate" not in text
-    assert ":cadence_hours = 6, :observed_window_hours = 36)" in text
+    assert ":cadence_hours = 6, :observed_window_hours = 36, :press_event_ids = " in text
     assert svp.SQL in text
     assert "news_funding" in text
     assert "[" not in text
@@ -264,7 +267,14 @@ def _issuer_first(
 
 
 def _headline(session: Session, owner: Company, at: datetime, title: str) -> EventRow:
-    return event(session, "news_funding", at, owner=owner, payload={"title": title}, source="news")
+    return event(
+        session,
+        "news_funding",
+        at,
+        owner=owner,
+        payload=feed_provenance({"title": title}),
+        source="news",
+    )
 
 
 def test_r0_and_a_trusted_cik_source_enter_the_cohort(db_session: Session) -> None:
@@ -409,3 +419,72 @@ def test_report_shows_every_cohort_with_its_n(db_session: Session) -> None:
     assert "| Share with any press | 66.7% (N=6; too small to quote) | 0.0% (N=1; too small" in text
     assert "Press-ambiguous brands: tell has no dictionary" in text
     assert "found from the filing (created on or after the filing date" in text
+
+
+def _google_headline(session: Session, owner: Company, at: datetime) -> EventRow:
+    """Synthetic Google News provenance (invented URLs, never fetched)."""
+    row = event(
+        session,
+        "news_funding",
+        at,
+        owner=owner,
+        payload={
+            "title": f"{owner.name} raises a round",
+            "match": {"rule": "news_query", "guard": "name_in_title"},
+            "query": "https://news.google.com/rss/search?q=%22Synthetic%22+when%3A7d",
+        },
+        source="news",
+    )
+    row.url = "https://news.google.com/rss/articles/SYNTH-press"
+    session.flush()
+    return row
+
+
+def _two_filers(session: Session) -> None:
+    """One R0 filing with only Google News press, one with only permitted-feed press."""
+    google = company(session, "googlepress.example", cik="0000000021")
+    _match(session, formd(session, google, date(2026, 9, 1), cik="0000000021"), rule="R0")
+    _google_headline(session, google, datetime.fromisoformat("2026-09-10T09:00:00+00:00"))
+    feed = company(session, "feedpress.example", cik="0000000022")
+    _match(session, formd(session, feed, date(2026, 9, 1), cik="0000000022"), rule="R0")
+    _headline(
+        session,
+        feed,
+        datetime.fromisoformat("2026-09-10T09:00:00+00:00"),
+        "Feedpress raises a round",
+    )
+
+
+def test_press_counts_only_eligible_news(db_session: Session) -> None:
+    """Google News is never press; a permitted company feed is (permit fixture on)."""
+    _two_filers(db_session)
+    ids = svp.eligible_press_event_ids(db_session)
+    assert len(ids) == 1
+    result = svp.compute(db_session, NOW)
+    assert (result.n, result.with_press) == (2, 1)
+    report = svp.build_report(db_session, NOW)
+    assert not any("press unmeasured" in blocker for blocker in report.blockers)
+
+
+def test_no_permit_means_press_is_unmeasured_not_zero(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(source_eligibility, "PERMITS", ())
+    _two_filers(db_session)
+    assert svp.eligible_press_event_ids(db_session) == []
+    pooled = svp.compute(db_session, NOW)
+    assert pooled.with_press == 0
+    # Unmeasured, not 0% press / 100% "no press" or "filing first": every press share is blank.
+    assert not pooled.press_measured
+    assert (pooled.press_share, pooled.no_press_share, pooled.filing_first_share_all) == (
+        None,
+        None,
+        None,
+    )
+    report = svp.build_report(db_session, NOW)
+    assert "press unmeasured: no permitted news source" in report.blockers
+    assert any("Press is unmeasured" in notice for notice in report.notices)
+    assert "Google News rows are never counted" in report.cohort
+    text = render_report(report)
+    assert "Share with no press within 60 days: 100" not in text
+    assert "(no press counts as filing first): 100" not in text
