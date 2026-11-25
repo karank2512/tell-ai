@@ -389,6 +389,13 @@ def _freshness_exclusions(fresh: Freshness) -> list[Metric]:
             kind="count",
             headline=False,
         ),
+        Metric(
+            "Left out of freshness, ineligible (excluded by source eligibility: Google News, "
+            "unknown provenance, unpermitted feeds)",
+            fresh.ineligible,
+            kind="count",
+            headline=False,
+        ),
     ]
 
 
@@ -407,6 +414,7 @@ def _freshness_section(by_source: dict[str, Freshness]) -> Section:
                 "first looks",
                 "first-seen-only",
                 "backfills",
+                "ineligible",
                 "freshness p95",
             ],
             rows=[
@@ -417,6 +425,7 @@ def _freshness_section(by_source: dict[str, Freshness]) -> Section:
                     f"{fresh.first_look:,}",
                     f"{fresh.first_seen_only:,}",
                     f"{fresh.backfill:,}",
+                    f"{fresh.ineligible:,}",
                     Metric(f"freshness p95 {source}", fresh.p95_h, fresh.n, "hours", False),
                 ]
                 for source, fresh in by_source.items()

@@ -65,3 +65,20 @@
   is covered by the first-run rule only: an org added later brings its old repositories in
   as counted events.
 - `health.json` keeps its schema; the per-event audit is `freshness_events()`.
+
+## Amendment (2026-11-25): only eligible events count
+
+Source eligibility (`tell.ops.source_eligibility`) now applies to freshness as it does to
+every other output. An event that eligibility excludes (Google News, unknown provenance, an
+unpermitted company feed, a non-object payload) is left out as a fourth reason,
+`ineligible`, counted beside `first_look`, `first_seen_only` and `backfill`. Only its id and
+source are read; the rows behind the p95 are selected through the same pre-filters as the
+other outputs (`tell.ops.lineage`).
+
+Re-baseline on the fixture: with no feed permit (production) all 24 news rows are
+ineligible and the p95 is the boards' **10.7 h** (N=4); with a test permit for its two
+company feeds, the p95 is 15.5 h (N=5) and the 15 Google News rows stay ineligible. The
+Google News lag rules above (previous query, widened cohort window) are unreachable while
+Google News is excluded: a feed permit can never cover a Google host. `health.json` keeps
+its schema (it publishes only the p95); the operations report prints the `ineligible`
+count. Reports written before this amendment include news rows in their freshness.
