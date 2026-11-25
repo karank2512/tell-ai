@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session
 
 from tell.collectors.base import FIRST_POLL_KEY, Event, finish_run, start_run, write_events
 from tell.models import AtsBoard, Company, CompanyFeed, Posting, PostingObservation
+from tell.ops import source_eligibility
+from tell.ops.source_eligibility import FeedPermit
 from tell.publish.health import (
     INTERNAL_JOBS,
     compute_health,
@@ -67,7 +69,7 @@ def _watched(session: Session, source: str, observed: datetime) -> dict[str, Any
                 CompanyFeed(company_id=company.id, feed_url=url, created_at=observed - 3 * DAY)
             )
             session.flush()
-        return {"query": url}
+        return {"query": url, "match": {"rule": "R1", "confidence": 0.98}}  # company feed
     board = AtsBoard(company_id=company.id, vendor=source, identifier="acme", confidence=Decimal(1))
     session.add(board)
     session.flush()
@@ -164,7 +166,13 @@ def test_health_per_source(db_session: Session) -> None:
     assert as_dict["sources"][0]["source"] == "greenhouse"
 
 
-def test_freshness_excludes_tell_events_and_old_ones(db_session: Session) -> None:
+def test_freshness_excludes_tell_events_and_old_ones(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The news event comes from a company feed; source eligibility counts it only with a
+    # recorded permit for that feed (test-only; production PERMITS stays empty).
+    permit = FeedPermit("https://acme.example/feed.xml", "docs/sources/permits/test.md", NOW.date())
+    monkeypatch.setattr(source_eligibility, "PERMITS", (permit,))
     _events(db_session, "tell", [400.0])
     assert freshness_p95_h(db_session, NOW) is None
     _events(db_session, "news", [2.0])
