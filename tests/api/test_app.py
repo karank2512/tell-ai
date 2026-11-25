@@ -1066,8 +1066,9 @@ def test_events_keyset_pages_never_repeat_or_skip(
 ) -> None:
     """Excluded candidates fill page one; the next page continues exactly where it stopped.
 
-    120 unstamped crossings (candidates, then excluded) are the newest rows; 150 EDGAR
-    filings follow, two per timestamp so ties are broken by ``event_id``.
+    121 unstamped crossings (candidates, then excluded) are the newest rows; 150 EDGAR
+    filings follow, two per timestamp. Page one ends after 79 filings, in the middle of a
+    timestamp pair, so page two starts with the tie's second row (the ``event_id`` branch).
     """
     with SessionLocal(bind=engine) as session:
         company = Company(domain="pages.example", name="Pages")
@@ -1094,7 +1095,7 @@ def test_events_keyset_pages_never_repeat_or_skip(
                 occurred=start + timedelta(days=30, hours=i),
                 payload={"profile": f"p{i}", "as_of": "2026-03-03", "score": 9.0},
             )
-            for i in range(120)
+            for i in range(121)
         ]
         write_events(session, [*filings, *crossings])
         session.commit()
@@ -1104,6 +1105,6 @@ def test_events_keyset_pages_never_repeat_or_skip(
         ]
     body = client.get("/v1/companies/pages.example/events", headers=_h(key)).json()
     ids = [e["event_id"] for e in body["events"]]
-    assert len(ids) == len(set(ids)) == 150  # page one held 80 filings, page two the rest
+    assert len(ids) == len(set(ids)) == 150  # page one held 79 filings, page two the rest
     assert ids == expected
     assert {e["type"] for e in body["events"]} == {"form_d_filed"}

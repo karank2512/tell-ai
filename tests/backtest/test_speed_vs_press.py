@@ -182,7 +182,7 @@ def test_report_flags_small_sample(db_session: Session) -> None:
     assert "Observed: 4; estimated: 2." in text
     assert "more than 14 days before the filing" in text
     assert "alert median is an estimate" not in text
-    assert ":cadence_hours = 6, :observed_window_hours = 36)" in text
+    assert ":cadence_hours = 6, :observed_window_hours = 36, :press_event_ids = " in text
     assert svp.SQL in text
     assert "news_funding" in text
     assert "[" not in text
@@ -472,8 +472,19 @@ def test_no_permit_means_press_is_unmeasured_not_zero(
     monkeypatch.setattr(source_eligibility, "PERMITS", ())
     _two_filers(db_session)
     assert svp.eligible_press_event_ids(db_session) == []
-    assert svp.compute(db_session, NOW).with_press == 0
+    pooled = svp.compute(db_session, NOW)
+    assert pooled.with_press == 0
+    # Unmeasured, not 0% press / 100% "no press" or "filing first": every press share is blank.
+    assert not pooled.press_measured
+    assert (pooled.press_share, pooled.no_press_share, pooled.filing_first_share_all) == (
+        None,
+        None,
+        None,
+    )
     report = svp.build_report(db_session, NOW)
     assert "press unmeasured: no permitted news source" in report.blockers
     assert any("Press is unmeasured" in notice for notice in report.notices)
     assert "Google News rows are never counted" in report.cohort
+    text = render_report(report)
+    assert "Share with no press within 60 days: 100" not in text
+    assert "(no press counts as filing first): 100" not in text

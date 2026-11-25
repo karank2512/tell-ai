@@ -443,7 +443,8 @@ def company_events(
 
     Only candidate rows are read (``candidate_predicate``: rows that are always eligible,
     news from a permitted feed, and crossings), so Google News and other certainly-excluded
-    rows never cost a read. Candidates are read in keyset pages of :data:`MAX_EVENTS` rows, newest
+    rows are never selected (a crossing's stamp may still cite a signal from one, whose
+    event is then read only to classify it, never returned). Candidates are read in keyset pages of :data:`MAX_EVENTS` rows, newest
     first with ``event_id`` breaking ties, until ``limit`` eligible events are found, the
     rows run out or :data:`MAX_EVENT_PAGES` pages were read: no row repeats or is skipped
     across pages, and the work per request is bounded.
